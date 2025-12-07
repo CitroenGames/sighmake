@@ -1,0 +1,76 @@
+# sighmake self-hosting buildscript
+# This buildscript generates Visual Studio project files for sighmake itself
+
+[solution]
+name = sighmake
+configurations = Debug, Release
+platforms = Win32, x64
+
+[project:sighmake]
+# Project type: executable
+type = exe
+
+# Source files
+sources = src/main.cpp, src/buildscript_parser.cpp, src/vcxproj_generator.cpp
+
+# Header files (for IDE organization)
+headers = src/buildscript_parser.hpp, src/vcxproj_generator.hpp, src/project_types.hpp, src/pugixml.hpp, src/pugiconfig.hpp
+
+# Include current directory for headers
+includes = src/
+
+# Preprocessor definitions
+defines = _CRT_SECURE_NO_WARNINGS
+
+# C++ standard
+std = 17
+
+# Output directories
+outdir[Debug|Win32] = .\build\bin\Debug
+outdir[Release|Win32] = .\build\bin\Release
+outdir[Debug|x64] = .\build\bin\x64\Debug
+outdir[Release|x64] = .\build\bin\x64\Release
+
+intdir[Debug|Win32] = .\build\obj\Debug
+intdir[Release|Win32] = .\build\obj\Release
+intdir[Debug|x64] = .\build\obj\x64\Debug
+intdir[Release|x64] = .\build\obj\x64\Release
+
+# Target settings
+target_name = sighmake
+target_ext = .exe
+
+# Compiler settings
+warning_level = Level4
+multiprocessor = true
+exception_handling = Sync
+rtti = true
+
+# Configuration-specific compiler settings
+optimization[Debug|Win32] = Disabled
+optimization[Debug|x64] = Disabled
+optimization[Release|Win32] = MaxSpeed
+optimization[Release|x64] = MaxSpeed
+
+runtime_library[Debug|Win32] = MultiThreadedDebug
+runtime_library[Debug|x64] = MultiThreadedDebug
+runtime_library[Release|Win32] = MultiThreaded
+runtime_library[Release|x64] = MultiThreaded
+
+debug_info[Debug|Win32] = EditAndContinue
+debug_info[Debug|x64] = ProgramDatabase
+debug_info[Release|Win32] = ProgramDatabase
+debug_info[Release|x64] = ProgramDatabase
+
+# Linker settings
+subsystem = Console
+generate_debug_info[Debug|Win32] = true
+generate_debug_info[Debug|x64] = true
+generate_debug_info[Release|Win32] = true
+generate_debug_info[Release|x64] = true
+
+# Enable incremental linking for Debug builds
+link_incremental[Debug|Win32] = true
+link_incremental[Debug|x64] = true
+link_incremental[Release|Win32] = false
+link_incremental[Release|x64] = false
