@@ -16,6 +16,26 @@ std::string BuildscriptParser::trim(const std::string& str) {
     return str.substr(first, last - first + 1);
 }
 
+std::string unescape_value(const std::string& str) {
+    std::string result;
+    for (size_t i = 0; i < str.size(); ++i) {
+        if (str[i] == '\\' && i + 1 < str.size()) {
+            if (str[i + 1] == 'n') {
+                result += '\n';
+                ++i;
+            } else if (str[i + 1] == '\\') {
+                result += '\\';
+                ++i;
+            } else {
+                result += str[i];
+            }
+        } else {
+            result += str[i];
+        }
+    }
+    return result;
+}
+
 std::vector<std::string> BuildscriptParser::split(const std::string& str, char delim) {
     std::vector<std::string> tokens;
     std::stringstream ss(str);
@@ -122,12 +142,20 @@ Solution BuildscriptParser::parse(const std::string& filepath) {
     if (!file.is_open()) {
         throw std::runtime_error("Cannot open buildscript: " + filepath);
     }
-    
+
     std::stringstream buffer;
     buffer << file.rdbuf();
-    
+
     fs::path base = fs::path(filepath).parent_path();
-    return parse_string(buffer.str(), base.empty() ? "." : base.string());
+
+    Solution solution = parse_string(buffer.str(), base.empty() ? "." : base.string());
+
+    // Track the initial file as included
+    solution.name = solution.name.empty() && !solution.projects.empty()
+                    ? solution.projects[0].name
+                    : solution.name;
+
+    return solution;
 }
 
 Solution BuildscriptParser::parse_string(const std::string& content, const std::string& base_path) {
@@ -139,10 +167,84 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
     ParseState state;
     state.solution = &solution;
     state.base_path = base_path;
-    
-    std::istringstream stream(content);
+
+    // Pre-process content to handle multiline values (""")
+    std::string processed_content;
+    std::istringstream preprocess_stream(content);
     std::string line;
-    
+    bool in_multiline = false;
+    std::string multiline_accumulator;
+    std::string multiline_prefix;
+
+    while (std::getline(preprocess_stream, line)) {
+        if (in_multiline) {
+            // Check if this line contains the closing """
+            size_t close_pos = line.find("\"\"\"");
+            if (close_pos != std::string::npos) {
+                // End of multiline value
+                multiline_accumulator += line.substr(0, close_pos);
+                // Write accumulated multiline as escaped single line
+                processed_content += multiline_prefix;
+                // Escape newlines in accumulated value
+                for (char c : multiline_accumulator) {
+                    if (c == '\n') {
+                        processed_content += "\\n";
+                    } else if (c == '\\') {
+                        processed_content += "\\\\";
+                    } else {
+                        processed_content += c;
+                    }
+                }
+                processed_content += "\n";
+                in_multiline = false;
+                multiline_accumulator.clear();
+                multiline_prefix.clear();
+            } else {
+                // Continue accumulating
+                multiline_accumulator += line + "\n";
+            }
+        } else {
+            // Check if this line starts a multiline value
+            size_t eq_pos = line.find('=');
+            if (eq_pos != std::string::npos) {
+                std::string value_part = line.substr(eq_pos + 1);
+                size_t first_nonspace = value_part.find_first_not_of(" \t");
+                if (first_nonspace != std::string::npos &&
+                    value_part.substr(first_nonspace, 3) == "\"\"\"") {
+                    // Start of multiline value
+                    in_multiline = true;
+                    multiline_prefix = line.substr(0, eq_pos + 1) + " ";
+                    // Check if closing """ is on the same line
+                    size_t close_pos = value_part.find("\"\"\"", first_nonspace + 3);
+                    if (close_pos != std::string::npos) {
+                        // Single line with """ ... """
+                        multiline_accumulator = value_part.substr(first_nonspace + 3, close_pos - first_nonspace - 3);
+                        processed_content += multiline_prefix;
+                        for (char c : multiline_accumulator) {
+                            if (c == '\n') {
+                                processed_content += "\\n";
+                            } else if (c == '\\') {
+                                processed_content += "\\\\";
+                            } else {
+                                processed_content += c;
+                            }
+                        }
+                        processed_content += "\n";
+                        in_multiline = false;
+                        multiline_accumulator.clear();
+                        multiline_prefix.clear();
+                    }
+                    continue;
+                }
+            }
+            // Normal line, pass through
+            processed_content += line + "\n";
+        }
+    }
+
+    // Parse the processed content
+    std::istringstream stream(processed_content);
+
     while (std::getline(stream, line)) {
         state.line_number++;
         parse_line(line, state);
@@ -206,7 +308,7 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 cfg.cl_compile.function_level_linking = true;
                 cfg.cl_compile.intrinsic_functions = true;
                 cfg.link.enable_comdat_folding = true;
-                cfg.link.references = true;
+                cfg.link.optimize_references = true;
             }
         }
     }
@@ -322,6 +424,66 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
     }
 }
 
+void BuildscriptParser::process_include(const std::string& include_path, ParseState& state) {
+    // Resolve include path relative to base_path
+    fs::path full_path = fs::path(state.base_path) / include_path;
+    std::string canonical_path;
+
+    try {
+        canonical_path = fs::canonical(full_path).string();
+    } catch (const std::exception&) {
+        // If canonical fails, try with absolute path
+        canonical_path = fs::absolute(full_path).string();
+    }
+
+    // Check for circular includes
+    for (const auto& included : state.included_files) {
+        if (included == canonical_path) {
+            std::cerr << "Warning: Circular include detected: " << include_path << "\n";
+            return;
+        }
+    }
+
+    // Check if file exists
+    if (!fs::exists(canonical_path)) {
+        std::cerr << "Warning: Include file not found: " << include_path << "\n";
+        return;
+    }
+
+    // Mark as included
+    state.included_files.push_back(canonical_path);
+
+    // Read and parse the included file
+    std::ifstream file(canonical_path);
+    if (!file.is_open()) {
+        std::cerr << "Warning: Cannot open include file: " << include_path << "\n";
+        return;
+    }
+
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+
+    // Parse the included content with the same state
+    std::istringstream stream(buffer.str());
+    std::string line;
+    int saved_line_number = state.line_number;
+    state.line_number = 0;
+
+    // Get base path for the included file
+    fs::path include_base = fs::path(canonical_path).parent_path();
+    std::string saved_base_path = state.base_path;
+    state.base_path = include_base.string();
+
+    while (std::getline(stream, line)) {
+        state.line_number++;
+        parse_line(line, state);
+    }
+
+    // Restore original state
+    state.line_number = saved_line_number;
+    state.base_path = saved_base_path;
+}
+
 void BuildscriptParser::parse_solution_setting(const std::string& key, const std::string& value,
                                                 ParseState& state) {
     if (key == "name") {
@@ -330,15 +492,23 @@ void BuildscriptParser::parse_solution_setting(const std::string& key, const std
         state.solution->configurations = split(value, ',');
     } else if (key == "platforms") {
         state.solution->platforms = split(value, ',');
+    } else if (key == "include") {
+        process_include(value, state);
     }
 }
 
 void BuildscriptParser::parse_project_setting(const std::string& key, const std::string& value,
                                                ParseState& state) {
     if (!state.current_project) return;
-    
+
     Project& proj = *state.current_project;
-    
+
+    // Include directive within project context
+    if (key == "include") {
+        process_include(value, state);
+        return;
+    }
+
     // Basic project settings
     if (key == "name") {
         proj.name = value;
@@ -486,6 +656,72 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.floating_point_model = value;
         }
+    } else if (key == "inline_function_expansion" || key == "inline_expansion") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.inline_function_expansion = value;
+        }
+    } else if (key == "favor_size_or_speed" || key == "favor") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.favor_size_or_speed = value;
+        }
+    } else if (key == "string_pooling") {
+        bool sp = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.string_pooling = sp;
+        }
+    } else if (key == "minimal_rebuild") {
+        bool mr = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.minimal_rebuild = mr;
+        }
+    } else if (key == "basic_runtime_checks" || key == "runtime_checks") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.basic_runtime_checks = value;
+        }
+    } else if (key == "buffer_security_check" || key == "buffer_security") {
+        bool bsc = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.buffer_security_check = bsc;
+        }
+    } else if (key == "force_conformance_in_for_loop_scope" || key == "force_conformance") {
+        bool fc = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.force_conformance_in_for_loop_scope = fc;
+        }
+    } else if (key == "assembler_listing_location") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.assembler_listing_location = value;
+        }
+    } else if (key == "object_file_name") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.object_file_name = value;
+        }
+    } else if (key == "program_database_file_name" || key == "pdb_file") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.program_database_file_name = value;
+        }
+    } else if (key == "generate_xml_documentation_files" || key == "xml_docs") {
+        bool xml = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.generate_xml_documentation_files = xml;
+        }
+    } else if (key == "browse_information") {
+        bool bi = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.browse_information = bi;
+        }
+    } else if (key == "browse_information_file") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.browse_information_file = value;
+        }
+    } else if (key == "compile_as") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.compile_as = value;
+        }
+    } else if (key == "error_reporting") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.error_reporting = value;
+        }
     }
     // PCH settings
     else if (key == "pch" || key == "precompiled_header") {
@@ -530,19 +766,113 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             auto& ignored = proj.configurations[config_key].link.ignore_specific_default_libraries;
             ignored.insert(ignored.end(), libs.begin(), libs.end());
         }
+    } else if (key == "show_progress" || key == "link_show_progress") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.show_progress = value;
+        }
+    } else if (key == "output_file" || key == "link_output_file") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.output_file = value;
+        }
+    } else if (key == "suppress_startup_banner" || key == "link_suppress_startup_banner") {
+        bool ssb = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.suppress_startup_banner = ssb;
+        }
+    } else if (key == "program_database_file" || key == "link_pdb_file") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.program_database_file = value;
+        }
+    } else if (key == "base_address") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.base_address = value;
+        }
+    } else if (key == "target_machine") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.target_machine = value;
+        }
+    } else if (key == "link_error_reporting") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.error_reporting = value;
+        }
+    } else if (key == "image_has_safe_exception_handlers" || key == "safe_seh") {
+        bool seh = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.image_has_safe_exception_handlers = seh;
+        }
+    }
+    // Configuration-level properties
+    else if (key == "executable_path") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].executable_path = value;
+        }
+    } else if (key == "generate_manifest") {
+        bool gm = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].generate_manifest = gm;
+        }
+    }
+    // Resource compile settings
+    else if (key == "resource_defines" || key == "resource_preprocessor_definitions") {
+        auto defs = split(value, ',');
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            auto& res_defines = proj.configurations[config_key].resource_compile.preprocessor_definitions;
+            res_defines.insert(res_defines.end(), defs.begin(), defs.end());
+        }
+    } else if (key == "resource_culture") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].resource_compile.culture = value;
+        }
+    } else if (key == "resource_includes" || key == "resource_additional_include_directories") {
+        auto dirs = split(value, ',');
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            auto& res_includes = proj.configurations[config_key].resource_compile.additional_include_directories;
+            res_includes.insert(res_includes.end(), dirs.begin(), dirs.end());
+        }
+    }
+    // Project-level properties
+    else if (key == "ignore_warn_duplicated_filename") {
+        proj.ignore_warn_compile_duplicated_filename = (value == "true" || value == "yes" || value == "1");
     }
     // Build events
     else if (key == "prebuild" || key == "pre_build_event") {
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].pre_build_event.command = value;
+            proj.configurations[config_key].pre_build_event.command = unescape_value(value);
         }
     } else if (key == "prelink" || key == "pre_link_event") {
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].pre_link_event.command = value;
+            proj.configurations[config_key].pre_link_event.command = unescape_value(value);
         }
     } else if (key == "postbuild" || key == "post_build_event") {
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].post_build_event.command = value;
+            proj.configurations[config_key].post_build_event.command = unescape_value(value);
+        }
+    } else if (key == "prebuild_message" || key == "pre_build_event_message") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].pre_build_event.message = unescape_value(value);
+        }
+    } else if (key == "prelink_message" || key == "pre_link_event_message") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].pre_link_event.message = unescape_value(value);
+        }
+    } else if (key == "postbuild_message" || key == "post_build_event_message") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].post_build_event.message = unescape_value(value);
+        }
+    } else if (key == "prebuild_use_in_build" || key == "pre_build_event_use_in_build") {
+        bool use = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].pre_build_event.use_in_build = use;
+        }
+    } else if (key == "prelink_use_in_build" || key == "pre_link_event_use_in_build") {
+        bool use = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].pre_link_event.use_in_build = use;
+        }
+    } else if (key == "postbuild_use_in_build" || key == "post_build_event_use_in_build") {
+        bool use = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].post_build_event.use_in_build = use;
         }
     }
     // Project references
@@ -640,6 +970,122 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.link_incremental = (value == "true" || value == "yes" || value == "1");
     } else if (key == "generate_debug_info") {
         cfg.link.generate_debug_info = (value == "true" || value == "yes" || value == "1");
+    }
+    // New compiler settings
+    else if (key == "inline_function_expansion" || key == "inline_expansion") {
+        cfg.cl_compile.inline_function_expansion = value;
+    } else if (key == "favor_size_or_speed" || key == "favor") {
+        cfg.cl_compile.favor_size_or_speed = value;
+    } else if (key == "string_pooling") {
+        cfg.cl_compile.string_pooling = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "minimal_rebuild") {
+        cfg.cl_compile.minimal_rebuild = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "basic_runtime_checks" || key == "runtime_checks") {
+        cfg.cl_compile.basic_runtime_checks = value;
+    } else if (key == "buffer_security_check" || key == "buffer_security") {
+        cfg.cl_compile.buffer_security_check = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "force_conformance_in_for_loop_scope" || key == "force_conformance") {
+        cfg.cl_compile.force_conformance_in_for_loop_scope = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "function_level_linking") {
+        cfg.cl_compile.function_level_linking = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "intrinsic_functions") {
+        cfg.cl_compile.intrinsic_functions = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "assembler_listing_location") {
+        cfg.cl_compile.assembler_listing_location = value;
+    } else if (key == "object_file_name") {
+        cfg.cl_compile.object_file_name = value;
+    } else if (key == "program_database_file_name" || key == "pdb_file") {
+        cfg.cl_compile.program_database_file_name = value;
+    } else if (key == "generate_xml_documentation_files" || key == "xml_docs") {
+        cfg.cl_compile.generate_xml_documentation_files = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "browse_information") {
+        cfg.cl_compile.browse_information = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "browse_information_file") {
+        cfg.cl_compile.browse_information_file = value;
+    } else if (key == "warning_level") {
+        cfg.cl_compile.warning_level = value;
+    } else if (key == "compile_as") {
+        cfg.cl_compile.compile_as = value;
+    } else if (key == "error_reporting" || key == "compiler_error_reporting") {
+        cfg.cl_compile.error_reporting = value;
+    } else if (key == "exception_handling" || key == "exceptions") {
+        std::string eh_value = value;
+        if (value == "false" || value == "no" || value == "0") eh_value = "false";
+        else if (value == "true" || value == "yes" || value == "sync") eh_value = "Sync";
+        else if (value == "async") eh_value = "Async";
+        cfg.cl_compile.exception_handling = eh_value;
+    } else if (key == "runtime_type_info" || key == "rtti") {
+        cfg.cl_compile.runtime_type_info = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "multi_processor_compilation" || key == "multiprocessor" || key == "mp") {
+        cfg.cl_compile.multi_processor_compilation = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "enhanced_instruction_set" || key == "sse" || key == "simd") {
+        cfg.cl_compile.enhanced_instruction_set = value;
+    } else if (key == "floating_point_model" || key == "floating_point" || key == "fp_model") {
+        cfg.cl_compile.floating_point_model = value;
+    } else if (key == "language_standard" || key == "std" || key == "cpp_standard") {
+        cfg.cl_compile.language_standard = (value.find("stdcpp") == 0) ? value : ("stdcpp" + value);
+    }
+    // New linker settings
+    else if (key == "show_progress" || key == "link_show_progress") {
+        cfg.link.show_progress = value;
+    } else if (key == "output_file" || key == "link_output_file") {
+        cfg.link.output_file = value;
+    } else if (key == "suppress_startup_banner" || key == "link_suppress_startup_banner") {
+        cfg.link.suppress_startup_banner = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "program_database_file" || key == "link_pdb_file") {
+        cfg.link.program_database_file = value;
+    } else if (key == "subsystem" || key == "sub_system") {
+        cfg.link.sub_system = value;
+    } else if (key == "optimize_references") {
+        cfg.link.optimize_references = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "enable_comdat_folding") {
+        cfg.link.enable_comdat_folding = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "base_address") {
+        cfg.link.base_address = value;
+    } else if (key == "target_machine") {
+        cfg.link.target_machine = value;
+    } else if (key == "link_error_reporting") {
+        cfg.link.error_reporting = value;
+    } else if (key == "image_has_safe_exception_handlers" || key == "safe_seh") {
+        cfg.link.image_has_safe_exception_handlers = (value == "true" || value == "yes" || value == "1");
+    }
+    // Configuration properties
+    else if (key == "executable_path") {
+        cfg.executable_path = value;
+    } else if (key == "generate_manifest") {
+        cfg.generate_manifest = (value == "true" || value == "yes" || value == "1");
+    }
+    // Resource compile settings
+    else if (key == "resource_defines" || key == "resource_preprocessor_definitions") {
+        auto defs = split(value, ',');
+        cfg.resource_compile.preprocessor_definitions.insert(
+            cfg.resource_compile.preprocessor_definitions.end(), defs.begin(), defs.end());
+    } else if (key == "resource_culture") {
+        cfg.resource_compile.culture = value;
+    } else if (key == "resource_includes" || key == "resource_additional_include_directories") {
+        auto dirs = split(value, ',');
+        cfg.resource_compile.additional_include_directories.insert(
+            cfg.resource_compile.additional_include_directories.end(), dirs.begin(), dirs.end());
+    }
+    // Build events
+    else if (key == "prebuild" || key == "pre_build_event") {
+        cfg.pre_build_event.command = unescape_value(value);
+    } else if (key == "prelink" || key == "pre_link_event") {
+        cfg.pre_link_event.command = unescape_value(value);
+    } else if (key == "postbuild" || key == "post_build_event") {
+        cfg.post_build_event.command = unescape_value(value);
+    } else if (key == "prebuild_message" || key == "pre_build_event_message") {
+        cfg.pre_build_event.message = unescape_value(value);
+    } else if (key == "prelink_message" || key == "pre_link_event_message") {
+        cfg.pre_link_event.message = unescape_value(value);
+    } else if (key == "postbuild_message" || key == "post_build_event_message") {
+        cfg.post_build_event.message = unescape_value(value);
+    } else if (key == "prebuild_use_in_build" || key == "pre_build_event_use_in_build") {
+        cfg.pre_build_event.use_in_build = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "prelink_use_in_build" || key == "pre_link_event_use_in_build") {
+        cfg.pre_link_event.use_in_build = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "postbuild_use_in_build" || key == "post_build_event_use_in_build") {
+        cfg.post_build_event.use_in_build = (value == "true" || value == "yes" || value == "1");
     }
     // Also support the same keys as project settings
     else {

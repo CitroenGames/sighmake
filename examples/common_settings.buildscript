@@ -1,0 +1,29 @@
+# Common project settings that can be included in multiple buildscripts
+# This file contains only project-level settings that will be applied to
+# the current project context when included
+
+# Note: This file should be included from within a [project:name] section
+
+# Common compiler settings
+std = 17
+warning_level = Level3
+multiprocessor = true
+exception_handling = Sync
+rtti = true
+defines = _CRT_SECURE_NO_WARNINGS
+
+# Configuration-specific optimization settings
+optimization[Debug|Win32] = Disabled
+optimization[Debug|x64] = Disabled
+optimization[Release|Win32] = MaxSpeed
+optimization[Release|x64] = MaxSpeed
+
+runtime_library[Debug|Win32] = MultiThreadedDebug
+runtime_library[Debug|x64] = MultiThreadedDebug
+runtime_library[Release|Win32] = MultiThreaded
+runtime_library[Release|x64] = MultiThreaded
+
+debug_info[Debug|Win32] = EditAndContinue
+debug_info[Debug|x64] = ProgramDatabase
+debug_info[Release|Win32] = ProgramDatabase
+debug_info[Release|x64] = ProgramDatabase

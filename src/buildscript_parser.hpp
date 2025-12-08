@@ -27,6 +27,7 @@ private:
         SourceFile* current_file = nullptr;
         std::string base_path;
         int line_number = 0;
+        std::vector<std::string> included_files;  // Track included files to prevent circular includes
     };
     
     // Parse a single line
@@ -64,6 +65,9 @@ private:
     
     // Helper to find or create a source file entry
     SourceFile* find_or_create_source(const std::string& path, ParseState& state);
+
+    // Helper to process include directive
+    void process_include(const std::string& include_path, ParseState& state);
 };
 
 } // namespace vcxproj

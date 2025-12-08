@@ -3,14 +3,27 @@
 #define VCXPROJ_GENERATOR_HPP
 
 #include "project_types.hpp"
+#include "generator.hpp"
 #include <string>
+#include <filesystem>
 
 namespace vcxproj {
 
 // Generator for Visual Studio .vcxproj and .sln files
-class VcxprojGenerator {
+class VcxprojGenerator : public Generator {
 public:
     VcxprojGenerator() = default;
+
+    // Generate all project files (implements Generator interface)
+    bool generate(const Solution& solution, const std::string& output_dir) override;
+
+    // Get generator name
+    std::string name() const override { return "vcxproj"; }
+
+    // Get generator description
+    std::string description() const override {
+        return "Visual Studio project and solution generator";
+    }
 
     // Generate a .vcxproj file from a Project
     bool generate_vcxproj(const Project& project, const Solution& solution,

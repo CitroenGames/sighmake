@@ -1,0 +1,30 @@
+# Example demonstrating the include directive
+# This buildscript includes common settings from another file
+
+[solution]
+name = IncludeExample
+configurations = Debug, Release
+platforms = Win32, x64
+
+[project:HelloWorld]
+type = exe
+sources = calculator/main.cpp
+includes = mathlib
+subsystem = Console
+
+# Include common project settings
+include = common_settings.buildscript
+
+# Output directories
+outdir[Debug|Win32] = output/Debug/
+outdir[Release|Win32] = output/Release/
+outdir[Debug|x64] = output/x64/Debug/
+outdir[Release|x64] = output/x64/Release/
+
+intdir[Debug|Win32] = intermediate/HelloWorld/Debug/
+intdir[Release|Win32] = intermediate/HelloWorld/Release/
+intdir[Debug|x64] = intermediate/HelloWorld/x64/Debug/
+intdir[Release|x64] = intermediate/HelloWorld/x64/Release/
+
+# Project-specific settings (these will be added to the common settings)
+defines = HELLO_WORLD

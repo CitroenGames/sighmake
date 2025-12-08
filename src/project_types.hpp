@@ -64,34 +64,57 @@ struct LibraryFile {
 
 // Compiler settings
 struct ClCompileSettings {
-    std::string optimization;                           // "Disabled", "MaxSpeed", etc.
+    std::string optimization;                           // "Disabled", "MaxSpeed", "MinSpace", "Full"
+    std::string inline_function_expansion;              // "Default", "Disabled", "OnlyExplicitInline", "AnySuitable"
+    bool intrinsic_functions = false;
+    std::string favor_size_or_speed;                    // "Neither", "Speed", "Size"
     std::vector<std::string> additional_include_directories;
     std::vector<std::string> preprocessor_definitions;
-    std::string runtime_library;                        // "MultiThreaded", "MultiThreadedDebug", etc.
-    std::string debug_information_format;               // "EditAndContinue", "ProgramDatabase", etc.
-    bool function_level_linking = false;
-    bool intrinsic_functions = false;
-    std::string warning_level;                          // "Level0" to "Level4"
-    std::vector<std::string> disable_specific_warnings;
-    std::string additional_options;
-    PrecompiledHeader pch;
-    std::string language_standard;                      // "stdcpp14", "stdcpp17", "stdcpp20"
+    bool string_pooling = false;
+    bool minimal_rebuild = false;
     std::string exception_handling;                     // "false", "Sync", "Async"
-    bool runtime_type_info = true;
-    bool multi_processor_compilation = false;
+    std::string basic_runtime_checks;                   // "Default", "StackFrameRuntimeCheck", "UninitVariables", "EnableFastChecks"
+    std::string runtime_library;                        // "MultiThreaded", "MultiThreadedDebug", etc.
+    bool buffer_security_check = true;
+    bool function_level_linking = false;
     std::string enhanced_instruction_set;               // "NotSet", "StreamingSIMDExtensions2", "AdvancedVectorExtensions2"
     std::string floating_point_model;                   // "Precise", "Fast", "Strict"
+    bool force_conformance_in_for_loop_scope = true;
+    bool runtime_type_info = true;
+    PrecompiledHeader pch;
+    std::string assembler_listing_location;
+    std::string object_file_name;
+    std::string program_database_file_name;
+    bool generate_xml_documentation_files = false;
+    bool browse_information = false;
+    std::string browse_information_file;
+    std::string warning_level;                          // "Level0" to "Level4"
+    std::string debug_information_format;               // "EditAndContinue", "ProgramDatabase", etc.
+    std::string compile_as;                             // "Default", "CompileAsC", "CompileAsCpp"
+    std::vector<std::string> disable_specific_warnings;
+    bool multi_processor_compilation = false;
+    std::string error_reporting;                        // "None", "Prompt", "Queue", "Send"
+    std::string additional_options;
+    std::string language_standard;                      // "stdcpp14", "stdcpp17", "stdcpp20"
 };
 
 // Linker settings
 struct LinkSettings {
-    std::string sub_system;                             // "Console", "Windows"
-    bool generate_debug_info = false;
+    std::string show_progress;                          // "NotSet", "LinkVerbose", "LinkVerboseLib"
+    std::string output_file;                            // Custom output file path
+    bool suppress_startup_banner = false;
     std::vector<std::string> additional_dependencies;
     std::vector<std::string> additional_library_directories;
     std::vector<std::string> ignore_specific_default_libraries;
+    bool generate_debug_info = false;
+    std::string program_database_file;                  // Custom .pdb file path
+    std::string sub_system;                             // "Console", "Windows"
+    bool optimize_references = false;
     bool enable_comdat_folding = false;
-    bool references = false;                            // Optimize references
+    std::string base_address;                           // DLL base address
+    std::string target_machine;                         // "MachineX86", "MachineX64"
+    std::string error_reporting;                        // "PromptImmediately", "QueueForNextLogin", "SendErrorReport", "NoErrorReport"
+    bool image_has_safe_exception_handlers = false;
     std::string additional_options;
 };
 
@@ -99,6 +122,30 @@ struct LinkSettings {
 struct BuildEvent {
     std::string command;
     std::string message;
+    bool use_in_build = true;
+};
+
+// Resource compiler settings
+struct ResourceCompileSettings {
+    std::vector<std::string> preprocessor_definitions;
+    std::string culture;                                // "1033" for US English, etc.
+    std::vector<std::string> additional_include_directories;
+};
+
+// Manifest tool settings
+struct ManifestSettings {
+    bool suppress_startup_banner = false;
+};
+
+// XML Documentation settings
+struct XdcmakeSettings {
+    bool suppress_startup_banner = false;
+};
+
+// Browse Information Maintenance Utility settings
+struct BscmakeSettings {
+    bool suppress_startup_banner = false;
+    std::string output_file;
 };
 
 // Project configuration (e.g., Debug|Win32, Release|x64)
@@ -108,18 +155,27 @@ struct Configuration {
     std::string windows_target_platform_version;        // "10.0", "10.0.19041.0", etc.
     std::string character_set;                          // "MultiByte", "Unicode"
     bool use_debug_libraries = false;
+    std::string use_of_mfc;                             // "false", "Static", "Dynamic"
+    std::string use_of_atl;                             // "false", "Static", "Dynamic"
     std::string out_dir;                                // Output directory
     std::string int_dir;                                // Intermediate directory
     std::string target_name;                            // Target file name (without extension)
     std::string target_ext;                             // Target extension (.exe, .dll, .lib)
     bool link_incremental = false;
+    std::string executable_path;                        // Additional executable search paths
+    bool generate_manifest = true;
 
     ClCompileSettings cl_compile;
     LinkSettings link;
+    ResourceCompileSettings resource_compile;
 
     BuildEvent pre_build_event;
     BuildEvent pre_link_event;
     BuildEvent post_build_event;
+
+    ManifestSettings manifest;
+    XdcmakeSettings xdcmake;
+    BscmakeSettings bscmake;
 };
 
 // Project
@@ -127,6 +183,8 @@ struct Project {
     std::string name;
     std::string uuid;
     std::string root_namespace;
+    bool ignore_warn_compile_duplicated_filename = false;
+    std::string vcxproj_path;                           // Original .vcxproj file path (for reverse conversion)
 
     std::vector<SourceFile> sources;
     std::vector<LibraryFile> libraries;
