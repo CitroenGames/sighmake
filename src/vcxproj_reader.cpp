@@ -31,6 +31,39 @@ std::pair<std::string, std::string> VcxprojReader::parse_config_platform(const s
     return {label, "Win32"};
 }
 
+// Helper function to filter out VPC-related commands from build events
+static std::string filter_vpc_commands(const std::string& command) {
+    if (command.empty()) return command;
+
+    std::string result;
+    std::istringstream stream(command);
+    std::string line;
+
+    while (std::getline(stream, line)) {
+        // Skip lines that contain vpc.exe commands
+        if (line.find("vpc.exe") != std::string::npos) {
+            continue;
+        }
+        // Skip lines that reference .vpc_crc files
+        if (line.find(".vpc_crc") != std::string::npos) {
+            continue;
+        }
+
+        // Keep other lines
+        if (!result.empty()) {
+            result += "\n";
+        }
+        result += line;
+    }
+
+    // Trim trailing newlines
+    while (!result.empty() && (result.back() == '\n' || result.back() == '\r')) {
+        result.pop_back();
+    }
+
+    return result;
+}
+
 Project VcxprojReader::read_vcxproj(const std::string& filepath) {
     Project project;
     pugi::xml_document doc;
@@ -76,6 +109,7 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             cfg.windows_target_platform_version = prop_group.child_value("WindowsTargetPlatformVersion");
             cfg.character_set = prop_group.child_value("CharacterSet");
             cfg.use_debug_libraries = prop_group.child("UseDebugLibraries").text().as_bool();
+            cfg.whole_program_optimization = prop_group.child("WholeProgramOptimization").text().as_bool();
             cfg.use_of_mfc = prop_group.child_value("UseOfMfc");
             cfg.use_of_atl = prop_group.child_value("UseOfAtl");
         }
@@ -235,22 +269,48 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             }
         }
 
-        // Build events
+        // Manifest settings
+        if (auto manifest = item_def.child("Manifest")) {
+            if (auto n = manifest.child("SuppressStartupBanner"))
+                cfg.manifest.suppress_startup_banner = n.text().as_bool();
+        }
+
+        // Xdcmake settings
+        if (auto xdcmake = item_def.child("Xdcmake")) {
+            if (auto n = xdcmake.child("SuppressStartupBanner"))
+                cfg.xdcmake.suppress_startup_banner = n.text().as_bool();
+        }
+
+        // Bscmake settings
+        if (auto bscmake = item_def.child("Bscmake")) {
+            if (auto n = bscmake.child("SuppressStartupBanner"))
+                cfg.bscmake.suppress_startup_banner = n.text().as_bool();
+            if (auto n = bscmake.child("OutputFile"))
+                cfg.bscmake.output_file = n.text().as_string();
+        }
+
+        // Build events (filter out VPC-related commands)
         if (auto pre_build = item_def.child("PreBuildEvent")) {
-            if (auto n = pre_build.child("Command"))
-                cfg.pre_build_event.command = n.text().as_string();
+            if (auto n = pre_build.child("Command")) {
+                std::string cmd = n.text().as_string();
+                cfg.pre_build_event.command = filter_vpc_commands(cmd);
+            }
             if (auto n = pre_build.child("Message"))
                 cfg.pre_build_event.message = n.text().as_string();
         }
         if (auto pre_link = item_def.child("PreLinkEvent")) {
-            if (auto n = pre_link.child("Command"))
-                cfg.pre_link_event.command = n.text().as_string();
+            if (auto n = pre_link.child("Command")) {
+                std::string cmd = n.text().as_string();
+                cfg.pre_link_event.command = filter_vpc_commands(cmd);
+            }
             if (auto n = pre_link.child("Message"))
                 cfg.pre_link_event.message = n.text().as_string();
         }
         if (auto post_build = item_def.child("PostBuildEvent")) {
-            if (auto n = post_build.child("Command"))
-                cfg.post_build_event.command = n.text().as_string();
+            if (auto n = post_build.child("Command")) {
+                std::string cmd = n.text().as_string();
+                cfg.post_build_event.command = filter_vpc_commands(cmd);
+            }
             if (auto n = post_build.child("Message"))
                 cfg.post_build_event.message = n.text().as_string();
         }
@@ -299,6 +359,13 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
                     while (std::getline(ss, item, ';')) {
                         if (!item.empty()) src.settings.preprocessor_defines[config_key].push_back(item);
                     }
+                } else if (name == "AdditionalOptions") {
+                    std::string val = child.text().as_string();
+                    std::istringstream ss(val);
+                    std::string item;
+                    while (std::getline(ss, item, ' ')) {
+                        if (!item.empty()) src.settings.additional_options[config_key].push_back(item);
+                    }
                 } else if (name == "PrecompiledHeader") {
                     src.settings.pch[config_key].mode = child.text().as_string();
                 } else if (name == "PrecompiledHeaderFile") {
@@ -319,6 +386,27 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             }
 
             project.sources.push_back(src);
+        }
+
+        // Parse library references
+        for (auto lib : item_group.children("Library")) {
+            std::string include = lib.attribute("Include").as_string();
+            if (!include.empty()) {
+                LibraryFile lf;
+                lf.path = include;
+
+                // Parse per-library settings (like ExcludedFromBuild)
+                for (auto child : lib.children()) {
+                    std::string name = child.name();
+                    if (name == "ExcludedFromBuild") {
+                        std::string condition = child.attribute("Condition").as_string();
+                        std::string config_key = condition.empty() ? ALL_CONFIGS : parse_condition(condition);
+                        lf.excluded[config_key] = child.text().as_bool();
+                    }
+                }
+
+                project.libraries.push_back(lf);
+            }
         }
 
         // Parse project references
@@ -523,6 +611,14 @@ bool BuildscriptWriter::write_buildscript(const Project& project, const std::str
         out << "depends = " << join_vector(project.project_references, ", ") << "\n";
     }
 
+    // Analyze libraries to separate those with exclusions from those without
+    std::vector<const LibraryFile*> excluded_libs;
+    for (const auto& lib : project.libraries) {
+        if (!lib.excluded.empty()) {
+            excluded_libs.push_back(&lib);
+        }
+    }
+
     // Write common settings (from first config as default)
     if (!project.configurations.empty()) {
         auto& first_cfg = project.configurations.begin()->second;
@@ -545,8 +641,14 @@ bool BuildscriptWriter::write_buildscript(const Project& project, const std::str
             out << "includes = " << join_vector(cl.additional_include_directories, ", ") << "\n";
         if (!cl.preprocessor_definitions.empty())
             out << "defines = " << join_vector(cl.preprocessor_definitions, ", ") << "\n";
-        if (!cl.language_standard.empty())
-            out << "std = " << cl.language_standard << "\n";
+        if (!cl.language_standard.empty()) {
+            // Strip "stdcpp" prefix if present (e.g., "stdcpp17" -> "17")
+            std::string std_value = cl.language_standard;
+            if (std_value.find("stdcpp") == 0) {
+                std_value = std_value.substr(6);  // Remove "stdcpp" prefix
+            }
+            out << "std = " << std_value << "\n";
+        }
         if (!cl.warning_level.empty())
             out << "warning_level = " << cl.warning_level << "\n";
         if (!cl.exception_handling.empty())
@@ -573,8 +675,22 @@ bool BuildscriptWriter::write_buildscript(const Project& project, const std::str
         // Linker settings
         if (!link.sub_system.empty())
             out << "subsystem = " << link.sub_system << "\n";
-        if (!link.additional_dependencies.empty())
-            out << "libs = " << join_vector(link.additional_dependencies, ", ") << "\n";
+
+        // Combine Library elements and additional dependencies
+        // Only include libraries without config-specific exclusions at project level
+        std::vector<std::string> all_libs;
+
+        for (const auto& lib : project.libraries) {
+            // Check if library has any config-specific exclusions
+            if (lib.excluded.empty()) {
+                all_libs.push_back(lib.path);
+            }
+        }
+        // Don't add config-specific additional_dependencies here
+        // They will be written per-config
+        if (!all_libs.empty())
+            out << "libs = " << join_vector(all_libs, ", ") << "\n";
+
         if (!link.additional_library_directories.empty())
             out << "libdirs = " << join_vector(link.additional_library_directories, ", ") << "\n";
     }
@@ -598,6 +714,39 @@ bool BuildscriptWriter::write_buildscript(const Project& project, const std::str
             out << "generate_debug_info = true\n";
         if (cfg.link_incremental)
             out << "link_incremental = true\n";
+        if (cfg.whole_program_optimization)
+            out << "whole_program_optimization = true\n";
+
+        // Write config-specific libraries (excluded libs + additional dependencies)
+        std::vector<std::string> config_libs;
+
+        // Add libraries with exclusions that are NOT excluded for this config
+        for (const auto* lib : excluded_libs) {
+            bool is_excluded = false;
+            for (const auto& [excl_config_key, excluded] : lib->excluded) {
+                if ((excl_config_key == ALL_CONFIGS || excl_config_key == config_key) && excluded) {
+                    is_excluded = true;
+                    break;
+                }
+            }
+            if (!is_excluded) {
+                config_libs.push_back(lib->path);
+            }
+        }
+
+        // Add config-specific additional dependencies
+        for (const auto& dep : cfg.link.additional_dependencies) {
+            config_libs.push_back(dep);
+        }
+
+        if (!config_libs.empty()) {
+            out << "libs = " << join_vector(config_libs, ", ") << "\n";
+        }
+
+        // Linker ignore settings
+        if (!cfg.link.ignore_specific_default_libraries.empty()) {
+            out << "ignore_libs = " << join_vector(cfg.link.ignore_specific_default_libraries, ", ") << "\n";
+        }
 
         // Build events
         if (!cfg.pre_build_event.command.empty()) {
@@ -612,21 +761,88 @@ bool BuildscriptWriter::write_buildscript(const Project& project, const std::str
         }
     }
 
-    // Write per-file settings
-    for (const auto& src : project.sources) {
-        bool has_settings = !src.settings.pch.empty() ||
-                           !src.settings.additional_includes.empty() ||
-                           !src.settings.preprocessor_defines.empty() ||
-                           !src.custom_command.empty();
+    // Use project-level PCH settings from ItemDefinitionGroup as defaults
+    std::map<std::string, std::string> default_pch_mode;
+    std::map<std::string, std::string> default_pch_header;
+    std::map<std::string, std::string> default_pch_output;
 
-        if (has_settings) {
+    // Extract project-level PCH settings from configurations
+    for (const auto& [config_key, cfg] : project.configurations) {
+        if (!cfg.cl_compile.pch.mode.empty()) {
+            default_pch_mode[config_key] = cfg.cl_compile.pch.mode;
+        }
+        if (!cfg.cl_compile.pch.header.empty()) {
+            default_pch_header[config_key] = cfg.cl_compile.pch.header;
+        }
+        if (!cfg.cl_compile.pch.output.empty()) {
+            default_pch_output[config_key] = cfg.cl_compile.pch.output;
+        }
+    }
+
+    // Write project-level PCH defaults if they exist and are not "NotUsing"
+    bool wrote_pch_defaults = false;
+    for (const auto& [config_key, mode] : default_pch_mode) {
+        // Only write non-NotUsing modes as defaults (NotUsing is the implicit default)
+        if (mode != "NotUsing") {
+            if (!wrote_pch_defaults) {
+                out << "\n# Precompiled header defaults\n";
+                wrote_pch_defaults = true;
+            }
+            out << "pch[" << config_key << "] = " << mode << "\n";
+            if (default_pch_header.count(config_key)) {
+                out << "pch_header[" << config_key << "] = " << default_pch_header[config_key] << "\n";
+            }
+            if (default_pch_output.count(config_key)) {
+                out << "pch_output[" << config_key << "] = " << default_pch_output[config_key] << "\n";
+            }
+        }
+    }
+
+    // Write per-file settings (only for exceptions)
+    for (const auto& src : project.sources) {
+        bool has_pch_exception = false;
+        bool has_other_settings = !src.settings.additional_includes.empty() ||
+                                 !src.settings.preprocessor_defines.empty() ||
+                                 !src.settings.additional_options.empty() ||
+                                 !src.settings.excluded.empty() ||
+                                 !src.settings.compile_as.empty() ||
+                                 !src.settings.object_file.empty() ||
+                                 !src.custom_command.empty();
+
+        // Check if this file's PCH settings differ from defaults
+        for (const auto& [config_key, pch] : src.settings.pch) {
+            bool mode_differs = (!pch.mode.empty() &&
+                                default_pch_mode.count(config_key) &&
+                                pch.mode != default_pch_mode[config_key]);
+            bool header_differs = (!pch.header.empty() &&
+                                  default_pch_header.count(config_key) &&
+                                  pch.header != default_pch_header[config_key]);
+            bool no_default = (!pch.mode.empty() && !default_pch_mode.count(config_key));
+
+            if (mode_differs || header_differs || no_default || pch.mode == "NotUsing") {
+                has_pch_exception = true;
+                break;
+            }
+        }
+
+        if (has_pch_exception || has_other_settings) {
             out << "\n[file:" << src.path << "]\n";
 
-            for (const auto& [config_key, pch] : src.settings.pch) {
-                if (!pch.mode.empty())
-                    out << "pch[" << config_key << "] = " << pch.mode << "\n";
-                if (!pch.header.empty())
-                    out << "pch_header[" << config_key << "] = " << pch.header << "\n";
+            // Write PCH settings only if they differ from defaults
+            if (has_pch_exception) {
+                for (const auto& [config_key, pch] : src.settings.pch) {
+                    bool mode_differs = (!pch.mode.empty() &&
+                                        (!default_pch_mode.count(config_key) ||
+                                         pch.mode != default_pch_mode[config_key]));
+                    bool header_differs = (!pch.header.empty() &&
+                                          (!default_pch_header.count(config_key) ||
+                                           pch.header != default_pch_header[config_key]));
+
+                    if (mode_differs || pch.mode == "NotUsing")
+                        out << "pch[" << config_key << "] = " << pch.mode << "\n";
+                    if (header_differs)
+                        out << "pch_header[" << config_key << "] = " << pch.header << "\n";
+                }
             }
 
             for (const auto& [config_key, includes] : src.settings.additional_includes) {
@@ -637,6 +853,26 @@ bool BuildscriptWriter::write_buildscript(const Project& project, const std::str
             for (const auto& [config_key, defines] : src.settings.preprocessor_defines) {
                 if (!defines.empty())
                     out << "defines[" << config_key << "] = " << join_vector(defines, ", ") << "\n";
+            }
+
+            for (const auto& [config_key, options] : src.settings.additional_options) {
+                if (!options.empty())
+                    out << "flags[" << config_key << "] = " << join_vector(options, ", ") << "\n";
+            }
+
+            for (const auto& [config_key, excluded] : src.settings.excluded) {
+                if (excluded)
+                    out << "excluded[" << config_key << "] = true\n";
+            }
+
+            for (const auto& [config_key, compile_as] : src.settings.compile_as) {
+                if (!compile_as.empty())
+                    out << "compile_as[" << config_key << "] = " << compile_as << "\n";
+            }
+
+            for (const auto& [config_key, obj_file] : src.settings.object_file) {
+                if (!obj_file.empty())
+                    out << "object_file[" << config_key << "] = " << obj_file << "\n";
             }
 
             for (const auto& [config_key, cmd] : src.custom_command) {
@@ -690,8 +926,9 @@ bool BuildscriptWriter::write_solution_buildscripts(const Solution& solution, co
 
     root_out << "# Generated root buildscript for solution: " << solution.name << "\n";
     root_out << "# This file includes all project buildscripts\n\n";
-    root_out << "solution_name = " << solution.name << "\n";
-    root_out << "solution_uuid = " << solution.uuid << "\n\n";
+    root_out << "[solution]\n";
+    root_out << "name = " << solution.name << "\n";
+    root_out << "uuid = " << solution.uuid << "\n\n";
 
     // Write include directives for all project buildscripts
     for (const auto& include_path : buildscript_paths) {

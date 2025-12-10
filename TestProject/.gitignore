@@ -1,0 +1,8 @@
+build
+
+*.pdb
+*.db
+*.sdf
+*.opensdf
+*.pyc
+.vs

@@ -1,6 +1,4 @@
 #pragma once
-#ifndef PROJECT_TYPES_HPP
-#define PROJECT_TYPES_HPP
 
 #include <string>
 #include <vector>
@@ -60,6 +58,7 @@ struct SourceFile {
 // Library file reference
 struct LibraryFile {
     std::string path;
+    std::map<std::string, bool> excluded;  // Per-config
 };
 
 // Compiler settings
@@ -155,6 +154,7 @@ struct Configuration {
     std::string windows_target_platform_version;        // "10.0", "10.0.19041.0", etc.
     std::string character_set;                          // "MultiByte", "Unicode"
     bool use_debug_libraries = false;
+    bool whole_program_optimization = false;
     std::string use_of_mfc;                             // "false", "Static", "Dynamic"
     std::string use_of_atl;                             // "false", "Static", "Dynamic"
     std::string out_dir;                                // Output directory
@@ -267,5 +267,3 @@ inline std::pair<std::string, std::string> parse_config_key(const std::string& k
 }
 
 } // namespace vcxproj
-
-#endif // PROJECT_TYPES_HPP

@@ -1,6 +1,4 @@
 #pragma once
-#ifndef GENERATOR_HPP
-#define GENERATOR_HPP
 
 #include "project_types.hpp"
 #include <string>
@@ -86,5 +84,3 @@ public:
     static vcxproj::GeneratorRegistrar<ClassName> g_registrar_##ClassName(name);
 
 } // namespace vcxproj
-
-#endif // GENERATOR_HPP

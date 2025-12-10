@@ -1,6 +1,4 @@
 #pragma once
-#ifndef VCXPROJ_GENERATOR_HPP
-#define VCXPROJ_GENERATOR_HPP
 
 #include "project_types.hpp"
 #include "generator.hpp"
@@ -40,5 +38,3 @@ private:
 };
 
 } // namespace vcxproj
-
-#endif // VCXPROJ_GENERATOR_HPP

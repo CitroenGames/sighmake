@@ -36,6 +36,83 @@ std::string unescape_value(const std::string& str) {
     return result;
 }
 
+std::string preprocess_multiline(const std::string& content) {
+    std::string processed_content;
+    std::istringstream preprocess_stream(content);
+    std::string line;
+    bool in_multiline = false;
+    std::string multiline_accumulator;
+    std::string multiline_prefix;
+
+    while (std::getline(preprocess_stream, line)) {
+        if (in_multiline) {
+            // Check if this line contains the closing """
+            size_t close_pos = line.find("\"\"\"");
+            if (close_pos != std::string::npos) {
+                // End of multiline value
+                multiline_accumulator += line.substr(0, close_pos);
+                // Write accumulated multiline as escaped single line
+                processed_content += multiline_prefix;
+                // Escape newlines in accumulated value
+                for (char c : multiline_accumulator) {
+                    if (c == '\n') {
+                        processed_content += "\\n";
+                    } else if (c == '\\') {
+                        processed_content += "\\\\";
+                    } else {
+                        processed_content += c;
+                    }
+                }
+                processed_content += "\n";
+                in_multiline = false;
+                multiline_accumulator.clear();
+                multiline_prefix.clear();
+            } else {
+                // Continue accumulating
+                multiline_accumulator += line + "\n";
+            }
+        } else {
+            // Check if this line starts a multiline value
+            size_t eq_pos = line.find('=');
+            if (eq_pos != std::string::npos) {
+                std::string value_part = line.substr(eq_pos + 1);
+                size_t first_nonspace = value_part.find_first_not_of(" \t");
+                if (first_nonspace != std::string::npos &&
+                    value_part.substr(first_nonspace, 3) == "\"\"\"") {
+                    // Start of multiline value
+                    in_multiline = true;
+                    multiline_prefix = line.substr(0, eq_pos + 1) + " ";
+                    // Check if closing """ is on the same line
+                    size_t close_pos = value_part.find("\"\"\"", first_nonspace + 3);
+                    if (close_pos != std::string::npos) {
+                        // Single line with """ ... """
+                        multiline_accumulator = value_part.substr(first_nonspace + 3, close_pos - first_nonspace - 3);
+                        processed_content += multiline_prefix;
+                        for (char c : multiline_accumulator) {
+                            if (c == '\n') {
+                                processed_content += "\\n";
+                            } else if (c == '\\') {
+                                processed_content += "\\\\";
+                            } else {
+                                processed_content += c;
+                            }
+                        }
+                        processed_content += "\n";
+                        in_multiline = false;
+                        multiline_accumulator.clear();
+                        multiline_prefix.clear();
+                    }
+                    continue;
+                }
+            }
+            // Normal line, pass through
+            processed_content += line + "\n";
+        }
+    }
+
+    return processed_content;
+}
+
 std::vector<std::string> BuildscriptParser::split(const std::string& str, char delim) {
     std::vector<std::string> tokens;
     std::stringstream ss(str);
@@ -119,21 +196,44 @@ std::vector<std::string> BuildscriptParser::expand_wildcards(const std::string& 
     return result;
 }
 
+std::string BuildscriptParser::resolve_path(const std::string& path, const std::string& base_path) {
+    // Resolve path relative to base_path to get absolute path
+    fs::path abs_path;
+    if (fs::path(path).is_absolute()) {
+        abs_path = path;
+    } else {
+        abs_path = fs::path(base_path) / path;
+    }
+
+    // Normalize the path
+    try {
+        abs_path = fs::canonical(abs_path);
+    } catch (...) {
+        // If canonical fails (file doesn't exist yet), use absolute path
+        abs_path = fs::absolute(abs_path).lexically_normal();
+    }
+
+    return abs_path.string();
+}
+
 SourceFile* BuildscriptParser::find_or_create_source(const std::string& path, ParseState& state) {
     if (!state.current_project) return nullptr;
-    
-    // Look for existing entry
+
+    // Resolve path relative to base_path to get absolute path
+    std::string abs_path_str = resolve_path(path, state.base_path);
+
+    // Look for existing entry using absolute path
     for (auto& src : state.current_project->sources) {
-        if (src.path == path) {
+        if (src.path == abs_path_str) {
             return &src;
         }
     }
-    
-    // Create new entry
+
+    // Create new entry with absolute path
     state.current_project->sources.emplace_back();
     auto& src = state.current_project->sources.back();
-    src.path = path;
-    src.type = get_file_type(path);
+    src.path = abs_path_str;
+    src.type = get_file_type(abs_path_str);
     return &src;
 }
 
@@ -169,81 +269,11 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
     state.base_path = base_path;
 
     // Pre-process content to handle multiline values (""")
-    std::string processed_content;
-    std::istringstream preprocess_stream(content);
-    std::string line;
-    bool in_multiline = false;
-    std::string multiline_accumulator;
-    std::string multiline_prefix;
-
-    while (std::getline(preprocess_stream, line)) {
-        if (in_multiline) {
-            // Check if this line contains the closing """
-            size_t close_pos = line.find("\"\"\"");
-            if (close_pos != std::string::npos) {
-                // End of multiline value
-                multiline_accumulator += line.substr(0, close_pos);
-                // Write accumulated multiline as escaped single line
-                processed_content += multiline_prefix;
-                // Escape newlines in accumulated value
-                for (char c : multiline_accumulator) {
-                    if (c == '\n') {
-                        processed_content += "\\n";
-                    } else if (c == '\\') {
-                        processed_content += "\\\\";
-                    } else {
-                        processed_content += c;
-                    }
-                }
-                processed_content += "\n";
-                in_multiline = false;
-                multiline_accumulator.clear();
-                multiline_prefix.clear();
-            } else {
-                // Continue accumulating
-                multiline_accumulator += line + "\n";
-            }
-        } else {
-            // Check if this line starts a multiline value
-            size_t eq_pos = line.find('=');
-            if (eq_pos != std::string::npos) {
-                std::string value_part = line.substr(eq_pos + 1);
-                size_t first_nonspace = value_part.find_first_not_of(" \t");
-                if (first_nonspace != std::string::npos &&
-                    value_part.substr(first_nonspace, 3) == "\"\"\"") {
-                    // Start of multiline value
-                    in_multiline = true;
-                    multiline_prefix = line.substr(0, eq_pos + 1) + " ";
-                    // Check if closing """ is on the same line
-                    size_t close_pos = value_part.find("\"\"\"", first_nonspace + 3);
-                    if (close_pos != std::string::npos) {
-                        // Single line with """ ... """
-                        multiline_accumulator = value_part.substr(first_nonspace + 3, close_pos - first_nonspace - 3);
-                        processed_content += multiline_prefix;
-                        for (char c : multiline_accumulator) {
-                            if (c == '\n') {
-                                processed_content += "\\n";
-                            } else if (c == '\\') {
-                                processed_content += "\\\\";
-                            } else {
-                                processed_content += c;
-                            }
-                        }
-                        processed_content += "\n";
-                        in_multiline = false;
-                        multiline_accumulator.clear();
-                        multiline_prefix.clear();
-                    }
-                    continue;
-                }
-            }
-            // Normal line, pass through
-            processed_content += line + "\n";
-        }
-    }
+    std::string processed_content = preprocess_multiline(content);
 
     // Parse the processed content
     std::istringstream stream(processed_content);
+    std::string line;
 
     while (std::getline(stream, line)) {
         state.line_number++;
@@ -349,9 +379,10 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
     if (section == "solution") {
         state.current_project = nullptr;
         state.current_file = nullptr;
+        state.current_config.clear();
         return true;
     }
-    
+
     // [project:name]
     if (section.rfind("project:", 0) == 0) {
         state.solution->projects.emplace_back();
@@ -360,19 +391,22 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
         state.current_project->uuid = generate_uuid();
         state.current_project->root_namespace = state.current_project->name;
         state.current_file = nullptr;
+        state.current_config.clear();
         return true;
     }
-    
+
     // [file:path] - for per-file settings block
     if (section.rfind("file:", 0) == 0) {
         std::string file_path = trim(section.substr(5));
         state.current_file = find_or_create_source(file_path, state);
+        state.current_config.clear();
         return true;
     }
     
     // [config:Debug|Win32] - for config-specific settings
     if (section.rfind("config:", 0) == 0) {
-        // This sets context for following settings
+        state.current_config = trim(section.substr(7));  // Extract config name
+        state.current_file = nullptr;  // Leave file context
         return true;
     }
     
@@ -404,21 +438,30 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
         return;
     }
     
-    // Check for config-specific project setting: setting[Debug|Win32] = value
+    // Check for config-specific setting: setting[Debug|Win32] = value
     size_t bracket_start = key.find('[');
     size_t bracket_end = key.find(']');
     if (bracket_start != std::string::npos && bracket_end != std::string::npos) {
         std::string config_key = key.substr(bracket_start + 1, bracket_end - bracket_start - 1);
         std::string setting = trim(key.substr(0, bracket_start));
-        parse_config_setting(setting, value, config_key, state);
+
+        // If we're in a file context, treat as per-file setting
+        if (state.current_file != nullptr) {
+            parse_file_setting(state.current_file->path, setting, config_key, value, state);
+        } else {
+            parse_config_setting(setting, value, config_key, state);
+        }
         return;
     }
-    
+
     // Regular key=value
     if (state.current_project == nullptr) {
         parse_solution_setting(key, value, state);
     } else if (state.current_file != nullptr) {
         parse_file_setting(state.current_file->path, key, ALL_CONFIGS, value, state);
+    } else if (!state.current_config.empty()) {
+        // We're in a [config:...] section
+        parse_config_setting(key, value, state.current_config, state);
     } else {
         parse_project_setting(key, value, state);
     }
@@ -463,8 +506,11 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
     std::stringstream buffer;
     buffer << file.rdbuf();
 
+    // Pre-process content to handle multiline values (""")
+    std::string processed_content = preprocess_multiline(buffer.str());
+
     // Parse the included content with the same state
-    std::istringstream stream(buffer.str());
+    std::istringstream stream(processed_content);
     std::string line;
     int saved_line_number = state.line_number;
     state.line_number = 0;
@@ -474,6 +520,10 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
     std::string saved_base_path = state.base_path;
     state.base_path = include_base.string();
 
+    // Save and restore current_project and current_file to prevent included files from affecting parent context
+    Project* saved_current_project = state.current_project;
+    SourceFile* saved_current_file = state.current_file;
+
     while (std::getline(stream, line)) {
         state.line_number++;
         parse_line(line, state);
@@ -482,6 +532,8 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
     // Restore original state
     state.line_number = saved_line_number;
     state.base_path = saved_base_path;
+    state.current_project = saved_current_project;
+    state.current_file = saved_current_file;
 }
 
 void BuildscriptParser::parse_solution_setting(const std::string& key, const std::string& value,
@@ -554,12 +606,14 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             proj.configurations[config_key].target_ext = value;
         }
     } else if (key == "outdir" || key == "output_dir") {
+        std::string resolved_dir = resolve_path(value, state.base_path);
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].out_dir = value;
+            proj.configurations[config_key].out_dir = resolved_dir;
         }
     } else if (key == "intdir" || key == "intermediate_dir") {
+        std::string resolved_dir = resolve_path(value, state.base_path);
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].int_dir = value;
+            proj.configurations[config_key].int_dir = resolved_dir;
         }
     }
     // Source files
@@ -585,23 +639,33 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         }
     } else if (key == "libs" || key == "libraries") {
         auto libs = split(value, ',');
-        for (const auto& config_key : state.solution->get_config_keys()) {
-            auto& deps = proj.configurations[config_key].link.additional_dependencies;
-            deps.insert(deps.end(), libs.begin(), libs.end());
-        }
-        // Also keep for backwards compatibility
+
+        // Split libraries into file paths vs system libraries
         for (const auto& lib : libs) {
-            LibraryFile lf;
-            lf.path = lib;
-            proj.libraries.push_back(lf);
+            // If the library has a path separator, it's a file path → use <Library> element
+            if (lib.find('/') != std::string::npos || lib.find('\\') != std::string::npos) {
+                LibraryFile lf;
+                lf.path = resolve_path(lib, state.base_path);
+                proj.libraries.push_back(lf);
+            } else {
+                // System library (e.g., shell32.lib) → use <AdditionalDependencies>
+                for (const auto& config_key : state.solution->get_config_keys()) {
+                    auto& deps = proj.configurations[config_key].link.additional_dependencies;
+                    deps.push_back(lib);
+                }
+            }
         }
     }
     // Compiler settings (apply to all configs)
     else if (key == "includes" || key == "include_dirs" || key == "additional_include_directories") {
         auto dirs = split(value, ',');
+        std::vector<std::string> resolved_dirs;
+        for (const auto& dir : dirs) {
+            resolved_dirs.push_back(resolve_path(dir, state.base_path));
+        }
         for (const auto& config_key : state.solution->get_config_keys()) {
             auto& includes = proj.configurations[config_key].cl_compile.additional_include_directories;
-            includes.insert(includes.end(), dirs.begin(), dirs.end());
+            includes.insert(includes.end(), resolved_dirs.begin(), resolved_dirs.end());
         }
     } else if (key == "defines" || key == "preprocessor" || key == "preprocessor_definitions") {
         auto defs = split(value, ',');
@@ -746,9 +810,21 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         }
     } else if (key == "libdirs" || key == "lib_dirs" || key == "additional_library_directories") {
         auto dirs = split(value, ',');
+        std::vector<std::string> resolved_dirs;
+        for (const auto& dir : dirs) {
+            resolved_dirs.push_back(resolve_path(dir, state.base_path));
+        }
         for (const auto& config_key : state.solution->get_config_keys()) {
             auto& libdirs = proj.configurations[config_key].link.additional_library_directories;
-            libdirs.insert(libdirs.end(), dirs.begin(), dirs.end());
+            libdirs.insert(libdirs.end(), resolved_dirs.begin(), resolved_dirs.end());
+        }
+    } else if (key == "libs") {
+        // Project-level libs should become Library elements
+        auto libs = split(value, ',');
+        for (const auto& lib_path : libs) {
+            LibraryFile lf;
+            lf.path = trim(lib_path);
+            proj.libraries.push_back(lf);
         }
     } else if (key == "link_libs" || key == "additional_dependencies") {
         auto libs = split(value, ',');
@@ -890,8 +966,12 @@ void BuildscriptParser::parse_file_setting(const std::string& file_path, const s
     
     if (setting == "includes" || setting == "include_dirs" || setting == "additional_include_directories") {
         auto dirs = split(value, ',');
+        std::vector<std::string> resolved_dirs;
+        for (const auto& dir : dirs) {
+            resolved_dirs.push_back(resolve_path(dir, state.base_path));
+        }
         auto& target = file->settings.additional_includes[config_key];
-        target.insert(target.end(), dirs.begin(), dirs.end());
+        target.insert(target.end(), resolved_dirs.begin(), resolved_dirs.end());
     } else if (setting == "defines" || setting == "preprocessor" || setting == "preprocessor_definitions") {
         auto defs = split(value, ',');
         auto& target = file->settings.preprocessor_defines[config_key];
@@ -959,6 +1039,7 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.cl_compile.preprocessor_definitions.insert(
             cfg.cl_compile.preprocessor_definitions.end(), defs.begin(), defs.end());
     } else if (key == "libs" || key == "additional_dependencies") {
+        // Config-level libs should go into AdditionalDependencies
         auto libs = split(value, ',');
         cfg.link.additional_dependencies.insert(
             cfg.link.additional_dependencies.end(), libs.begin(), libs.end());
@@ -966,8 +1047,14 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
         auto dirs = split(value, ',');
         cfg.link.additional_library_directories.insert(
             cfg.link.additional_library_directories.end(), dirs.begin(), dirs.end());
+    } else if (key == "ignore_libs" || key == "ignore_specific_default_libraries") {
+        auto libs = split(value, ',');
+        cfg.link.ignore_specific_default_libraries.insert(
+            cfg.link.ignore_specific_default_libraries.end(), libs.begin(), libs.end());
     } else if (key == "link_incremental") {
         cfg.link_incremental = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "whole_program_optimization" || key == "wpo" || key == "ltcg") {
+        cfg.whole_program_optimization = (value == "true" || value == "yes" || value == "1");
     } else if (key == "generate_debug_info") {
         cfg.link.generate_debug_info = (value == "true" || value == "yes" || value == "1");
     }
@@ -1086,6 +1173,14 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.pre_link_event.use_in_build = (value == "true" || value == "yes" || value == "1");
     } else if (key == "postbuild_use_in_build" || key == "post_build_event_use_in_build") {
         cfg.post_build_event.use_in_build = (value == "true" || value == "yes" || value == "1");
+    }
+    // PCH settings
+    else if (key == "pch" || key == "precompiled_header") {
+        cfg.cl_compile.pch.mode = value;
+    } else if (key == "pch_header" || key == "precompiled_header_file") {
+        cfg.cl_compile.pch.header = value;
+    } else if (key == "pch_output" || key == "precompiled_header_output_file") {
+        cfg.cl_compile.pch.output = value;
     }
     // Also support the same keys as project settings
     else {

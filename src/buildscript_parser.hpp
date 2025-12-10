@@ -1,6 +1,4 @@
 #pragma once
-#ifndef BUILDSCRIPT_PARSER_HPP
-#define BUILDSCRIPT_PARSER_HPP
 
 #include "project_types.hpp"
 #include <string>
@@ -25,6 +23,7 @@ private:
         Solution* solution = nullptr;
         Project* current_project = nullptr;
         SourceFile* current_file = nullptr;
+        std::string current_config;  // Track current [config:...] section
         std::string base_path;
         int line_number = 0;
         std::vector<std::string> included_files;  // Track included files to prevent circular includes
@@ -68,8 +67,9 @@ private:
 
     // Helper to process include directive
     void process_include(const std::string& include_path, ParseState& state);
+
+    // Helper to resolve a path relative to base_path and return absolute path
+    static std::string resolve_path(const std::string& path, const std::string& base_path);
 };
 
 } // namespace vcxproj
-
-#endif // BUILDSCRIPT_PARSER_HPP

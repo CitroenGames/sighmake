@@ -1,6 +1,4 @@
 #pragma once
-#ifndef VCXPROJ_READER_HPP
-#define VCXPROJ_READER_HPP
 
 #include "project_types.hpp"
 #include <string>
@@ -73,5 +71,3 @@ private:
 };
 
 } // namespace vcxproj
-
-#endif // VCXPROJ_READER_HPP
