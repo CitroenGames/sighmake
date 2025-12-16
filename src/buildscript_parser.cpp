@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <algorithm>
 #include <regex>
+#include <set>
 
 namespace fs = std::filesystem;
 
@@ -197,6 +198,9 @@ std::vector<std::string> BuildscriptParser::expand_wildcards(const std::string& 
 }
 
 std::string BuildscriptParser::resolve_path(const std::string& path, const std::string& base_path) {
+    // Check if original path has trailing slash/backslash
+    bool has_trailing_slash = !path.empty() && (path.back() == '/' || path.back() == '\\');
+
     // Resolve path relative to base_path to get absolute path
     fs::path abs_path;
     if (fs::path(path).is_absolute()) {
@@ -213,7 +217,14 @@ std::string BuildscriptParser::resolve_path(const std::string& path, const std::
         abs_path = fs::absolute(abs_path).lexically_normal();
     }
 
-    return abs_path.string();
+    std::string result = abs_path.string();
+
+    // Preserve trailing slash if original had one
+    if (has_trailing_slash && !result.empty() && result.back() != '\\' && result.back() != '/') {
+        result += '\\';
+    }
+
+    return result;
 }
 
 SourceFile* BuildscriptParser::find_or_create_source(const std::string& path, ParseState& state) {
@@ -340,6 +351,9 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 cfg.link.enable_comdat_folding = true;
                 cfg.link.optimize_references = true;
             }
+
+            // Don't automatically add library ignore lists - preserve what's in the buildscript
+            // Users can manually specify ignore_libs if needed
         }
     }
     
@@ -390,6 +404,8 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
         state.current_project->name = trim(section.substr(8));
         state.current_project->uuid = generate_uuid();
         state.current_project->root_namespace = state.current_project->name;
+        // Store the buildscript directory for path resolution in custom commands
+        state.current_project->buildscript_path = state.base_path;
         state.current_file = nullptr;
         state.current_config.clear();
         return true;
@@ -564,8 +580,14 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
     // Basic project settings
     if (key == "name") {
         proj.name = value;
+    } else if (key == "project_name") {
+        proj.project_name = value;
     } else if (key == "uuid" || key == "guid") {
         proj.uuid = value;
+    } else if (key == "root_namespace") {
+        proj.root_namespace = value;
+    } else if (key == "ignore_warn_duplicated_filename") {
+        proj.ignore_warn_compile_duplicated_filename = (value == "true" || value == "yes" || value == "1");
     } else if (key == "type") {
         std::string config_type;
         if (value == "exe" || value == "application" || value == "Application") {
@@ -606,11 +628,13 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             proj.configurations[config_key].target_ext = value;
         }
     } else if (key == "outdir" || key == "output_dir") {
+        // Resolve relative to buildscript location to get absolute path
         std::string resolved_dir = resolve_path(value, state.base_path);
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].out_dir = resolved_dir;
         }
     } else if (key == "intdir" || key == "intermediate_dir") {
+        // Resolve relative to buildscript location to get absolute path
         std::string resolved_dir = resolve_path(value, state.base_path);
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].int_dir = resolved_dir;
@@ -645,7 +669,8 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             // If the library has a path separator, it's a file path → use <Library> element
             if (lib.find('/') != std::string::npos || lib.find('\\') != std::string::npos) {
                 LibraryFile lf;
-                lf.path = resolve_path(lib, state.base_path);
+                // Don't normalize library paths - preserve exact case and format
+                lf.path = lib;
                 proj.libraries.push_back(lf);
             } else {
                 // System library (e.g., shell32.lib) → use <AdditionalDependencies>
@@ -666,6 +691,12 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         for (const auto& config_key : state.solution->get_config_keys()) {
             auto& includes = proj.configurations[config_key].cl_compile.additional_include_directories;
             includes.insert(includes.end(), resolved_dirs.begin(), resolved_dirs.end());
+        }
+    } else if (key == "forced_includes" || key == "forced_include_files") {
+        auto files = split(value, ',');
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            auto& forced = proj.configurations[config_key].cl_compile.forced_include_files;
+            forced.insert(forced.end(), files.begin(), files.end());
         }
     } else if (key == "defines" || key == "preprocessor" || key == "preprocessor_definitions") {
         auto defs = split(value, ',');
@@ -693,6 +724,30 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         for (const auto& config_key : state.solution->get_config_keys()) {
             auto& disabled = proj.configurations[config_key].cl_compile.disable_specific_warnings;
             disabled.insert(disabled.end(), warnings.begin(), warnings.end());
+        }
+    } else if (key == "error_reporting") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.error_reporting = value;
+        }
+    } else if (key == "assembler_listing" || key == "assembler_listing_location") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.assembler_listing_location = value;
+        }
+    } else if (key == "object_file_name") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.object_file_name = value;
+        }
+    } else if (key == "program_database_file" || key == "program_database_file_name") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.program_database_file_name = value;
+        }
+    } else if (key == "browse_information_file") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.browse_information_file = value;
+        }
+    } else if (key == "basic_runtime_checks") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.basic_runtime_checks = value;
         }
     } else if (key == "exception_handling" || key == "exceptions") {
         std::string eh_value = value;
@@ -786,6 +841,30 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.error_reporting = value;
         }
+    } else if (key == "treat_wchar_t_as_builtin" || key == "treat_wchar_t_as_built_in_type") {
+        bool val = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.treat_wchar_t_as_built_in_type = val;
+        }
+    } else if (key == "assembler_output") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.assembler_output = value;
+        }
+    } else if (key == "expand_attributed_source") {
+        bool val = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.expand_attributed_source = val;
+        }
+    } else if (key == "openmp" || key == "openmp_support") {
+        bool val = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.openmp_support = val;
+        }
+    } else if (key == "treat_warning_as_error") {
+        bool val = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.treat_warning_as_error = val;
+        }
     }
     // PCH settings
     else if (key == "pch" || key == "precompiled_header") {
@@ -875,6 +954,106 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         bool seh = (value == "true" || value == "yes" || value == "1");
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].link.image_has_safe_exception_handlers = seh;
+        }
+    } else if (key == "ldflags" || key == "linker_flags" || key == "link_additional_options") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            auto& opts = proj.configurations[config_key].link.additional_options;
+            if (!opts.empty()) opts += " ";
+            opts += value;
+        }
+    } else if (key == "suppress_startup_banner") {
+        bool suppress = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.suppress_startup_banner = suppress;
+        }
+    } else if (key == "show_progress") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.show_progress = value;
+        }
+    } else if (key == "entry_point" || key == "entry_point_symbol") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.entry_point_symbol = value;
+        }
+    } else if (key == "link_version" || key == "version") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.version = value;
+        }
+    } else if (key == "link_output_file") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.output_file = value;
+        }
+    } else if (key == "link_program_database_file" || key == "link_pdb") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.program_database_file = value;
+        }
+    } else if (key == "generate_map_file") {
+        bool val = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.generate_map_file = val;
+        }
+    } else if (key == "map_file_name") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.map_file_name = value;
+        }
+    } else if (key == "fixed_base_address") {
+        bool val = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.fixed_base_address = val;
+        }
+    } else if (key == "large_address_aware") {
+        bool val = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.large_address_aware = val;
+        }
+    }
+    // Librarian settings (for static libraries)
+    else if (key == "lib_output_file") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].lib.output_file = value;
+        }
+    } else if (key == "lib_suppress_startup_banner") {
+        bool ssb = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].lib.suppress_startup_banner = ssb;
+        }
+    } else if (key == "lib_use_unicode_response_files") {
+        bool unicode = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].lib.use_unicode_response_files = unicode;
+        }
+    } else if (key == "libflags" || key == "lib_options" || key == "lib_additional_options") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            auto& opts = proj.configurations[config_key].lib.additional_options;
+            if (!opts.empty()) opts += " ";
+            opts += value;
+        }
+    } else if (key == "lib_additional_dependencies" || key == "lib_deps") {
+        auto deps = split(value, ',');
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            auto& lib_deps = proj.configurations[config_key].lib.additional_dependencies;
+            lib_deps.insert(lib_deps.end(), deps.begin(), deps.end());
+        }
+    }
+    // ResourceCompile settings
+    else if (key == "rc_culture" || key == "resource_culture") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].resource_compile.culture = value;
+        }
+    } else if (key == "rc_defines" || key == "rc_preprocessor" || key == "resource_defines") {
+        auto defs = split(value, ',');
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            auto& defines = proj.configurations[config_key].resource_compile.preprocessor_definitions;
+            defines.insert(defines.end(), defs.begin(), defs.end());
+        }
+    } else if (key == "rc_includes" || key == "resource_includes") {
+        auto dirs = split(value, ',');
+        std::vector<std::string> resolved_dirs;
+        for (const auto& dir : dirs) {
+            resolved_dirs.push_back(resolve_path(dir, state.base_path));
+        }
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            auto& includes = proj.configurations[config_key].resource_compile.additional_include_directories;
+            includes.insert(includes.end(), resolved_dirs.begin(), resolved_dirs.end());
         }
     }
     // Configuration-level properties
@@ -997,7 +1176,8 @@ void BuildscriptParser::parse_file_setting(const std::string& file_path, const s
     // Custom build settings
     else if (setting == "custom_command" || setting == "command") {
         file->custom_command[config_key] = value;
-        if (file->type == FileType::ClCompile || file->type == FileType::ClInclude) {
+        // Any file with a custom command should be treated as CustomBuild
+        if (file->type != FileType::ResourceCompile) {
             file->type = FileType::CustomBuild;
         }
     } else if (setting == "custom_message" || setting == "message") {
@@ -1027,9 +1207,11 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
     } else if (key == "windows_sdk" || key == "windows_sdk_version" || key == "windows_target_platform_version") {
         cfg.windows_target_platform_version = value;
     } else if (key == "outdir" || key == "output_dir") {
-        cfg.out_dir = value;
+        // Resolve relative to buildscript location to get absolute path
+        cfg.out_dir = resolve_path(value, state.base_path);
     } else if (key == "intdir" || key == "intermediate_dir") {
-        cfg.int_dir = value;
+        // Resolve relative to buildscript location to get absolute path
+        cfg.int_dir = resolve_path(value, state.base_path);
     } else if (key == "includes" || key == "additional_include_directories") {
         auto dirs = split(value, ',');
         cfg.cl_compile.additional_include_directories.insert(
@@ -1095,6 +1277,16 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.cl_compile.compile_as = value;
     } else if (key == "error_reporting" || key == "compiler_error_reporting") {
         cfg.cl_compile.error_reporting = value;
+    } else if (key == "treat_wchar_t_as_builtin" || key == "treat_wchar_t_as_built_in_type") {
+        cfg.cl_compile.treat_wchar_t_as_built_in_type = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "assembler_output") {
+        cfg.cl_compile.assembler_output = value;
+    } else if (key == "expand_attributed_source") {
+        cfg.cl_compile.expand_attributed_source = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "openmp" || key == "openmp_support") {
+        cfg.cl_compile.openmp_support = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "treat_warning_as_error") {
+        cfg.cl_compile.treat_warning_as_error = (value == "true" || value == "yes" || value == "1");
     } else if (key == "exception_handling" || key == "exceptions") {
         std::string eh_value = value;
         if (value == "false" || value == "no" || value == "0") eh_value = "false";
@@ -1111,6 +1303,12 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.cl_compile.floating_point_model = value;
     } else if (key == "language_standard" || key == "std" || key == "cpp_standard") {
         cfg.cl_compile.language_standard = (value.find("stdcpp") == 0) ? value : ("stdcpp" + value);
+    } else if (key == "cflags" || key == "compiler_flags" || key == "additional_options") {
+        if (!cfg.cl_compile.additional_options.empty()) cfg.cl_compile.additional_options += " ";
+        cfg.cl_compile.additional_options += value;
+    } else if (key == "ldflags" || key == "linker_flags" || key == "link_additional_options") {
+        if (!cfg.link.additional_options.empty()) cfg.link.additional_options += " ";
+        cfg.link.additional_options += value;
     }
     // New linker settings
     else if (key == "show_progress" || key == "link_show_progress") {
@@ -1135,24 +1333,65 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.link.error_reporting = value;
     } else if (key == "image_has_safe_exception_handlers" || key == "safe_seh") {
         cfg.link.image_has_safe_exception_handlers = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "link_output_file" || key == "output_file") {
+        cfg.link.output_file = value;
+    } else if (key == "link_program_database_file" || key == "link_pdb" || key == "program_database_file") {
+        cfg.link.program_database_file = value;
+    } else if (key == "generate_map_file") {
+        cfg.link.generate_map_file = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "map_file_name") {
+        cfg.link.map_file_name = value;
+    }
+    // Librarian settings (for static libraries)
+    else if (key == "lib_output_file") {
+        cfg.lib.output_file = value;
+    } else if (key == "lib_suppress_startup_banner") {
+        cfg.lib.suppress_startup_banner = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "lib_use_unicode_response_files") {
+        cfg.lib.use_unicode_response_files = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "libflags" || key == "lib_options" || key == "lib_additional_options") {
+        if (!cfg.lib.additional_options.empty()) cfg.lib.additional_options += " ";
+        cfg.lib.additional_options += value;
     }
     // Configuration properties
     else if (key == "executable_path") {
         cfg.executable_path = value;
     } else if (key == "generate_manifest") {
         cfg.generate_manifest = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "ignore_import_library") {
+        cfg.ignore_import_library = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "import_library") {
+        cfg.import_library = value;
+    } else if (key == "target_name") {
+        cfg.target_name = value;
+    } else if (key == "target_ext" || key == "target_extension") {
+        cfg.target_ext = value;
     }
     // Resource compile settings
-    else if (key == "resource_defines" || key == "resource_preprocessor_definitions") {
+    else if (key == "resource_defines" || key == "resource_preprocessor_definitions" || key == "rc_defines" || key == "rc_preprocessor") {
         auto defs = split(value, ',');
         cfg.resource_compile.preprocessor_definitions.insert(
             cfg.resource_compile.preprocessor_definitions.end(), defs.begin(), defs.end());
-    } else if (key == "resource_culture") {
+    } else if (key == "resource_culture" || key == "rc_culture") {
         cfg.resource_compile.culture = value;
-    } else if (key == "resource_includes" || key == "resource_additional_include_directories") {
+    } else if (key == "resource_includes" || key == "resource_additional_include_directories" || key == "rc_includes") {
         auto dirs = split(value, ',');
         cfg.resource_compile.additional_include_directories.insert(
             cfg.resource_compile.additional_include_directories.end(), dirs.begin(), dirs.end());
+    }
+    // Xdcmake/Bscmake settings
+    else if (key == "xdcmake_suppress_startup_banner") {
+        cfg.xdcmake.suppress_startup_banner = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "bscmake_suppress_startup_banner") {
+        cfg.bscmake.suppress_startup_banner = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "bscmake_output_file") {
+        cfg.bscmake.output_file = value;
+    }
+    // Manifest settings
+    else if (key == "manifest_suppress_startup_banner") {
+        cfg.manifest.suppress_startup_banner = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "manifest_additional_files") {
+        cfg.manifest.additional_manifest_files = value;
     }
     // Build events
     else if (key == "prebuild" || key == "pre_build_event") {
@@ -1181,6 +1420,40 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.cl_compile.pch.header = value;
     } else if (key == "pch_output" || key == "precompiled_header_output_file") {
         cfg.cl_compile.pch.output = value;
+    } else if (key == "excluded_library") {
+        // Handle excluded_library[Config] = path
+        // This creates a Library element that is NOT excluded from this config
+        auto& proj = *state.current_project;
+        std::string lib_path = trim(value);
+
+        // Find or create this library entry
+        LibraryFile* found_lib = nullptr;
+        for (auto& lib : proj.libraries) {
+            if (lib.path == lib_path) {
+                found_lib = &lib;
+                break;
+            }
+        }
+
+        if (!found_lib) {
+            // Create new library entry, excluded from all configs except this one
+            LibraryFile lf;
+            lf.path = lib_path;
+            for (const auto& [other_config_key, other_cfg] : proj.configurations) {
+                if (other_config_key != config_key) {
+                    lf.excluded[other_config_key] = true;
+                }
+            }
+            proj.libraries.push_back(lf);
+        } else {
+            // Library already exists - just ensure this config is NOT excluded
+            // and all others ARE excluded
+            for (const auto& [other_config_key, other_cfg] : proj.configurations) {
+                if (other_config_key != config_key) {
+                    found_lib->excluded[other_config_key] = true;
+                }
+            }
+        }
     }
     // Also support the same keys as project settings
     else {

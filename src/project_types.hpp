@@ -69,6 +69,7 @@ struct ClCompileSettings {
     std::string favor_size_or_speed;                    // "Neither", "Speed", "Size"
     std::vector<std::string> additional_include_directories;
     std::vector<std::string> preprocessor_definitions;
+    std::vector<std::string> forced_include_files;          // ForcedIncludeFiles
     bool string_pooling = false;
     bool minimal_rebuild = false;
     std::string exception_handling;                     // "false", "Sync", "Async"
@@ -95,6 +96,11 @@ struct ClCompileSettings {
     std::string error_reporting;                        // "None", "Prompt", "Queue", "Send"
     std::string additional_options;
     std::string language_standard;                      // "stdcpp14", "stdcpp17", "stdcpp20"
+    bool treat_wchar_t_as_built_in_type = true;        // TreatWChar_tAsBuiltInType
+    std::string assembler_output;                       // "NoListing", "AssemblyCode", "All", etc.
+    bool expand_attributed_source = false;              // ExpandAttributedSource
+    bool openmp_support = false;                        // OpenMPSupport
+    bool treat_warning_as_error = false;                // TreatWarningAsError
 };
 
 // Linker settings
@@ -115,6 +121,21 @@ struct LinkSettings {
     std::string error_reporting;                        // "PromptImmediately", "QueueForNextLogin", "SendErrorReport", "NoErrorReport"
     bool image_has_safe_exception_handlers = false;
     std::string additional_options;
+    std::string entry_point_symbol;                     // Entry point for executables (e.g., "mainCRTStartup")
+    std::string version;                                // Version number (e.g., "1.1")
+    bool generate_map_file = false;                     // Generate .map file
+    std::string map_file_name;                          // Custom .map file path
+    bool fixed_base_address = false;                    // FixedBaseAddress
+    bool large_address_aware = false;                   // LargeAddressAware
+};
+
+// Librarian settings (for static library projects)
+struct LibrarianSettings {
+    std::string output_file;                            // Custom output .lib file path
+    bool suppress_startup_banner = false;
+    bool use_unicode_response_files = false;
+    std::string additional_options;
+    std::vector<std::string> additional_dependencies;   // Additional libs to embed (e.g., Rpcrt4.lib)
 };
 
 // Build event
@@ -134,6 +155,7 @@ struct ResourceCompileSettings {
 // Manifest tool settings
 struct ManifestSettings {
     bool suppress_startup_banner = false;
+    std::string additional_manifest_files;              // Additional manifest files to merge
 };
 
 // XML Documentation settings
@@ -164,9 +186,12 @@ struct Configuration {
     bool link_incremental = false;
     std::string executable_path;                        // Additional executable search paths
     bool generate_manifest = true;
+    bool ignore_import_library = false;                 // IgnoreImportLibrary for DLLs
+    std::string import_library;                         // Custom import library path
 
     ClCompileSettings cl_compile;
     LinkSettings link;
+    LibrarianSettings lib;
     ResourceCompileSettings resource_compile;
 
     BuildEvent pre_build_event;
@@ -181,10 +206,12 @@ struct Configuration {
 // Project
 struct Project {
     std::string name;
+    std::string project_name;                           // Custom display name (ProjectName in vcxproj)
     std::string uuid;
     std::string root_namespace;
     bool ignore_warn_compile_duplicated_filename = false;
     std::string vcxproj_path;                           // Original .vcxproj file path (for reverse conversion)
+    std::string buildscript_path;                       // Buildscript file path (for path resolution in custom commands)
 
     std::vector<SourceFile> sources;
     std::vector<LibraryFile> libraries;

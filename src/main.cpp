@@ -1,3 +1,4 @@
+#include "config.hpp"
 #include "buildscript_parser.hpp"
 #include "vcxproj_generator.hpp"
 #include "generator.hpp"
@@ -14,13 +15,11 @@ void print_usage(const char* program_name) {
     std::cout << "  " << program_name << " <buildscript> [options]\n";
     std::cout << "  " << program_name << " --convert <solution.sln> [options]\n\n";
     std::cout << "Options:\n";
-    std::cout << "  -b, --build <dir>      Output build directory (default: current directory)\n";
     std::cout << "  -g, --generator <type> Generator type (default: vcxproj)\n";
     std::cout << "  -c, --convert          Convert Visual Studio solution to buildscripts\n";
     std::cout << "  -l, --list             List available generators\n";
     std::cout << "  -h, --help             Show this help message\n\n";
     std::cout << "Examples:\n";
-    std::cout << "  " << program_name << " build.txt -b ./build -g vcxproj\n";
     std::cout << "  " << program_name << " --convert solution.sln\n";
 }
 
@@ -52,13 +51,6 @@ int main(int argc, char* argv[]) {
                 }
             }
             return 0;
-        } else if (strcmp(argv[i], "-b") == 0 || strcmp(argv[i], "--build") == 0) {
-            if (i + 1 < argc) {
-                output_dir = argv[++i];
-            } else {
-                std::cerr << "Error: -b requires an argument\n";
-                return 1;
-            }
         } else if (strcmp(argv[i], "-g") == 0 || strcmp(argv[i], "--generator") == 0) {
             if (i + 1 < argc) {
                 generator_type = argv[++i];

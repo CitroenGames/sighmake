@@ -1,3 +1,4 @@
+#include "config.hpp"
 #include "vcxproj_generator.hpp"
 #define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"
@@ -12,6 +13,47 @@
 namespace fs = std::filesystem;
 
 namespace vcxproj {
+
+// Helper to unescape escaped newlines in strings
+static std::string unescape_newlines(const std::string& str) {
+    std::string result;
+    result.reserve(str.length());
+
+    for (size_t i = 0; i < str.length(); ++i) {
+        if (i + 1 < str.length() && str[i] == '\\' && str[i + 1] == 'n') {
+            result += '\n';
+            ++i; // Skip the 'n'
+        } else {
+            result += str[i];
+        }
+    }
+
+    return result;
+}
+
+// Helper to check if a path looks like a file path (not a macro or argument)
+static bool looks_like_file_path(const std::string& token) {
+    // Skip MSBuild macros
+    if (token.find("$(") != std::string::npos || token.find("%(") != std::string::npos)
+        return false;
+    // Skip shell operators
+    if (token == ">" || token == "<" || token == "|" || token == "||" || token == "&&")
+        return false;
+    // Check if it has path separators or file extension
+    return (token.find('\\') != std::string::npos ||
+            token.find('/') != std::string::npos ||
+            (token.find('.') != std::string::npos && token.find(".exe") != std::string::npos) ||
+            (token.find('.') != std::string::npos && token.find(".pl") != std::string::npos) ||
+            (token.find('.') != std::string::npos && token.find(".py") != std::string::npos));
+}
+
+// Adjust relative file paths in a custom build command
+static std::string adjust_command_paths(const std::string& command,
+                                       const std::string& from_dir,
+                                       const std::string& to_dir) {
+    // Return command unchanged to preserve exact formatting, paths, and command structure
+    return command;
+}
 
 // Helper function to make a path relative to the output directory
 static std::string make_relative_path(const std::string& file_path, const std::string& base_path) {
@@ -89,83 +131,8 @@ std::string VcxprojGenerator::get_file_type_name(FileType type) {
     }
 }
 
-bool VcxprojGenerator::generate_vcxproj(const Project& proj_input, const Solution& solution,
+bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& solution,
                                          const std::string& output_path) {
-    // Create mutable copy to preprocess config-level libs into Library elements
-    Project project = proj_input;
-
-    // Analyze config-level additional_dependencies and convert library files to Library elements
-    // Collect all lib paths from all configs
-    std::map<std::string, std::map<std::string, std::string>> lib_basename_to_configs;  // basename -> {config -> full_path}
-
-    for (auto& [config_key, cfg] : project.configurations) {
-        std::vector<std::string> remaining_deps;
-
-        for (const auto& dep : cfg.link.additional_dependencies) {
-            // Check if this is a library file (has path separators)
-            if (dep.find('/') != std::string::npos || dep.find('\\') != std::string::npos) {
-                // Extract basename
-                std::filesystem::path p(dep);
-                std::string basename = p.filename().string();
-                lib_basename_to_configs[basename][config_key] = dep;
-            } else {
-                // System library - keep in additional_dependencies
-                remaining_deps.push_back(dep);
-            }
-        }
-
-        cfg.link.additional_dependencies = remaining_deps;
-    }
-
-    // Now create Library elements for libs that appear in multiple configs with different paths
-    for (const auto& [basename, config_paths] : lib_basename_to_configs) {
-        if (config_paths.size() > 1) {
-            // Multiple configs use this library - check if paths differ
-            std::set<std::string> unique_paths;
-            for (const auto& [cfg_key, path] : config_paths) {
-                unique_paths.insert(path);
-            }
-
-            if (unique_paths.size() > 1) {
-                // Different paths for different configs - create Library elements with ExcludedFromBuild
-                for (const auto& path : unique_paths) {
-                    LibraryFile lf;
-                    lf.path = path;
-
-                    // Mark as excluded for configs that don't use this path
-                    for (const auto& [cfg_key, cfg] : project.configurations) {
-                        auto it = config_paths.find(cfg_key);
-                        if (it == config_paths.end() || it->second != path) {
-                            lf.excluded[cfg_key] = true;
-                        }
-                    }
-
-                    project.libraries.push_back(lf);
-                }
-            } else {
-                // Same path in all configs - just add as Library without exclusions
-                LibraryFile lf;
-                lf.path = *unique_paths.begin();
-                project.libraries.push_back(lf);
-            }
-        } else {
-            // Only one config uses this - add as Library element excluded from other configs
-            for (const auto& [cfg_key, path] : config_paths) {
-                LibraryFile lf;
-                lf.path = path;
-
-                // Mark as excluded for all other configs
-                for (const auto& [other_cfg_key, other_cfg] : project.configurations) {
-                    if (other_cfg_key != cfg_key) {
-                        lf.excluded[other_cfg_key] = true;
-                    }
-                }
-
-                project.libraries.push_back(lf);
-            }
-        }
-    }
-
     pugi::xml_document doc;
 
     // XML declaration
@@ -193,7 +160,9 @@ bool VcxprojGenerator::generate_vcxproj(const Project& proj_input, const Solutio
     // Globals
     auto globals = root.append_child("PropertyGroup");
     globals.append_attribute("Label") = "Globals";
-    globals.append_child("ProjectName").text() = project.name.c_str();
+    // Use project_name if available, otherwise use name
+    std::string display_name = !project.project_name.empty() ? project.project_name : project.name;
+    globals.append_child("ProjectName").text() = display_name.c_str();
     globals.append_child("ProjectGuid").text() = ("{" + project.uuid + "}").c_str();
     if (!project.root_namespace.empty()) {
         globals.append_child("RootNamespace").text() = project.root_namespace.c_str();
@@ -267,22 +236,50 @@ bool VcxprojGenerator::generate_vcxproj(const Project& proj_input, const Solutio
         std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
 
         if (!cfg.out_dir.empty()) {
+            // Validate that out_dir is an absolute path (as expected from buildscript_parser)
+            try {
+                fs::path out_path(cfg.out_dir);
+                if (!out_path.is_absolute()) {
+                    std::cerr << "Warning: OutDir '" << cfg.out_dir
+                             << "' is not absolute for configuration " << config_key
+                             << " in project " << project.name << "\n";
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Error: Invalid OutDir path '" << cfg.out_dir
+                         << "' for configuration " << config_key
+                         << " in project " << project.name << ": " << e.what() << "\n";
+                return false;
+            }
+
             auto node = props.append_child("OutDir");
             node.append_attribute("Condition") = condition.c_str();
+            // Make relative to vcxproj output location
             std::string relative_out = make_relative_path(cfg.out_dir, output_path);
             node.text() = relative_out.c_str();
         }
         if (!cfg.int_dir.empty()) {
+            // Validate that int_dir is an absolute path (as expected from buildscript_parser)
+            try {
+                fs::path int_path(cfg.int_dir);
+                if (!int_path.is_absolute()) {
+                    std::cerr << "Warning: IntDir '" << cfg.int_dir
+                             << "' is not absolute for configuration " << config_key
+                             << " in project " << project.name << "\n";
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Error: Invalid IntDir path '" << cfg.int_dir
+                         << "' for configuration " << config_key
+                         << " in project " << project.name << ": " << e.what() << "\n";
+                return false;
+            }
+
             auto node = props.append_child("IntDir");
             node.append_attribute("Condition") = condition.c_str();
+            // Make relative to vcxproj output location
             std::string relative_int = make_relative_path(cfg.int_dir, output_path);
             node.text() = relative_int.c_str();
         }
-        if (!cfg.target_name.empty()) {
-            auto node = props.append_child("TargetName");
-            node.append_attribute("Condition") = condition.c_str();
-            node.text() = cfg.target_name.c_str();
-        }
+        // Note: TargetName is written in the Configuration PropertyGroup, not here
         if (!cfg.target_ext.empty()) {
             auto node = props.append_child("TargetExt");
             node.append_attribute("Condition") = condition.c_str();
@@ -313,6 +310,20 @@ bool VcxprojGenerator::generate_vcxproj(const Project& proj_input, const Solutio
             auto gen_manifest = props.append_child("GenerateManifest");
             gen_manifest.append_attribute("Condition") = condition.c_str();
             gen_manifest.text() = "false";
+        }
+
+        // IgnoreImportLibrary
+        if (cfg.ignore_import_library) {
+            auto ignore_lib = props.append_child("IgnoreImportLibrary");
+            ignore_lib.append_attribute("Condition") = condition.c_str();
+            ignore_lib.text() = "true";
+        }
+
+        // ImportLibrary
+        if (!cfg.import_library.empty()) {
+            auto import_lib = props.append_child("ImportLibrary");
+            import_lib.append_attribute("Condition") = condition.c_str();
+            import_lib.text() = cfg.import_library.c_str();
         }
 
         // Build event use in build flags - always write them
@@ -355,6 +366,9 @@ bool VcxprojGenerator::generate_vcxproj(const Project& proj_input, const Solutio
         if (!cfg.cl_compile.preprocessor_definitions.empty())
             cl.append_child("PreprocessorDefinitions").text() =
                 join_vector(cfg.cl_compile.preprocessor_definitions, ";").c_str();
+        if (!cfg.cl_compile.forced_include_files.empty())
+            cl.append_child("ForcedIncludeFiles").text() =
+                join_vector(cfg.cl_compile.forced_include_files, ";").c_str();
         if (!cfg.cl_compile.runtime_library.empty())
             cl.append_child("RuntimeLibrary").text() = cfg.cl_compile.runtime_library.c_str();
         if (!cfg.cl_compile.debug_information_format.empty())
@@ -418,17 +432,27 @@ bool VcxprojGenerator::generate_vcxproj(const Project& proj_input, const Solutio
             cl.append_child("CompileAs").text() = cfg.cl_compile.compile_as.c_str();
         if (!cfg.cl_compile.error_reporting.empty())
             cl.append_child("ErrorReporting").text() = cfg.cl_compile.error_reporting.c_str();
+        if (!cfg.cl_compile.treat_wchar_t_as_built_in_type)
+            cl.append_child("TreatWChar_tAsBuiltInType").text() = "false";
+        if (!cfg.cl_compile.assembler_output.empty())
+            cl.append_child("AssemblerOutput").text() = cfg.cl_compile.assembler_output.c_str();
+        if (cfg.cl_compile.expand_attributed_source)
+            cl.append_child("ExpandAttributedSource").text() = "true";
+        if (cfg.cl_compile.openmp_support)
+            cl.append_child("OpenMPSupport").text() = "true";
+        if (cfg.cl_compile.treat_warning_as_error)
+            cl.append_child("TreatWarningAsError").text() = "true";
 
         // PCH - always write, defaulting to NotUsing
         std::string pch_mode = cfg.cl_compile.pch.mode.empty() ? "NotUsing" : cfg.cl_compile.pch.mode;
         cl.append_child("PrecompiledHeader").text() = pch_mode.c_str();
-        // Only write header/output if mode is not "NotUsing"
-        if (pch_mode != "NotUsing") {
-            if (!cfg.cl_compile.pch.header.empty())
-                cl.append_child("PrecompiledHeaderFile").text() = cfg.cl_compile.pch.header.c_str();
-            if (!cfg.cl_compile.pch.output.empty())
-                cl.append_child("PrecompiledHeaderOutputFile").text() = cfg.cl_compile.pch.output.c_str();
-        }
+        // Always write PrecompiledHeaderFile if specified, even if mode is "NotUsing"
+        // This is needed for files that have Create mode - they inherit this header
+        if (!cfg.cl_compile.pch.header.empty())
+            cl.append_child("PrecompiledHeaderFile").text() = cfg.cl_compile.pch.header.c_str();
+        // Only write PrecompiledHeaderOutputFile if mode is not "NotUsing"
+        if (pch_mode != "NotUsing" && !cfg.cl_compile.pch.output.empty())
+            cl.append_child("PrecompiledHeaderOutputFile").text() = cfg.cl_compile.pch.output.c_str();
 
         // Link settings
         auto link = item_def.append_child("Link");
@@ -480,14 +504,41 @@ bool VcxprojGenerator::generate_vcxproj(const Project& proj_input, const Solutio
             link.append_child("SuppressStartupBanner").text() = "true";
         if (!cfg.link.program_database_file.empty())
             link.append_child("ProgramDatabaseFile").text() = cfg.link.program_database_file.c_str();
+        if (cfg.link.generate_map_file)
+            link.append_child("GenerateMapFile").text() = "true";
+        if (!cfg.link.map_file_name.empty())
+            link.append_child("MapFileName").text() = cfg.link.map_file_name.c_str();
+        if (cfg.link.fixed_base_address)
+            link.append_child("FixedBaseAddress").text() = "true";
+        if (cfg.link.large_address_aware)
+            link.append_child("LargeAddressAware").text() = "true";
         if (!cfg.link.base_address.empty())
             link.append_child("BaseAddress").text() = cfg.link.base_address.c_str();
         if (!cfg.link.target_machine.empty())
             link.append_child("TargetMachine").text() = cfg.link.target_machine.c_str();
         if (!cfg.link.error_reporting.empty())
             link.append_child("LinkErrorReporting").text() = cfg.link.error_reporting.c_str();
-        if (cfg.link.image_has_safe_exception_handlers)
-            link.append_child("ImageHasSafeExceptionHandlers").text() = "true";
+        if (!cfg.link.entry_point_symbol.empty())
+            link.append_child("EntryPointSymbol").text() = cfg.link.entry_point_symbol.c_str();
+        if (!cfg.link.version.empty())
+            link.append_child("Version").text() = cfg.link.version.c_str();
+        // Always write ImageHasSafeExceptionHandlers to avoid linker errors with libs that lack safe exception handlers
+        link.append_child("ImageHasSafeExceptionHandlers").text() = cfg.link.image_has_safe_exception_handlers ? "true" : "false";
+
+        // Lib settings (for static libraries)
+        if (cfg.config_type == "StaticLibrary") {
+            auto lib = item_def.append_child("Lib");
+            if (cfg.lib.use_unicode_response_files)
+                lib.append_child("UseUnicodeResponseFiles").text() = "true";
+            if (!cfg.lib.additional_dependencies.empty())
+                lib.append_child("AdditionalDependencies").text() = join_vector(cfg.lib.additional_dependencies, ";").c_str();
+            if (!cfg.lib.output_file.empty())
+                lib.append_child("OutputFile").text() = cfg.lib.output_file.c_str();
+            if (cfg.lib.suppress_startup_banner)
+                lib.append_child("SuppressStartupBanner").text() = "true";
+            if (!cfg.lib.additional_options.empty())
+                lib.append_child("AdditionalOptions").text() = cfg.lib.additional_options.c_str();
+        }
 
         // ResourceCompile settings
         if (!cfg.resource_compile.preprocessor_definitions.empty() ||
@@ -509,6 +560,9 @@ bool VcxprojGenerator::generate_vcxproj(const Project& proj_input, const Solutio
         if (cfg.manifest.suppress_startup_banner) {
             manifest.append_child("SuppressStartupBanner").text() = "true";
         }
+        if (!cfg.manifest.additional_manifest_files.empty()) {
+            manifest.append_child("AdditionalManifestFiles").text() = cfg.manifest.additional_manifest_files.c_str();
+        }
 
         // Xdcmake settings - always write
         auto xdcmake = item_def.append_child("Xdcmake");
@@ -523,15 +577,22 @@ bool VcxprojGenerator::generate_vcxproj(const Project& proj_input, const Solutio
         if (!cfg.bscmake.output_file.empty())
             bscmake.append_child("OutputFile").text() = cfg.bscmake.output_file.c_str();
 
-        // Build events
+        // Build events (don't call unescape_newlines - commands already have real newlines from buildscript_parser)
         if (!cfg.pre_build_event.command.empty()) {
             auto pre_build = item_def.append_child("PreBuildEvent");
             pre_build.append_child("Command").text() = cfg.pre_build_event.command.c_str();
             if (!cfg.pre_build_event.message.empty())
                 pre_build.append_child("Message").text() = cfg.pre_build_event.message.c_str();
         }
-        // Always add empty PreLinkEvent
-        item_def.append_child("PreLinkEvent");
+        if (!cfg.pre_link_event.command.empty()) {
+            auto pre_link = item_def.append_child("PreLinkEvent");
+            pre_link.append_child("Command").text() = cfg.pre_link_event.command.c_str();
+            if (!cfg.pre_link_event.message.empty())
+                pre_link.append_child("Message").text() = cfg.pre_link_event.message.c_str();
+        } else {
+            // Add empty PreLinkEvent if no command
+            item_def.append_child("PreLinkEvent");
+        }
         if (!cfg.post_build_event.command.empty()) {
             auto post_build = item_def.append_child("PostBuildEvent");
             post_build.append_child("Command").text() = cfg.post_build_event.command.c_str();
@@ -623,6 +684,11 @@ bool VcxprojGenerator::generate_vcxproj(const Project& proj_input, const Solutio
                         node.text() = pch.mode.c_str();
                     }
 
+                    // If the file is not using PCH, don't write header or output file
+                    if (pch.mode == "NotUsing") {
+                        continue;
+                    }
+
                     // Use file-level header if specified, otherwise inherit from project-level
                     // (but only if project-level is not "NotUsing")
                     std::string header_to_use = pch.header;
@@ -635,19 +701,14 @@ bool VcxprojGenerator::generate_vcxproj(const Project& proj_input, const Solutio
                         }
                     }
 
-                    // Auto-generate output path if not specified
-                    if (output_to_use.empty() && !header_to_use.empty()) {
-                        // Convert audio_pch.h -> audio_pch.pch
-                        fs::path header_path(header_to_use);
-                        std::string pch_name = header_path.stem().string() + ".pch";
-                        output_to_use = "$(IntDir)/" + pch_name;
-                    }
-
+                    // Only write PrecompiledHeaderFile if it was explicitly specified
                     if (!header_to_use.empty()) {
                         auto node = file_elem.append_child("PrecompiledHeaderFile");
                         node.append_attribute("Condition") = condition.c_str();
                         node.text() = header_to_use.c_str();
                     }
+                    // Only write PrecompiledHeaderOutputFile if it was explicitly specified
+                    // Don't auto-generate - let MSBuild use its defaults
                     if (!output_to_use.empty()) {
                         auto node = file_elem.append_child("PrecompiledHeaderOutputFile");
                         node.append_attribute("Condition") = condition.c_str();
@@ -668,20 +729,31 @@ bool VcxprojGenerator::generate_vcxproj(const Project& proj_input, const Solutio
 
             // Custom build tool
             if (type == FileType::CustomBuild) {
+                // Get directories for path adjustment
+                std::string from_dir = project.buildscript_path.empty() ?
+                    fs::absolute(output_path).parent_path().string() :
+                    project.buildscript_path;
+                std::string to_dir = fs::absolute(output_path).parent_path().string();
+
                 for (const auto& [config_key, command] : src->custom_command) {
                     std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
                     if (!command.empty()) {
+                        // Unescape newlines first (from buildscript's \n to actual newlines)
+                        std::string unescaped_command = unescape_newlines(command);
+                        // Adjust paths in the command from buildscript location to vcxproj location
+                        std::string adjusted_command = adjust_command_paths(unescaped_command, from_dir, to_dir);
                         auto node = file_elem.append_child("Command");
                         node.append_attribute("Condition") = condition.c_str();
-                        node.text() = command.c_str();
+                        node.text() = adjusted_command.c_str();
                     }
                 }
                 for (const auto& [config_key, message] : src->custom_message) {
                     std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
                     if (!message.empty()) {
+                        std::string unescaped_message = unescape_newlines(message);
                         auto node = file_elem.append_child("Message");
                         node.append_attribute("Condition") = condition.c_str();
-                        node.text() = message.c_str();
+                        node.text() = unescaped_message.c_str();
                     }
                 }
                 for (const auto& [config_key, outputs] : src->custom_outputs) {
@@ -690,6 +762,14 @@ bool VcxprojGenerator::generate_vcxproj(const Project& proj_input, const Solutio
                         auto node = file_elem.append_child("Outputs");
                         node.append_attribute("Condition") = condition.c_str();
                         node.text() = outputs.c_str();
+                    }
+                }
+                for (const auto& [config_key, inputs] : src->custom_inputs) {
+                    std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
+                    if (!inputs.empty()) {
+                        auto node = file_elem.append_child("AdditionalInputs");
+                        node.append_attribute("Condition") = condition.c_str();
+                        node.text() = inputs.c_str();
                     }
                 }
             }
@@ -773,11 +853,51 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
     file << "VisualStudioVersion = 17.0.31903.59\n";
     file << "MinimumVisualStudioVersion = 10.0.40219.1\n";
 
+    // Build a map from project name to UUID for dependency resolution
+    std::map<std::string, std::string> name_to_uuid;
+    for (const auto& proj : solution.projects) {
+        name_to_uuid[proj.name] = proj.uuid;
+    }
+
     // Projects
     for (const auto& proj : solution.projects) {
+#if PROJ_SEPERATOR
+        // Compute relative path to vcxproj
+        std::string vcxproj_path;
+        if (!proj.buildscript_path.empty()) {
+            // vcxproj is at buildscript_path/name_.vcxproj
+            fs::path proj_path = fs::path(proj.buildscript_path) / (proj.name + "_.vcxproj");
+            fs::path sln_path(output_path);
+            try {
+                vcxproj_path = fs::relative(proj_path, sln_path.parent_path()).string();
+                // Convert to backslashes for Windows
+                std::replace(vcxproj_path.begin(), vcxproj_path.end(), '/', '\\');
+            } catch (...) {
+                vcxproj_path = proj.name + "_.vcxproj";
+            }
+        } else {
+            vcxproj_path = proj.name + "_.vcxproj";
+        }
+#else
+        std::string vcxproj_path = proj.name + ".vcxproj";
+#endif
         file << "Project(\"{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}\") = \""
-             << proj.name << "\", \"" << proj.name << ".vcxproj\", \"{"
+             << proj.name << "\", \"" << vcxproj_path << "\", \"{"
              << proj.uuid << "}\"\n";
+
+        // Write ProjectSection(ProjectDependencies) if the project has dependencies
+        if (!proj.project_references.empty()) {
+            file << "\tProjectSection(ProjectDependencies) = postProject\n";
+            for (const auto& dep_name : proj.project_references) {
+                // Look up the UUID for the dependency
+                if (name_to_uuid.count(dep_name)) {
+                    std::string dep_uuid = name_to_uuid[dep_name];
+                    file << "\t\t{" << dep_uuid << "} = {" << dep_uuid << "}\n";
+                }
+            }
+            file << "\tEndProjectSection\n";
+        }
+
         file << "EndProject\n";
     }
 
@@ -833,7 +953,25 @@ bool VcxprojGenerator::generate(const Solution& solution, const std::string& out
 
     // Generate project files
     for (const auto& project : solution.projects) {
-        fs::path vcxproj_path = fs::path(output_dir) / (project.name + ".vcxproj");
+        fs::path vcxproj_path;
+
+#if PROJ_SEPERATOR
+        // Generate at buildscript location with underscore suffix
+        std::string filename = project.name + "_" + ".vcxproj";
+        if (!project.buildscript_path.empty()) {
+            vcxproj_path = fs::path(project.buildscript_path) / filename;
+        } else {
+            vcxproj_path = fs::path(output_dir) / filename;
+        }
+#else
+        // Generate without underscore at buildscript location
+        std::string filename = project.name + ".vcxproj";
+        if (!project.buildscript_path.empty()) {
+            vcxproj_path = fs::path(project.buildscript_path) / filename;
+        } else {
+            vcxproj_path = fs::path(output_dir) / filename;
+        }
+#endif
 
         if (!generate_vcxproj(project, solution, vcxproj_path.string())) {
             std::cerr << "Error: Failed to generate " << vcxproj_path << "\n";
@@ -844,7 +982,14 @@ bool VcxprojGenerator::generate(const Solution& solution, const std::string& out
     // Generate solution file
     if (!solution.projects.empty()) {
         std::string sln_name = solution.name.empty() ? solution.projects[0].name : solution.name;
+
+#if PROJ_SEPERATOR
+        // Generate with underscore suffix
+        fs::path sln_path = fs::path(output_dir) / (sln_name + "_.sln");
+#else
+        // Generate without underscore
         fs::path sln_path = fs::path(output_dir) / (sln_name + ".sln");
+#endif
 
         if (!generate_sln(solution, sln_path.string())) {
             std::cerr << "Error: Failed to generate " << sln_path << "\n";

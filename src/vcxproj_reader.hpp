@@ -38,6 +38,7 @@ private:
     };
 
     std::vector<SlnProject> parse_projects(const std::string& content);
+    std::map<std::string, std::vector<std::string>> parse_project_dependencies(const std::string& content);
 };
 
 // Converter to generate .buildscript from Solution/Project
