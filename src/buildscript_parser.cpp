@@ -661,6 +661,14 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
                 if (file) file->type = FileType::ClInclude;
             }
         }
+    } else if (key == "resources" || key == "resource_files") {
+        for (const auto& src : split(value, ',')) {
+            auto expanded = expand_wildcards(src, state.base_path);
+            for (const auto& path : expanded) {
+                auto* file = find_or_create_source(path, state);
+                if (file) file->type = FileType::ResourceCompile;
+            }
+        }
     } else if (key == "libs" || key == "libraries") {
         auto libs = split(value, ',');
 
