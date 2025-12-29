@@ -623,107 +623,189 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             // File-specific settings
             for (const auto& [config_key, excluded] : src->settings.excluded) {
                 if (excluded) {
-                    std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
-                    auto node = file_elem.append_child("ExcludedFromBuild");
-                    node.append_attribute("Condition") = condition.c_str();
-                    node.text() = "true";
+                    // If config_key is "*" (ALL_CONFIGS), expand to all configurations
+                    if (config_key == ALL_CONFIGS) {
+                        for (const auto& [cfg_name, cfg] : project.configurations) {
+                            std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg_name + "'";
+                            auto node = file_elem.append_child("ExcludedFromBuild");
+                            node.append_attribute("Condition") = condition.c_str();
+                            node.text() = "true";
+                        }
+                    } else {
+                        std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
+                        auto node = file_elem.append_child("ExcludedFromBuild");
+                        node.append_attribute("Condition") = condition.c_str();
+                        node.text() = "true";
+                    }
                 }
             }
 
             for (const auto& [config_key, obj_file] : src->settings.object_file) {
                 if (!obj_file.empty()) {
-                    std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
-                    auto node = file_elem.append_child("ObjectFileName");
-                    node.append_attribute("Condition") = condition.c_str();
-                    node.text() = obj_file.c_str();
+                    // Expand ALL_CONFIGS wildcard to individual configs
+                    std::vector<std::string> configs_to_write;
+                    if (config_key == ALL_CONFIGS) {
+                        for (const auto& [cfg_name, cfg] : project.configurations) {
+                            configs_to_write.push_back(cfg_name);
+                        }
+                    } else {
+                        configs_to_write.push_back(config_key);
+                    }
+
+                    for (const auto& cfg : configs_to_write) {
+                        std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg + "'";
+                        auto node = file_elem.append_child("ObjectFileName");
+                        node.append_attribute("Condition") = condition.c_str();
+                        node.text() = obj_file.c_str();
+                    }
                 }
             }
 
             // Per-file, per-config AdditionalIncludeDirectories
             for (const auto& [config_key, includes] : src->settings.additional_includes) {
-                if (!includes.empty() && config_key != ALL_CONFIGS) {
-                    std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
-                    auto node = file_elem.append_child("AdditionalIncludeDirectories");
-                    node.append_attribute("Condition") = condition.c_str();
-                    // Make include directories relative to the output path
-                    std::vector<std::string> relative_includes;
-                    for (const auto& inc : includes) {
-                        relative_includes.push_back(make_relative_path(inc, output_path));
+                if (!includes.empty()) {
+                    // Expand ALL_CONFIGS wildcard to individual configs
+                    std::vector<std::string> configs_to_write;
+                    if (config_key == ALL_CONFIGS) {
+                        for (const auto& [cfg_name, cfg] : project.configurations) {
+                            configs_to_write.push_back(cfg_name);
+                        }
+                    } else {
+                        configs_to_write.push_back(config_key);
                     }
-                    node.text() = join_vector(relative_includes, ";").c_str();
+
+                    for (const auto& cfg : configs_to_write) {
+                        std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg + "'";
+                        auto node = file_elem.append_child("AdditionalIncludeDirectories");
+                        node.append_attribute("Condition") = condition.c_str();
+                        // Make include directories relative to the output path
+                        std::vector<std::string> relative_includes;
+                        for (const auto& inc : includes) {
+                            relative_includes.push_back(make_relative_path(inc, output_path));
+                        }
+                        node.text() = join_vector(relative_includes, ";").c_str();
+                    }
                 }
             }
 
             // Per-file, per-config PreprocessorDefinitions
             for (const auto& [config_key, defines] : src->settings.preprocessor_defines) {
-                if (!defines.empty() && config_key != ALL_CONFIGS) {
-                    std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
-                    auto node = file_elem.append_child("PreprocessorDefinitions");
-                    node.append_attribute("Condition") = condition.c_str();
-                    node.text() = join_vector(defines, ";").c_str();
+                if (!defines.empty()) {
+                    // Expand ALL_CONFIGS wildcard to individual configs
+                    std::vector<std::string> configs_to_write;
+                    if (config_key == ALL_CONFIGS) {
+                        for (const auto& [cfg_name, cfg] : project.configurations) {
+                            configs_to_write.push_back(cfg_name);
+                        }
+                    } else {
+                        configs_to_write.push_back(config_key);
+                    }
+
+                    for (const auto& cfg : configs_to_write) {
+                        std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg + "'";
+                        auto node = file_elem.append_child("PreprocessorDefinitions");
+                        node.append_attribute("Condition") = condition.c_str();
+                        node.text() = join_vector(defines, ";").c_str();
+                    }
                 }
             }
 
             // Per-file, per-config AdditionalOptions
             for (const auto& [config_key, options] : src->settings.additional_options) {
-                if (!options.empty() && config_key != ALL_CONFIGS) {
-                    std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
-                    auto node = file_elem.append_child("AdditionalOptions");
-                    node.append_attribute("Condition") = condition.c_str();
-                    node.text() = join_vector(options, " ").c_str();
+                if (!options.empty()) {
+                    // Expand ALL_CONFIGS wildcard to individual configs
+                    std::vector<std::string> configs_to_write;
+                    if (config_key == ALL_CONFIGS) {
+                        for (const auto& [cfg_name, cfg] : project.configurations) {
+                            configs_to_write.push_back(cfg_name);
+                        }
+                    } else {
+                        configs_to_write.push_back(config_key);
+                    }
+
+                    for (const auto& cfg : configs_to_write) {
+                        std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg + "'";
+                        auto node = file_elem.append_child("AdditionalOptions");
+                        node.append_attribute("Condition") = condition.c_str();
+                        node.text() = join_vector(options, " ").c_str();
+                    }
                 }
             }
 
             // Per-file, per-config PrecompiledHeader settings
             for (const auto& [config_key, pch] : src->settings.pch) {
-                if (!pch.mode.empty() && config_key != ALL_CONFIGS) {
-                    std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
-                    if (!pch.mode.empty()) {
-                        auto node = file_elem.append_child("PrecompiledHeader");
-                        node.append_attribute("Condition") = condition.c_str();
-                        node.text() = pch.mode.c_str();
-                    }
-
-                    // If the file is not using PCH, don't write header or output file
-                    if (pch.mode == "NotUsing") {
-                        continue;
-                    }
-
-                    // Use file-level header if specified, otherwise inherit from project-level
-                    // (but only if project-level is not "NotUsing")
-                    std::string header_to_use = pch.header;
-                    std::string output_to_use = pch.output;
-                    if (header_to_use.empty() && project.configurations.count(config_key)) {
-                        auto& proj_pch = project.configurations.at(config_key).cl_compile.pch;
-                        if (proj_pch.mode != "NotUsing") {
-                            header_to_use = proj_pch.header;
-                            output_to_use = proj_pch.output;
+                if (!pch.mode.empty()) {
+                    // Expand ALL_CONFIGS wildcard to individual configs
+                    std::vector<std::string> configs_to_write;
+                    if (config_key == ALL_CONFIGS) {
+                        for (const auto& [cfg_name, cfg] : project.configurations) {
+                            configs_to_write.push_back(cfg_name);
                         }
+                    } else {
+                        configs_to_write.push_back(config_key);
                     }
 
-                    // Only write PrecompiledHeaderFile if it was explicitly specified
-                    if (!header_to_use.empty()) {
-                        auto node = file_elem.append_child("PrecompiledHeaderFile");
-                        node.append_attribute("Condition") = condition.c_str();
-                        node.text() = header_to_use.c_str();
-                    }
-                    // Only write PrecompiledHeaderOutputFile if it was explicitly specified
-                    // Don't auto-generate - let MSBuild use its defaults
-                    if (!output_to_use.empty()) {
-                        auto node = file_elem.append_child("PrecompiledHeaderOutputFile");
-                        node.append_attribute("Condition") = condition.c_str();
-                        node.text() = output_to_use.c_str();
+                    for (const auto& cfg : configs_to_write) {
+                        std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg + "'";
+                        if (!pch.mode.empty()) {
+                            auto node = file_elem.append_child("PrecompiledHeader");
+                            node.append_attribute("Condition") = condition.c_str();
+                            node.text() = pch.mode.c_str();
+                        }
+
+                        // If the file is not using PCH, don't write header or output file
+                        if (pch.mode == "NotUsing") {
+                            continue;
+                        }
+
+                        // Use file-level header if specified, otherwise inherit from project-level
+                        // (but only if project-level is not "NotUsing")
+                        std::string header_to_use = pch.header;
+                        std::string output_to_use = pch.output;
+                        if (header_to_use.empty() && project.configurations.count(cfg)) {
+                            auto& proj_pch = project.configurations.at(cfg).cl_compile.pch;
+                            if (proj_pch.mode != "NotUsing") {
+                                header_to_use = proj_pch.header;
+                                output_to_use = proj_pch.output;
+                            }
+                        }
+
+                        // Only write PrecompiledHeaderFile if it was explicitly specified
+                        if (!header_to_use.empty()) {
+                            auto node = file_elem.append_child("PrecompiledHeaderFile");
+                            node.append_attribute("Condition") = condition.c_str();
+                            node.text() = header_to_use.c_str();
+                        }
+                        // Only write PrecompiledHeaderOutputFile if it was explicitly specified
+                        // Don't auto-generate - let MSBuild use its defaults
+                        if (!output_to_use.empty()) {
+                            auto node = file_elem.append_child("PrecompiledHeaderOutputFile");
+                            node.append_attribute("Condition") = condition.c_str();
+                            node.text() = output_to_use.c_str();
+                        }
                     }
                 }
             }
 
             // Per-file, per-config CompileAs
             for (const auto& [config_key, compile_as] : src->settings.compile_as) {
-                if (!compile_as.empty() && config_key != ALL_CONFIGS) {
-                    std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
-                    auto node = file_elem.append_child("CompileAs");
-                    node.append_attribute("Condition") = condition.c_str();
-                    node.text() = compile_as.c_str();
+                if (!compile_as.empty()) {
+                    // Expand ALL_CONFIGS wildcard to individual configs
+                    std::vector<std::string> configs_to_write;
+                    if (config_key == ALL_CONFIGS) {
+                        for (const auto& [cfg_name, cfg] : project.configurations) {
+                            configs_to_write.push_back(cfg_name);
+                        }
+                    } else {
+                        configs_to_write.push_back(config_key);
+                    }
+
+                    for (const auto& cfg : configs_to_write) {
+                        std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg + "'";
+                        auto node = file_elem.append_child("CompileAs");
+                        node.append_attribute("Condition") = condition.c_str();
+                        node.text() = compile_as.c_str();
+                    }
                 }
             }
 
@@ -736,40 +818,88 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                 std::string to_dir = fs::absolute(output_path).parent_path().string();
 
                 for (const auto& [config_key, command] : src->custom_command) {
-                    std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
                     if (!command.empty()) {
-                        // Unescape newlines first (from buildscript's \n to actual newlines)
-                        std::string unescaped_command = unescape_newlines(command);
-                        // Adjust paths in the command from buildscript location to vcxproj location
-                        std::string adjusted_command = adjust_command_paths(unescaped_command, from_dir, to_dir);
-                        auto node = file_elem.append_child("Command");
-                        node.append_attribute("Condition") = condition.c_str();
-                        node.text() = adjusted_command.c_str();
+                        // Expand ALL_CONFIGS wildcard to individual configs
+                        std::vector<std::string> configs_to_write;
+                        if (config_key == ALL_CONFIGS) {
+                            for (const auto& [cfg_name, cfg] : project.configurations) {
+                                configs_to_write.push_back(cfg_name);
+                            }
+                        } else {
+                            configs_to_write.push_back(config_key);
+                        }
+
+                        for (const auto& cfg : configs_to_write) {
+                            std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg + "'";
+                            // Unescape newlines first (from buildscript's \n to actual newlines)
+                            std::string unescaped_command = unescape_newlines(command);
+                            // Adjust paths in the command from buildscript location to vcxproj location
+                            std::string adjusted_command = adjust_command_paths(unescaped_command, from_dir, to_dir);
+                            auto node = file_elem.append_child("Command");
+                            node.append_attribute("Condition") = condition.c_str();
+                            node.text() = adjusted_command.c_str();
+                        }
                     }
                 }
                 for (const auto& [config_key, message] : src->custom_message) {
-                    std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
                     if (!message.empty()) {
-                        std::string unescaped_message = unescape_newlines(message);
-                        auto node = file_elem.append_child("Message");
-                        node.append_attribute("Condition") = condition.c_str();
-                        node.text() = unescaped_message.c_str();
+                        // Expand ALL_CONFIGS wildcard to individual configs
+                        std::vector<std::string> configs_to_write;
+                        if (config_key == ALL_CONFIGS) {
+                            for (const auto& [cfg_name, cfg] : project.configurations) {
+                                configs_to_write.push_back(cfg_name);
+                            }
+                        } else {
+                            configs_to_write.push_back(config_key);
+                        }
+
+                        for (const auto& cfg : configs_to_write) {
+                            std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg + "'";
+                            std::string unescaped_message = unescape_newlines(message);
+                            auto node = file_elem.append_child("Message");
+                            node.append_attribute("Condition") = condition.c_str();
+                            node.text() = unescaped_message.c_str();
+                        }
                     }
                 }
                 for (const auto& [config_key, outputs] : src->custom_outputs) {
-                    std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
                     if (!outputs.empty()) {
-                        auto node = file_elem.append_child("Outputs");
-                        node.append_attribute("Condition") = condition.c_str();
-                        node.text() = outputs.c_str();
+                        // Expand ALL_CONFIGS wildcard to individual configs
+                        std::vector<std::string> configs_to_write;
+                        if (config_key == ALL_CONFIGS) {
+                            for (const auto& [cfg_name, cfg] : project.configurations) {
+                                configs_to_write.push_back(cfg_name);
+                            }
+                        } else {
+                            configs_to_write.push_back(config_key);
+                        }
+
+                        for (const auto& cfg : configs_to_write) {
+                            std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg + "'";
+                            auto node = file_elem.append_child("Outputs");
+                            node.append_attribute("Condition") = condition.c_str();
+                            node.text() = outputs.c_str();
+                        }
                     }
                 }
                 for (const auto& [config_key, inputs] : src->custom_inputs) {
-                    std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
                     if (!inputs.empty()) {
-                        auto node = file_elem.append_child("AdditionalInputs");
-                        node.append_attribute("Condition") = condition.c_str();
-                        node.text() = inputs.c_str();
+                        // Expand ALL_CONFIGS wildcard to individual configs
+                        std::vector<std::string> configs_to_write;
+                        if (config_key == ALL_CONFIGS) {
+                            for (const auto& [cfg_name, cfg] : project.configurations) {
+                                configs_to_write.push_back(cfg_name);
+                            }
+                        } else {
+                            configs_to_write.push_back(config_key);
+                        }
+
+                        for (const auto& cfg : configs_to_write) {
+                            std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg + "'";
+                            auto node = file_elem.append_child("AdditionalInputs");
+                            node.append_attribute("Condition") = condition.c_str();
+                            node.text() = inputs.c_str();
+                        }
                     }
                 }
             }

@@ -127,29 +127,58 @@ std::vector<std::string> BuildscriptParser::split(const std::string& str, char d
     return tokens;
 }
 
-std::vector<std::string> BuildscriptParser::expand_wildcards(const std::string& pattern, 
+std::vector<std::string> BuildscriptParser::expand_wildcards(const std::string& pattern,
                                                               const std::string& base_path) {
     std::vector<std::string> result;
-    
-    fs::path full_pattern = fs::path(base_path) / pattern;
-    std::string dir = full_pattern.parent_path().string();
-    std::string file_pattern = full_pattern.filename().string();
-    
+
+    // Check if pattern includes ** for recursive search
+    bool recursive = pattern.find("**") != std::string::npos;
+
+    std::string dir;
+    std::string file_pattern;
+
+    if (recursive) {
+        // Extract the base directory (part before **)
+        size_t star_pos = pattern.find("**");
+        std::string prefix = pattern.substr(0, star_pos);
+
+        // Remove trailing slash/backslash from prefix
+        while (!prefix.empty() && (prefix.back() == '/' || prefix.back() == '\\')) {
+            prefix.pop_back();
+        }
+
+        // Get the file pattern (part after **)
+        std::string suffix = pattern.substr(star_pos + 2);
+        // Remove leading slash/backslash from suffix
+        while (!suffix.empty() && (suffix.front() == '/' || suffix.front() == '\\')) {
+            suffix.erase(0, 1);
+        }
+
+        // Directory is the prefix, file pattern is the filename part of suffix
+        dir = prefix.empty() ? "." : prefix;
+        fs::path suffix_path(suffix);
+        file_pattern = suffix_path.filename().string();
+    } else {
+        fs::path full_pattern = fs::path(base_path) / pattern;
+        dir = full_pattern.parent_path().string();
+        file_pattern = full_pattern.filename().string();
+    }
+
     if (dir.empty()) dir = ".";
-    
+
     // Check if this is a wildcard pattern
     if (file_pattern.find('*') == std::string::npos) {
         // Not a wildcard, just return the path
         result.push_back(pattern);
         return result;
     }
-    
+
     // Convert wildcard to regex
     std::string regex_pattern = file_pattern;
     // Escape special regex characters except *
     for (size_t i = 0; i < regex_pattern.size(); ++i) {
         char c = regex_pattern[i];
-        if (c == '.' || c == '+' || c == '?' || c == '[' || c == ']' || 
+        if (c == '.' || c == '+' || c == '?' || c == '[' || c == ']' ||
             c == '(' || c == ')' || c == '{' || c == '}' || c == '^' || c == '$') {
             regex_pattern.insert(i, "\\");
             ++i;
@@ -158,16 +187,14 @@ std::vector<std::string> BuildscriptParser::expand_wildcards(const std::string& 
             ++i;
         }
     }
-    
+
     std::regex re(regex_pattern, std::regex::icase);
-    
+
     try {
-        if (fs::exists(dir)) {
-            // Check if pattern includes ** for recursive search
-            bool recursive = pattern.find("**") != std::string::npos;
-            
+        fs::path search_dir = fs::path(base_path) / dir;
+        if (fs::exists(search_dir)) {
             if (recursive) {
-                for (const auto& entry : fs::recursive_directory_iterator(dir)) {
+                for (const auto& entry : fs::recursive_directory_iterator(search_dir)) {
                     if (entry.is_regular_file()) {
                         std::string filename = entry.path().filename().string();
                         if (std::regex_match(filename, re)) {
@@ -178,13 +205,13 @@ std::vector<std::string> BuildscriptParser::expand_wildcards(const std::string& 
                     }
                 }
             } else {
-                for (const auto& entry : fs::directory_iterator(dir)) {
+                for (const auto& entry : fs::directory_iterator(search_dir)) {
                     if (entry.is_regular_file()) {
                         std::string filename = entry.path().filename().string();
                         if (std::regex_match(filename, re)) {
-                            // Reconstruct path with original directory
-                            fs::path p = fs::path(pattern).parent_path() / filename;
-                            result.push_back(p.string());
+                            // Make path relative to base_path
+                            std::string rel_path = fs::relative(entry.path(), base_path).string();
+                            result.push_back(rel_path);
                         }
                     }
                 }
@@ -356,34 +383,176 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
             // Users can manually specify ignore_libs if needed
         }
     }
-    
+
     return solution;
 }
 
 void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
     std::string trimmed = trim(line);
-    
+
+    // If we're accumulating a uses_pch() call, continue accumulating
+    if (state.in_uses_pch) {
+        state.uses_pch_accumulator += " " + trimmed;
+        // Check if this line closes the function call by counting parentheses in the full accumulator
+        int paren_count = 0;
+        bool in_string = false;
+        for (size_t i = 0; i < state.uses_pch_accumulator.size(); ++i) {
+            char c = state.uses_pch_accumulator[i];
+            if (c == '"' && (i == 0 || state.uses_pch_accumulator[i-1] != '\\')) {
+                in_string = !in_string;
+            } else if (!in_string) {
+                if (c == '(') paren_count++;
+                else if (c == ')') paren_count--;
+            }
+        }
+
+        if (paren_count == 0) {
+            // Function call complete, parse it
+            parse_uses_pch(state.uses_pch_accumulator, state);
+            state.uses_pch_accumulator.clear();
+            state.in_uses_pch = false;
+        }
+        return;
+    }
+
     // Skip empty lines and comments
     if (trimmed.empty() || trimmed[0] == '#' || trimmed[0] == ';') {
         return;
     }
-    
+
     // Check for section headers
     if (trimmed[0] == '[' && trimmed.back() == ']') {
         parse_section(trimmed, state);
         return;
     }
-    
+
+    // Check for file_properties() function call
+    if (trimmed.find("file_properties(") == 0) {
+        if (!state.current_project) {
+            std::cerr << "Warning: file_properties() outside of project context at line " << state.line_number << "\n";
+            return;
+        }
+
+        // Extract file list between parentheses
+        size_t start_paren = trimmed.find('(');
+        size_t end_paren = trimmed.rfind(')');
+        if (start_paren != std::string::npos && end_paren != std::string::npos && end_paren > start_paren) {
+            std::string content = trimmed.substr(start_paren + 1, end_paren - start_paren - 1);
+            auto file_paths = split(content, ',');
+
+            state.file_properties_files.clear();
+            for (const auto& file_path : file_paths) {
+                std::string path = trim(file_path);
+                if (!path.empty()) {
+                    SourceFile* src = find_or_create_source(path, state);
+                    state.file_properties_files.push_back(src);
+                }
+            }
+
+            // Check if the line ends with {
+            size_t brace_pos = trimmed.find('{', end_paren);
+            if (brace_pos != std::string::npos) {
+                state.in_file_properties = true;
+                state.current_file = nullptr;  // Clear current file since we're setting multiple files
+            }
+        }
+        return;
+    }
+
+    // Check for closing brace of file_properties() block
+    if (state.in_file_properties && trimmed == "}") {
+        state.in_file_properties = false;
+        state.file_properties_files.clear();
+        return;
+    }
+
+    // Check for set_file_properties() function call
+    if (trimmed.find("set_file_properties(") == 0) {
+        if (!state.current_project) {
+            std::cerr << "Warning: set_file_properties() outside of project context at line " << state.line_number << "\n";
+            return;
+        }
+
+        // Extract file path (first argument before comma)
+        size_t start_paren = trimmed.find('(');
+        size_t comma_pos = trimmed.find(',', start_paren);
+        if (start_paren != std::string::npos && comma_pos != std::string::npos) {
+            std::string file_path = trim(trimmed.substr(start_paren + 1, comma_pos - start_paren - 1));
+            if (!file_path.empty()) {
+                state.set_file_properties_file = find_or_create_source(file_path, state);
+                state.in_set_file_properties = true;
+                state.current_file = nullptr;  // Clear current file context
+            }
+        }
+        return;
+    }
+
+    // Check for closing paren of set_file_properties() block
+    if (state.in_set_file_properties && trimmed == ")") {
+        state.in_set_file_properties = false;
+        state.set_file_properties_file = nullptr;
+        return;
+    }
+
+    // Check for target_link_libraries() function call
+    if (trimmed.find("target_link_libraries(") == 0) {
+        if (!state.current_project) {
+            std::cerr << "Warning: target_link_libraries() outside of project context at line " << state.line_number << "\n";
+            return;
+        }
+
+        // Extract content between parentheses
+        size_t start_paren = trimmed.find('(');
+        size_t end_paren = trimmed.rfind(')');
+        if (start_paren != std::string::npos && end_paren != std::string::npos && end_paren > start_paren) {
+            std::string content = trimmed.substr(start_paren + 1, end_paren - start_paren - 1);
+            auto deps = split(content, ',');
+            for (const auto& dep : deps) {
+                std::string dep_name = trim(dep);
+                if (!dep_name.empty()) {
+                    state.current_project->project_references.push_back(dep_name);
+                }
+            }
+        }
+        return;
+    }
+
+    // Check for uses_pch() function call
+    if (trimmed.find("uses_pch(") == 0) {
+        // Check if the function call is complete on this line by counting parentheses
+        int paren_count = 0;
+        bool in_string = false;
+        for (size_t i = 0; i < trimmed.size(); ++i) {
+            char c = trimmed[i];
+            if (c == '"' && (i == 0 || trimmed[i-1] != '\\')) {
+                in_string = !in_string;
+            } else if (!in_string) {
+                if (c == '(') paren_count++;
+                else if (c == ')') paren_count--;
+            }
+        }
+
+        if (paren_count == 0) {
+            // Single-line function call (all parens matched)
+            parse_uses_pch(trimmed, state);
+        } else {
+            // Multi-line function call, start accumulating
+            state.in_uses_pch = true;
+            state.uses_pch_accumulator = trimmed;
+        }
+        return;
+    }
+
     // Parse key=value pairs
     size_t eq_pos = trimmed.find('=');
     if (eq_pos == std::string::npos) {
         std::cerr << "Warning: Invalid line " << state.line_number << ": " << trimmed << "\n";
         return;
     }
-    
+
     std::string key = trim(trimmed.substr(0, eq_pos));
     std::string value = trim(trimmed.substr(eq_pos + 1));
-    
+
     parse_key_value(key, value, state);
 }
 
@@ -461,8 +630,18 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
         std::string config_key = key.substr(bracket_start + 1, bracket_end - bracket_start - 1);
         std::string setting = trim(key.substr(0, bracket_start));
 
+        // If we're in a file_properties() block, apply to all files in the group
+        if (state.in_file_properties && !state.file_properties_files.empty()) {
+            for (SourceFile* file : state.file_properties_files) {
+                parse_file_setting(file->path, setting, config_key, value, state);
+            }
+        }
+        // If we're in a set_file_properties() block, apply to that file
+        else if (state.in_set_file_properties && state.set_file_properties_file != nullptr) {
+            parse_file_setting(state.set_file_properties_file->path, setting, config_key, value, state);
+        }
         // If we're in a file context, treat as per-file setting
-        if (state.current_file != nullptr) {
+        else if (state.current_file != nullptr) {
             parse_file_setting(state.current_file->path, setting, config_key, value, state);
         } else {
             parse_config_setting(setting, value, config_key, state);
@@ -473,6 +652,14 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
     // Regular key=value
     if (state.current_project == nullptr) {
         parse_solution_setting(key, value, state);
+    } else if (state.in_file_properties && !state.file_properties_files.empty()) {
+        // If we're in a file_properties() block, apply to all files in the group
+        for (SourceFile* file : state.file_properties_files) {
+            parse_file_setting(file->path, key, ALL_CONFIGS, value, state);
+        }
+    } else if (state.in_set_file_properties && state.set_file_properties_file != nullptr) {
+        // If we're in a set_file_properties() block, apply to that file
+        parse_file_setting(state.set_file_properties_file->path, key, ALL_CONFIGS, value, state);
     } else if (state.current_file != nullptr) {
         parse_file_setting(state.current_file->path, key, ALL_CONFIGS, value, state);
     } else if (!state.current_config.empty()) {
@@ -1467,6 +1654,118 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
     else {
         // Forward to project setting parser but it will only affect this config
         // This is a simplified approach - in production you'd want more granular control
+    }
+}
+
+void BuildscriptParser::parse_uses_pch(const std::string& line, ParseState& state) {
+    if (!state.current_project) {
+        std::cerr << "Warning: uses_pch() outside of project context at line " << state.line_number << "\n";
+        return;
+    }
+
+    // Extract content between uses_pch( and )
+    size_t start_paren = line.find('(');
+    size_t end_paren = line.rfind(')');
+    if (start_paren == std::string::npos || end_paren == std::string::npos) {
+        std::cerr << "Warning: Malformed uses_pch() at line " << state.line_number << "\n";
+        return;
+    }
+
+    std::string content = line.substr(start_paren + 1, end_paren - start_paren - 1);
+
+    // Parse parameters: mode, header, [optional output], file_list
+    // Expected format: "Mode", "header.h", ["file1.cpp", "file2.cpp"]
+    // Or: "Mode", "header.h", "output.pch", ["file1.cpp", "file2.cpp"]
+
+    std::vector<std::string> params;
+    bool in_string = false;
+    bool in_array = false;
+    std::string current_param;
+
+    for (size_t i = 0; i < content.size(); ++i) {
+        char c = content[i];
+
+        if (c == '"' && (i == 0 || content[i-1] != '\\')) {
+            in_string = !in_string;
+            if (!in_string && !current_param.empty()) {
+                // End of a string parameter
+                params.push_back(trim(current_param));
+                current_param.clear();
+            }
+        } else if (c == '[' && !in_string) {
+            in_array = true;
+            current_param += c;
+        } else if (c == ']' && !in_string) {
+            in_array = false;
+            current_param += c;
+            // End of array parameter
+            params.push_back(trim(current_param));
+            current_param.clear();
+        } else if (c == ',' && !in_string && !in_array) {
+            // Parameter separator (skip)
+            continue;
+        } else if (in_string || in_array) {
+            current_param += c;
+        }
+    }
+
+    // We should have 3 or 4 parameters: mode, header, [output], file_list
+    if (params.size() < 3) {
+        std::cerr << "Warning: uses_pch() requires at least 3 parameters at line " << state.line_number << "\n";
+        return;
+    }
+
+    std::string pch_mode = params[0];
+    std::string pch_header = params[1];
+    std::string pch_output;
+    std::string file_list_str;
+
+    if (params.size() == 3) {
+        // No output specified
+        file_list_str = params[2];
+    } else {
+        // Output specified
+        pch_output = params[2];
+        file_list_str = params[3];
+    }
+
+    // Parse file list from array format: ["file1.cpp", "file2.cpp"]
+    std::vector<std::string> files;
+    if (file_list_str.front() == '[' && file_list_str.back() == ']') {
+        std::string list_content = file_list_str.substr(1, file_list_str.size() - 2);
+
+        // Split by commas, handling quoted strings
+        in_string = false;
+        std::string current_file;
+        for (size_t i = 0; i < list_content.size(); ++i) {
+            char c = list_content[i];
+
+            if (c == '"' && (i == 0 || list_content[i-1] != '\\')) {
+                in_string = !in_string;
+                if (!in_string && !current_file.empty()) {
+                    files.push_back(trim(current_file));
+                    current_file.clear();
+                }
+            } else if (c == ',' && !in_string) {
+                // Skip comma separators
+                continue;
+            } else if (in_string) {
+                current_file += c;
+            }
+        }
+    }
+
+    // Apply PCH settings to all files in the list
+    for (const auto& file_path : files) {
+        SourceFile* file = find_or_create_source(file_path, state);
+        if (file) {
+            // Apply to all configurations using the [*] wildcard
+            file->settings.pch[ALL_CONFIGS].mode = pch_mode;
+            file->settings.pch[ALL_CONFIGS].header = pch_header;
+            if (!pch_output.empty()) {
+                file->settings.pch[ALL_CONFIGS].output = pch_output;
+            }
+        }
     }
 }
 

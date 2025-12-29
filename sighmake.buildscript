@@ -11,10 +11,10 @@ platforms = Win32, x64
 type = exe
 
 # Source files
-sources = src/*.cpp
+sources = src/**/*.cpp
 
 # Header files (for IDE organization)
-headers = src/*.hpp
+headers = src/**/*.hpp
 
 # Include current directory for headers
 includes = src/

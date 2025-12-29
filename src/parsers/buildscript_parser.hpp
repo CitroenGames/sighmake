@@ -27,6 +27,12 @@ private:
         std::string base_path;
         int line_number = 0;
         std::vector<std::string> included_files;  // Track included files to prevent circular includes
+        std::string uses_pch_accumulator;  // Accumulate multi-line uses_pch() calls
+        bool in_uses_pch = false;  // Track if we're inside a uses_pch() call
+        std::vector<SourceFile*> file_properties_files;  // Files being set in file_properties() block
+        bool in_file_properties = false;  // Track if we're inside a file_properties() block
+        SourceFile* set_file_properties_file = nullptr;  // File being set in set_file_properties() block
+        bool in_set_file_properties = false;  // Track if we're inside a set_file_properties() block
     };
     
     // Parse a single line
@@ -52,7 +58,10 @@ private:
     // Parse configuration-specific settings
     void parse_config_setting(const std::string& key, const std::string& value,
                               const std::string& config_key, ParseState& state);
-    
+
+    // Parse uses_pch() function call
+    void parse_uses_pch(const std::string& line, ParseState& state);
+
     // Helper to split string by delimiter
     static std::vector<std::string> split(const std::string& str, char delim);
     

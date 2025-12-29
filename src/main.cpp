@@ -1,8 +1,8 @@
 #include "config.hpp"
-#include "buildscript_parser.hpp"
+#include "parsers/buildscript_parser.hpp"
 #include "vcxproj_generator.hpp"
 #include "generator.hpp"
-#include "vcxproj_reader.hpp"
+#include "parsers/vcxproj_reader.hpp"
 #include <iostream>
 #include <filesystem>
 #include <cstring>

@@ -68,7 +68,8 @@ static bool looks_like_file_path(const std::string& token) {
 }
 
 // Adjust relative file paths in a custom build command
-static std::string adjust_command_paths(const std::string& command,
+// Currently unused but kept for potential future use
+[[maybe_unused]] static std::string adjust_command_paths(const std::string& command,
                                        const std::string& from_dir,
                                        const std::string& to_dir) {
     namespace fs = std::filesystem;
@@ -287,7 +288,9 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
                 std::string val = n.text().as_string(); \
                 std::istringstream ss(val); std::string item; \
                 while (std::getline(ss, item, ';')) { \
-                    if (!item.empty()) settings.field.push_back(item); \
+                    if (!item.empty() && item.find("%(") != 0) { \
+                        settings.field.push_back(item); \
+                    } \
                 } \
             }
 
@@ -347,7 +350,9 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
                 std::string val = n.text().as_string(); \
                 std::istringstream ss(val); std::string item; \
                 while (std::getline(ss, item, ';')) { \
-                    if (!item.empty()) settings.field.push_back(item); \
+                    if (!item.empty() && item.find("%(") != 0) { \
+                        settings.field.push_back(item); \
+                    } \
                 } \
             }
 
@@ -414,7 +419,17 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
                 std::istringstream ss(val);
                 std::string item;
                 while (std::getline(ss, item, ';')) {
-                    if (!item.empty()) settings.preprocessor_definitions.push_back(item);
+                    if (!item.empty()) {
+                        // Resolve %(PreprocessorDefinitions) macro by substituting ClCompile defines
+                        if (item == "%(PreprocessorDefinitions)") {
+                            // Use the ClCompile preprocessor definitions from this same config
+                            for (const auto& def : cfg.cl_compile.preprocessor_definitions) {
+                                settings.preprocessor_definitions.push_back(def);
+                            }
+                        } else {
+                            settings.preprocessor_definitions.push_back(item);
+                        }
+                    }
                 }
             }
             if (auto n = rc.child("Culture"))
@@ -515,14 +530,40 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
                     std::istringstream ss(val);
                     std::string item;
                     while (std::getline(ss, item, ';')) {
-                        if (!item.empty()) src.settings.additional_includes[config_key].push_back(item);
+                        if (!item.empty()) {
+                            // Resolve %(AdditionalIncludeDirectories) macro by substituting project-level includes
+                            if (item == "%(AdditionalIncludeDirectories)") {
+                                // Get project-level includes for this config
+                                if (project.configurations.count(config_key)) {
+                                    const auto& project_includes = project.configurations.at(config_key).cl_compile.additional_include_directories;
+                                    for (const auto& inc : project_includes) {
+                                        src.settings.additional_includes[config_key].push_back(inc);
+                                    }
+                                }
+                            } else {
+                                src.settings.additional_includes[config_key].push_back(item);
+                            }
+                        }
                     }
                 } else if (name == "PreprocessorDefinitions") {
                     std::string val = child.text().as_string();
                     std::istringstream ss(val);
                     std::string item;
                     while (std::getline(ss, item, ';')) {
-                        if (!item.empty()) src.settings.preprocessor_defines[config_key].push_back(item);
+                        if (!item.empty()) {
+                            // Resolve %(PreprocessorDefinitions) macro by substituting project-level defines
+                            if (item == "%(PreprocessorDefinitions)") {
+                                // Get project-level defines for this config
+                                if (project.configurations.count(config_key)) {
+                                    const auto& project_defines = project.configurations.at(config_key).cl_compile.preprocessor_definitions;
+                                    for (const auto& def : project_defines) {
+                                        src.settings.preprocessor_defines[config_key].push_back(def);
+                                    }
+                                }
+                            } else {
+                                src.settings.preprocessor_defines[config_key].push_back(item);
+                            }
+                        }
                     }
                 } else if (name == "AdditionalOptions") {
                     std::string val = child.text().as_string();
@@ -659,11 +700,18 @@ Solution SlnReader::read_sln(const std::string& filepath) {
     }
 
     // Convert dependencies from UUIDs to project names
+    std::cout << "\nResolving dependencies:\n";
     for (auto& proj : solution.projects) {
         if (dependencies.count(proj.uuid)) {
+            std::cout << "  " << proj.name << " (UUID: " << proj.uuid << ") has "
+                      << dependencies[proj.uuid].size() << " dependencies\n";
             for (const auto& dep_uuid : dependencies[proj.uuid]) {
                 if (uuid_to_name.count(dep_uuid)) {
-                    proj.project_references.push_back(uuid_to_name[dep_uuid]);
+                    std::string dep_name = uuid_to_name[dep_uuid];
+                    proj.project_references.push_back(dep_name);
+                    std::cout << "    -> " << dep_name << "\n";
+                } else {
+                    std::cout << "    -> (unknown UUID: " << dep_uuid << ")\n";
                 }
             }
         }
@@ -718,8 +766,9 @@ std::map<std::string, std::vector<std::string>> SlnReader::parse_project_depende
     // Parse by finding Project lines, then looking for ProjectSection(ProjectDependencies) blocks
 
     size_t pos = 0;
-    std::regex proj_line_re(R"(Project\s*\("[^"]+"\)\s*=\s*"[^"]+"\s*,\s*"[^"]+"\s*,\s*"\{([A-Fa-f0-9\-]+)\}")");
+    std::regex proj_line_re(R"(Project\s*\("[^"]+"\)\s*=\s*"[^"]+"\s*,\s*"[^"]+"\s*,\s*"\{([A-Fa-f0-9-]+)\}")");
 
+    std::cout << "Parsing ProjectDependencies from .sln content...\n";
     while (pos < content.length()) {
         // Find next "Project(" line
         size_t proj_start = content.find("Project(", pos);
@@ -729,8 +778,10 @@ std::map<std::string, std::vector<std::string>> SlnReader::parse_project_depende
         size_t end_project = content.find("EndProject", proj_start);
         if (end_project == std::string::npos) break;
 
-        // Extract the project block
-        std::string block = content.substr(proj_start, end_project - proj_start);
+        // Extract the project block - include "EndProject" line
+        size_t end_project_line = content.find('\n', end_project);
+        if (end_project_line == std::string::npos) end_project_line = content.length();
+        std::string block = content.substr(proj_start, end_project_line - proj_start);
 
         // Extract UUID from Project line using regex
         std::smatch match;
@@ -746,12 +797,13 @@ std::map<std::string, std::vector<std::string>> SlnReader::parse_project_depende
                     std::string dep_section_content = block.substr(dep_section, end_section - dep_section);
 
                     // Extract dependency UUIDs
-                    std::regex dep_re(R"(\{([A-Fa-f0-9\-]+)\}\s*=\s*\{[A-Fa-f0-9\-]+\})");
+                    std::regex dep_re(R"(\{([A-Fa-f0-9-]+)\}\s*=\s*\{[A-Fa-f0-9-]+\})");
                     std::smatch dep_match;
 
                     auto it = dep_section_content.cbegin();
                     while (std::regex_search(it, dep_section_content.cend(), dep_match, dep_re)) {
-                        dependencies[project_uuid].push_back(dep_match[1].str());
+                        std::string dep_uuid = dep_match[1].str();
+                        dependencies[project_uuid].push_back(dep_uuid);
                         it = dep_match.suffix().first;
                     }
                 }
@@ -760,8 +812,6 @@ std::map<std::string, std::vector<std::string>> SlnReader::parse_project_depende
 
         pos = end_project + 1;
     }
-
-    std::cout << "Found " << dependencies.size() << " project(s) with dependencies\n";
 
     return dependencies;
 }
@@ -795,6 +845,172 @@ std::string BuildscriptWriter::format_value(const std::string& value) {
     }
     // Single-line value, return as-is
     return value;
+}
+
+// Helper to check if all configs have the same value for a string setting
+template<typename MapType>
+bool all_configs_have_same_value(const MapType& map, const std::vector<std::string>& config_keys, std::string& out_value) {
+    if (map.empty()) return false;
+
+    std::string first_value;
+    bool has_first = false;
+
+    for (const auto& config_key : config_keys) {
+        if (map.count(config_key)) {
+            const auto& value = map.at(config_key);
+            if (!has_first) {
+                first_value = value;
+                has_first = true;
+            } else if (value != first_value) {
+                return false; // Values differ
+            }
+        } else {
+            return false; // Config missing
+        }
+    }
+
+    if (has_first) {
+        out_value = first_value;
+        return true;
+    }
+    return false;
+}
+
+// Helper for vector<string> maps
+bool all_configs_have_same_vector(const std::map<std::string, std::vector<std::string>>& map,
+                                   const std::vector<std::string>& config_keys,
+                                   std::vector<std::string>& out_value) {
+    if (map.empty()) return false;
+
+    std::vector<std::string> first_value;
+    bool has_first = false;
+
+    for (const auto& config_key : config_keys) {
+        if (map.count(config_key)) {
+            const auto& value = map.at(config_key);
+            if (!has_first) {
+                first_value = value;
+                has_first = true;
+            } else if (value != first_value) {
+                return false; // Values differ
+            }
+        } else {
+            return false; // Config missing
+        }
+    }
+
+    if (has_first) {
+        out_value = first_value;
+        return true;
+    }
+    return false;
+}
+
+// Helper for bool maps
+bool all_configs_have_same_bool(const std::map<std::string, bool>& map,
+                                const std::vector<std::string>& config_keys,
+                                bool& out_value) {
+    if (map.empty()) return false;
+
+    bool first_value = false;
+    bool has_first = false;
+
+    for (const auto& config_key : config_keys) {
+        if (map.count(config_key)) {
+            const auto& value = map.at(config_key);
+            if (!has_first) {
+                first_value = value;
+                has_first = true;
+            } else if (value != first_value) {
+                return false; // Values differ
+            }
+        } else {
+            return false; // Config missing
+        }
+    }
+
+    if (has_first) {
+        out_value = first_value;
+        return true;
+    }
+    return false;
+}
+
+// Helper function to create a signature for file settings for grouping purposes
+static std::string create_file_settings_signature(const SourceFile* src,
+                                                   const std::vector<std::string>& config_keys,
+                                                   const std::map<std::string, std::string>& default_pch_mode,
+                                                   const std::map<std::string, std::string>& default_pch_header,
+                                                   bool has_project_common_pch_mode,
+                                                   bool has_project_common_pch_header,
+                                                   bool has_project_common_pch_output,
+                                                   const std::string& project_common_pch_mode,
+                                                   const std::string& project_common_pch_header,
+                                                   const std::string& project_common_pch_output) {
+    (void)has_project_common_pch_mode;
+    (void)has_project_common_pch_header;
+    (void)has_project_common_pch_output;
+    (void)project_common_pch_mode;
+    (void)project_common_pch_header;
+    (void)project_common_pch_output;
+
+    std::ostringstream sig;
+
+    // Add all settings to signature
+    for (const auto& kv : src->settings.additional_includes) {
+        sig << "inc[" << kv.first << "]:";
+        for (const auto& inc : kv.second) sig << inc << ";";
+        sig << "|";
+    }
+    for (const auto& kv : src->settings.preprocessor_defines) {
+        sig << "def[" << kv.first << "]:";
+        for (const auto& def : kv.second) sig << def << ";";
+        sig << "|";
+    }
+    for (const auto& kv : src->settings.additional_options) {
+        sig << "opt[" << kv.first << "]:";
+        for (const auto& opt : kv.second) sig << opt << ";";
+        sig << "|";
+    }
+    for (const auto& kv : src->settings.excluded) {
+        sig << "exc[" << kv.first << "]:" << (kv.second ? "1" : "0") << "|";
+    }
+    for (const auto& kv : src->settings.compile_as) {
+        sig << "cas[" << kv.first << "]:" << kv.second << "|";
+    }
+    for (const auto& kv : src->settings.object_file) {
+        sig << "obj[" << kv.first << "]:" << kv.second << "|";
+    }
+    for (const auto& kv : src->custom_command) {
+        sig << "cmd[" << kv.first << "]:" << kv.second << "|";
+    }
+    for (const auto& kv : src->custom_outputs) {
+        sig << "out[" << kv.first << "]:" << kv.second << "|";
+    }
+    for (const auto& kv : src->custom_message) {
+        sig << "msg[" << kv.first << "]:" << kv.second << "|";
+    }
+
+    // Add PCH settings that differ from defaults
+    for (const auto& pch_kv : src->settings.pch) {
+        const std::string& config_key = pch_kv.first;
+        const PrecompiledHeader& pch = pch_kv.second;
+        bool mode_differs = (!pch.mode.empty() &&
+                            (!default_pch_mode.count(config_key) ||
+                             pch.mode != default_pch_mode.at(config_key)));
+        bool header_differs = (!pch.header.empty() &&
+                              (!default_pch_header.count(config_key) ||
+                               pch.header != default_pch_header.at(config_key)));
+
+        if (mode_differs || pch.mode == "NotUsing")
+            sig << "pch_mode[" << config_key << "]:" << pch.mode << "|";
+        if (header_differs)
+            sig << "pch_header[" << config_key << "]:" << pch.header << "|";
+        if (!pch.output.empty())
+            sig << "pch_output[" << config_key << "]:" << pch.output << "|";
+    }
+
+    return sig.str();
 }
 
 bool BuildscriptWriter::write_buildscript(const Project& project, const std::string& filepath,
@@ -856,9 +1072,11 @@ bool BuildscriptWriter::write_buildscript(const Project& project, const std::str
         out << "resources = " << join_vector(rc_files, ", ") << "\n";
     }
 
-    // Project references
+    // Project references - write as target_link_libraries for clarity
     if (!project.project_references.empty()) {
-        out << "depends = " << join_vector(project.project_references, ", ") << "\n";
+        std::cout << "    Writing dependencies for " << project.project_name << ": "
+                  << project.project_references.size() << " deps\n";
+        out << "target_link_libraries(" << join_vector(project.project_references, ", ") << ")\n";
     }
 
     // Analyze libraries to separate those with exclusions from those without
@@ -1279,6 +1497,12 @@ bool BuildscriptWriter::write_buildscript(const Project& project, const std::str
     std::map<std::string, std::string> default_pch_header;
     std::map<std::string, std::string> default_pch_output;
 
+    // Collect all configuration keys for consolidation checks
+    std::vector<std::string> config_keys;
+    for (const auto& [config_key, cfg] : project.configurations) {
+        config_keys.push_back(config_key);
+    }
+
     // Extract project-level PCH settings from configurations
     for (const auto& [config_key, cfg] : project.configurations) {
         if (!cfg.cl_compile.pch.mode.empty()) {
@@ -1324,9 +1548,31 @@ bool BuildscriptWriter::write_buildscript(const Project& project, const std::str
         }
     }
 
-    // Write per-file settings (only for exceptions)
+    // Check if project-level PCH settings are consistent across all configs
+    std::string project_common_pch_mode, project_common_pch_header, project_common_pch_output;
+    bool has_project_common_pch_mode = all_configs_have_same_value(default_pch_mode, config_keys, project_common_pch_mode);
+    bool has_project_common_pch_header = all_configs_have_same_value(default_pch_header, config_keys, project_common_pch_header);
+    bool has_project_common_pch_output = all_configs_have_same_value(default_pch_output, config_keys, project_common_pch_output);
+
+    // Group files by their PCH settings for uses_pch() function
+    struct PCHGroup {
+        std::string mode;
+        std::string header;
+        std::string output;
+        std::vector<std::string> files;
+
+        bool operator<(const PCHGroup& other) const {
+            if (mode != other.mode) return mode < other.mode;
+            if (header != other.header) return header < other.header;
+            return output < other.output;
+        }
+    };
+
+    std::map<std::string, PCHGroup> pch_groups; // key is "mode|header|output"
+    std::vector<const SourceFile*> files_with_other_settings;
+
+    // First pass: categorize files
     for (const auto& src : project.sources) {
-        bool has_pch_exception = false;
         bool has_other_settings = !src.settings.additional_includes.empty() ||
                                  !src.settings.preprocessor_defines.empty() ||
                                  !src.settings.additional_options.empty() ||
@@ -1335,83 +1581,355 @@ bool BuildscriptWriter::write_buildscript(const Project& project, const std::str
                                  !src.settings.object_file.empty() ||
                                  !src.custom_command.empty();
 
-        // Check if this file's PCH settings differ from defaults
+        // Collect the PCH settings that differ from defaults per-config
+        std::map<std::string, std::string> pch_modes_to_write;
+        std::map<std::string, std::string> pch_headers_to_write;
+        std::map<std::string, std::string> pch_outputs_to_write;
+
         for (const auto& [config_key, pch] : src.settings.pch) {
             bool mode_differs = (!pch.mode.empty() &&
-                                default_pch_mode.count(config_key) &&
-                                pch.mode != default_pch_mode[config_key]);
+                                (!default_pch_mode.count(config_key) ||
+                                 pch.mode != default_pch_mode[config_key]));
             bool header_differs = (!pch.header.empty() &&
-                                  default_pch_header.count(config_key) &&
-                                  pch.header != default_pch_header[config_key]);
-            bool no_default = (!pch.mode.empty() && !default_pch_mode.count(config_key));
+                                  (!default_pch_header.count(config_key) ||
+                                   pch.header != default_pch_header[config_key]));
 
-            if (mode_differs || header_differs || no_default || pch.mode == "NotUsing") {
-                has_pch_exception = true;
-                break;
-            }
+            if (mode_differs || pch.mode == "NotUsing")
+                pch_modes_to_write[config_key] = pch.mode;
+            if (header_differs)
+                pch_headers_to_write[config_key] = pch.header;
+            if (!pch.output.empty() && (!default_pch_output.count(config_key) || pch.output != default_pch_output[config_key]))
+                pch_outputs_to_write[config_key] = pch.output;
         }
 
+        // Check if the consolidated file settings match the consolidated project defaults
+        std::string file_common_pch_mode, file_common_pch_header, file_common_pch_output;
+        bool file_has_common_mode = all_configs_have_same_value(pch_modes_to_write, config_keys, file_common_pch_mode);
+        bool file_has_common_header = all_configs_have_same_value(pch_headers_to_write, config_keys, file_common_pch_header);
+        bool file_has_common_output = all_configs_have_same_value(pch_outputs_to_write, config_keys, file_common_pch_output);
+
+        // If file settings consolidated and match project defaults consolidated, skip
+        // Note: These variables are computed but not currently used - reserved for future validation
+        (void)file_has_common_mode;
+        (void)file_has_common_header;
+        (void)file_has_common_output;
+        (void)has_project_common_pch_mode;
+        (void)has_project_common_pch_header;
+        (void)has_project_common_pch_output;
+        (void)project_common_pch_mode;
+        (void)project_common_pch_header;
+        (void)project_common_pch_output;
+
+        // If a file has ANY explicit PCH settings in the original vcxproj, we need to preserve them
+        // even if they match the project defaults, because they were explicitly set
+        bool has_pch_exception = !pch_modes_to_write.empty() ||
+                                !pch_headers_to_write.empty() ||
+                                !pch_outputs_to_write.empty();
+
+        // Categorize this file
+        // For grouping, we need consistent PCH settings across configs
+        // But only group if mode and header are consistent (output can be empty/consistent)
+        bool can_be_grouped = has_pch_exception && !has_other_settings &&
+                             file_has_common_mode &&
+                             (file_has_common_header || pch_headers_to_write.empty()) &&
+                             (file_has_common_output || pch_outputs_to_write.empty());
+
+        if (can_be_grouped) {
+            // This file only has PCH settings that are consistent across configs - add to group
+            std::string key = file_common_pch_mode + "|" + file_common_pch_header + "|" + file_common_pch_output;
+            if (pch_groups.find(key) == pch_groups.end()) {
+                pch_groups[key].mode = file_common_pch_mode;
+                pch_groups[key].header = file_common_pch_header;
+                pch_groups[key].output = file_common_pch_output;
+            }
+            pch_groups[key].files.push_back(src.path);
+        } else if (has_pch_exception || has_other_settings) {
+            // This file has other settings or non-consolidated PCH - write individually
+            files_with_other_settings.push_back(&src);
+        }
+    }
+
+    // Write uses_pch() groups
+    for (const auto& kv : pch_groups) {
+        const auto& group = kv.second;
+        // Use uses_pch() function if header is not empty (i.e., not for NotUsing files)
+        bool use_uses_pch_function = group.files.size() >= 2 && !group.header.empty();
+
+        if (use_uses_pch_function) {
+            out << "\nuses_pch(\"" << group.mode << "\", \"" << group.header << "\"";
+            if (!group.output.empty()) {
+                out << ", \"" << group.output << "\"";
+            }
+            out << ", [\n";
+            for (size_t i = 0; i < group.files.size(); i++) {
+                out << "    \"" << group.files[i] << "\"";
+                if (i < group.files.size() - 1) out << ",";
+                out << "\n";
+            }
+            out << "])\n";
+        } else {
+            // For NotUsing or single files, use file_properties() or set_file_properties()
+            if (group.files.size() >= 2) {
+                // Multiple files with same PCH settings (e.g., NotUsing)
+                out << "\nfile_properties(";
+                for (size_t i = 0; i < group.files.size(); i++) {
+                    out << group.files[i];
+                    if (i < group.files.size() - 1) out << ", ";
+                }
+                out << ") {\n";
+                out << "    pch[*] = " << group.mode << "\n";
+                if (!group.header.empty()) {
+                    out << "    pch_header[*] = " << group.header << "\n";
+                }
+                if (!group.output.empty()) {
+                    out << "    pch_output[*] = " << group.output << "\n";
+                }
+                out << "}\n";
+            } else {
+                // Single file
+                for (const auto& file_path : group.files) {
+                    out << "\nset_file_properties(" << file_path << ",\n";
+                    out << "    pch[*] = " << group.mode << "\n";
+                    if (!group.header.empty()) {
+                        out << "    pch_header[*] = " << group.header << "\n";
+                    }
+                    if (!group.output.empty()) {
+                        out << "    pch_output[*] = " << group.output << "\n";
+                    }
+                    out << ")\n";
+                }
+            }
+        }
+    }
+
+    // Group files with other settings by their settings signature
+    std::map<std::string, std::vector<const SourceFile*>> file_groups;
+
+    for (const auto* src : files_with_other_settings) {
+        std::string signature = create_file_settings_signature(src, config_keys, default_pch_mode, default_pch_header,
+                                                               has_project_common_pch_mode, has_project_common_pch_header,
+                                                               has_project_common_pch_output, project_common_pch_mode,
+                                                               project_common_pch_header, project_common_pch_output);
+        file_groups[signature].push_back(src);
+    }
+
+    // Write grouped files using file_properties() or individual [file:...] sections
+    for (const auto& group : file_groups) {
+        const auto& files = group.second;
+        if (files.empty()) continue;
+
+        const SourceFile* first_src = files[0];
+
+        // Check if this file/group has settings that need to be written
+        bool has_pch_exception = false;
+        bool has_other_settings = !first_src->settings.additional_includes.empty() ||
+                                 !first_src->settings.preprocessor_defines.empty() ||
+                                 !first_src->settings.additional_options.empty() ||
+                                 !first_src->settings.excluded.empty() ||
+                                 !first_src->settings.compile_as.empty() ||
+                                 !first_src->settings.object_file.empty() ||
+                                 !first_src->custom_command.empty();
+
+        // Recalculate PCH settings for this file
+        std::map<std::string, std::string> pch_modes_to_write;
+        std::map<std::string, std::string> pch_headers_to_write;
+        std::map<std::string, std::string> pch_outputs_to_write;
+
+        for (const auto& pch_kv : first_src->settings.pch) {
+            const std::string& config_key = pch_kv.first;
+            const PrecompiledHeader& pch = pch_kv.second;
+            bool mode_differs = (!pch.mode.empty() &&
+                                (!default_pch_mode.count(config_key) ||
+                                 pch.mode != default_pch_mode[config_key]));
+            bool header_differs = (!pch.header.empty() &&
+                                  (!default_pch_header.count(config_key) ||
+                                   pch.header != default_pch_header[config_key]));
+
+            if (mode_differs || pch.mode == "NotUsing")
+                pch_modes_to_write[config_key] = pch.mode;
+            if (header_differs)
+                pch_headers_to_write[config_key] = pch.header;
+            if (!pch.output.empty() && (!default_pch_output.count(config_key) || pch.output != default_pch_output[config_key]))
+                pch_outputs_to_write[config_key] = pch.output;
+        }
+
+        std::string file_common_pch_mode, file_common_pch_header, file_common_pch_output;
+        bool file_has_common_mode = all_configs_have_same_value(pch_modes_to_write, config_keys, file_common_pch_mode);
+        bool file_has_common_header = all_configs_have_same_value(pch_headers_to_write, config_keys, file_common_pch_header);
+        bool file_has_common_output = all_configs_have_same_value(pch_outputs_to_write, config_keys, file_common_pch_output);
+
+        bool mode_matches_project = (file_has_common_mode && has_project_common_pch_mode &&
+                                     file_common_pch_mode == project_common_pch_mode);
+        bool header_matches_project = (file_has_common_header && has_project_common_pch_header &&
+                                       file_common_pch_header == project_common_pch_header);
+        bool output_matches_project = (file_has_common_output && has_project_common_pch_output &&
+                                       file_common_pch_output == project_common_pch_output);
+
+        if (!pch_modes_to_write.empty() && !mode_matches_project)
+            has_pch_exception = true;
+        if (!pch_headers_to_write.empty() && !header_matches_project)
+            has_pch_exception = true;
+        if (!pch_outputs_to_write.empty() && !output_matches_project)
+            has_pch_exception = true;
+
         if (has_pch_exception || has_other_settings) {
-            out << "\n[file:" << src.path << "]\n";
+            // Write header: either file_properties() for groups or set_file_properties() for single files
+            std::string indent = "";
+            bool is_single_file = (files.size() == 1);
+
+            if (files.size() > 1) {
+                out << "\nfile_properties(";
+                for (size_t i = 0; i < files.size(); ++i) {
+                    out << files[i]->path;
+                    if (i < files.size() - 1) out << ", ";
+                }
+                out << ") {\n";
+                indent = "    ";  // 4 spaces for properties inside file_properties()
+            } else {
+                out << "\nset_file_properties(" << first_src->path << ",\n";
+                indent = "    ";  // 4 spaces for properties
+            }
 
             // Write PCH settings only if they differ from defaults
             if (has_pch_exception) {
-                for (const auto& [config_key, pch] : src.settings.pch) {
-                    bool mode_differs = (!pch.mode.empty() &&
-                                        (!default_pch_mode.count(config_key) ||
-                                         pch.mode != default_pch_mode[config_key]));
-                    bool header_differs = (!pch.header.empty() &&
-                                          (!default_pch_header.count(config_key) ||
-                                           pch.header != default_pch_header[config_key]));
+                // Write consolidated PCH mode (only if doesn't match project default)
+                if (!mode_matches_project) {
+                    if (file_has_common_mode) {
+                        out << indent << "pch[*] = " << file_common_pch_mode << "\n";
+                    } else {
+                        for (const auto& kv : pch_modes_to_write) {
+                            out << indent << "pch[" << kv.first << "] = " << kv.second << "\n";
+                        }
+                    }
+                }
 
-                    if (mode_differs || pch.mode == "NotUsing")
-                        out << "pch[" << config_key << "] = " << pch.mode << "\n";
-                    if (header_differs)
-                        out << "pch_header[" << config_key << "] = " << pch.header << "\n";
-                    // Write pch_output if specified
-                    if (!pch.output.empty())
-                        out << "pch_output[" << config_key << "] = " << pch.output << "\n";
+                // Write consolidated PCH header (only if doesn't match project default)
+                if (!header_matches_project) {
+                    if (file_has_common_header) {
+                        out << indent << "pch_header[*] = " << file_common_pch_header << "\n";
+                    } else {
+                        for (const auto& kv : pch_headers_to_write) {
+                            out << indent << "pch_header[" << kv.first << "] = " << kv.second << "\n";
+                        }
+                    }
+                }
+
+                // Write consolidated PCH output (only if doesn't match project default)
+                if (!output_matches_project) {
+                    if (file_has_common_output) {
+                        out << indent << "pch_output[*] = " << file_common_pch_output << "\n";
+                    } else {
+                        for (const auto& kv : pch_outputs_to_write) {
+                            out << indent << "pch_output[" << kv.first << "] = " << kv.second << "\n";
+                        }
+                    }
                 }
             }
 
-            for (const auto& [config_key, includes] : src.settings.additional_includes) {
-                if (!includes.empty())
-                    out << "includes[" << config_key << "] = " << join_vector(includes, ", ") << "\n";
-            }
-
-            for (const auto& [config_key, defines] : src.settings.preprocessor_defines) {
-                if (!defines.empty())
-                    out << "defines[" << config_key << "] = " << join_vector(defines, ", ") << "\n";
-            }
-
-            for (const auto& [config_key, options] : src.settings.additional_options) {
-                if (!options.empty())
-                    out << "flags[" << config_key << "] = " << join_vector(options, ", ") << "\n";
-            }
-
-            for (const auto& [config_key, excluded] : src.settings.excluded) {
-                if (excluded)
-                    out << "excluded[" << config_key << "] = true\n";
-            }
-
-            for (const auto& [config_key, compile_as] : src.settings.compile_as) {
-                if (!compile_as.empty())
-                    out << "compile_as[" << config_key << "] = " << compile_as << "\n";
-            }
-
-            for (const auto& [config_key, obj_file] : src.settings.object_file) {
-                if (!obj_file.empty())
-                    out << "object_file[" << config_key << "] = " << obj_file << "\n";
-            }
-
-            for (const auto& [config_key, cmd] : src.custom_command) {
-                if (!cmd.empty()) {
-                    out << "custom_command[" << config_key << "] = " << format_value(cmd) << "\n";
-                    if (src.custom_outputs.count(config_key))
-                        out << "custom_outputs[" << config_key << "] = " << src.custom_outputs.at(config_key) << "\n";
-                    if (src.custom_message.count(config_key))
-                        out << "custom_message[" << config_key << "] = " << format_value(src.custom_message.at(config_key)) << "\n";
+            // Write additional includes - consolidate if same across all configs
+            std::vector<std::string> common_includes;
+            if (all_configs_have_same_vector(first_src->settings.additional_includes, config_keys, common_includes)) {
+                if (!common_includes.empty())
+                    out << indent << "includes[*] = " << join_vector(common_includes, ", ") << "\n";
+            } else {
+                for (const auto& kv : first_src->settings.additional_includes) {
+                    if (!kv.second.empty())
+                        out << indent << "includes[" << kv.first << "] = " << join_vector(kv.second, ", ") << "\n";
                 }
+            }
+
+            // Write defines - consolidate if same across all configs
+            std::vector<std::string> src_common_defines;
+            if (all_configs_have_same_vector(first_src->settings.preprocessor_defines, config_keys, src_common_defines)) {
+                if (!src_common_defines.empty())
+                    out << indent << "defines[*] = " << join_vector(src_common_defines, ", ") << "\n";
+            } else {
+                for (const auto& kv : first_src->settings.preprocessor_defines) {
+                    if (!kv.second.empty())
+                        out << indent << "defines[" << kv.first << "] = " << join_vector(kv.second, ", ") << "\n";
+                }
+            }
+
+            // Write additional options - consolidate if same across all configs
+            std::vector<std::string> common_options;
+            if (all_configs_have_same_vector(first_src->settings.additional_options, config_keys, common_options)) {
+                if (!common_options.empty())
+                    out << indent << "flags[*] = " << join_vector(common_options, ", ") << "\n";
+            } else {
+                for (const auto& kv : first_src->settings.additional_options) {
+                    if (!kv.second.empty())
+                        out << indent << "flags[" << kv.first << "] = " << join_vector(kv.second, ", ") << "\n";
+                }
+            }
+
+            // Write excluded - consolidate if same across all configs
+            bool common_excluded;
+            if (all_configs_have_same_bool(first_src->settings.excluded, config_keys, common_excluded)) {
+                if (common_excluded)
+                    out << indent << "excluded[*] = true\n";
+            } else {
+                for (const auto& kv : first_src->settings.excluded) {
+                    if (kv.second)
+                        out << indent << "excluded[" << kv.first << "] = true\n";
+                }
+            }
+
+            // Write compile_as - consolidate if same across all configs
+            std::string common_compile_as;
+            if (all_configs_have_same_value(first_src->settings.compile_as, config_keys, common_compile_as)) {
+                if (!common_compile_as.empty())
+                    out << indent << "compile_as[*] = " << common_compile_as << "\n";
+            } else {
+                for (const auto& kv : first_src->settings.compile_as) {
+                    if (!kv.second.empty())
+                        out << indent << "compile_as[" << kv.first << "] = " << kv.second << "\n";
+                }
+            }
+
+            // Write object_file - consolidate if same across all configs
+            std::string common_obj_file;
+            if (all_configs_have_same_value(first_src->settings.object_file, config_keys, common_obj_file)) {
+                if (!common_obj_file.empty())
+                    out << indent << "object_file[*] = " << common_obj_file << "\n";
+            } else {
+                for (const auto& kv : first_src->settings.object_file) {
+                    if (!kv.second.empty())
+                        out << indent << "object_file[" << kv.first << "] = " << kv.second << "\n";
+                }
+            }
+
+            // Write custom_command - consolidate if same across all configs
+            std::string common_cmd;
+            if (all_configs_have_same_value(first_src->custom_command, config_keys, common_cmd)) {
+                if (!common_cmd.empty()) {
+                    out << indent << "custom_command[*] = " << format_value(common_cmd) << "\n";
+                    // Check outputs/messages
+                    std::string common_outputs;
+                    if (all_configs_have_same_value(first_src->custom_outputs, config_keys, common_outputs) && !common_outputs.empty()) {
+                        out << indent << "custom_outputs[*] = " << common_outputs << "\n";
+                    }
+                    std::string common_message;
+                    if (all_configs_have_same_value(first_src->custom_message, config_keys, common_message) && !common_message.empty()) {
+                        out << indent << "custom_message[*] = " << format_value(common_message) << "\n";
+                    }
+                }
+            } else {
+                for (const auto& kv : first_src->custom_command) {
+                    if (!kv.second.empty()) {
+                        out << indent << "custom_command[" << kv.first << "] = " << format_value(kv.second) << "\n";
+                        if (first_src->custom_outputs.count(kv.first))
+                            out << indent << "custom_outputs[" << kv.first << "] = " << first_src->custom_outputs.at(kv.first) << "\n";
+                        if (first_src->custom_message.count(kv.first))
+                            out << indent << "custom_message[" << kv.first << "] = " << format_value(first_src->custom_message.at(kv.first)) << "\n";
+                    }
+                }
+            }
+
+            // Close file_properties() or set_file_properties()
+            if (files.size() > 1) {
+                out << "}\n";
+            } else {
+                out << ")\n";
             }
         }
     }
