@@ -1,6 +1,3 @@
-# sighmake self-hosting buildscript
-# This buildscript generates Visual Studio project files for sighmake itself
-
 [solution]
 name = sighmake
 configurations = Debug, Release

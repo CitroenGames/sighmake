@@ -11,6 +11,30 @@ namespace fs = std::filesystem;
 
 namespace vcxproj {
 
+// Helper function to normalize paths using std::filesystem
+static std::string normalize_path(const std::string& path) {
+    if (path.empty()) return path;
+
+    try {
+        // Use filesystem to normalize the path
+        // lexically_normal() removes redundant . and .. and simplifies the path
+        fs::path p(path);
+        std::string normalized = p.lexically_normal().string();
+
+        // Preserve trailing slash/backslash if original had one
+        if (!path.empty() && (path.back() == '/' || path.back() == '\\')) {
+            if (!normalized.empty() && normalized.back() != '/' && normalized.back() != '\\') {
+                normalized += path.back();
+            }
+        }
+
+        return normalized;
+    } catch (...) {
+        // If filesystem operation fails, return original path
+        return path;
+    }
+}
+
 std::string BuildscriptParser::trim(const std::string& str) {
     size_t first = str.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return "";
@@ -331,9 +355,8 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
             auto [config, platform] = parse_config_key(config_key);
 
             // Set defaults if not already set
-            if (cfg.platform_toolset.empty()) {
-                cfg.platform_toolset = ToolsetRegistry::instance().get_default();
-            }
+            // Note: platform_toolset is left empty if not specified - will be set by
+            // generator based on detected Visual Studio installation
             if (cfg.windows_target_platform_version.empty()) {
                 cfg.windows_target_platform_version = "10.0";
             }
@@ -1217,7 +1240,7 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
     // Librarian settings (for static libraries)
     else if (key == "lib_output_file") {
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].lib.output_file = value;
+            proj.configurations[config_key].lib.output_file = normalize_path(value);
         }
     } else if (key == "lib_suppress_startup_banner") {
         bool ssb = (value == "true" || value == "yes" || value == "1");
@@ -1531,7 +1554,7 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
     else if (key == "show_progress" || key == "link_show_progress") {
         cfg.link.show_progress = value;
     } else if (key == "output_file" || key == "link_output_file") {
-        cfg.link.output_file = value;
+        cfg.link.output_file = normalize_path(value);
     } else if (key == "suppress_startup_banner" || key == "link_suppress_startup_banner") {
         cfg.link.suppress_startup_banner = (value == "true" || value == "yes" || value == "1");
     } else if (key == "program_database_file" || key == "link_pdb_file") {
@@ -1561,7 +1584,7 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
     }
     // Librarian settings (for static libraries)
     else if (key == "lib_output_file") {
-        cfg.lib.output_file = value;
+        cfg.lib.output_file = normalize_path(value);
     } else if (key == "lib_suppress_startup_banner") {
         cfg.lib.suppress_startup_banner = (value == "true" || value == "yes" || value == "1");
     } else if (key == "lib_use_unicode_response_files") {

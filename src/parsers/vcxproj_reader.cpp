@@ -37,11 +37,28 @@ static std::string filter_vpc_commands(const std::string& command) {
     return command;
 }
 
-// Helper function to normalize paths and remove redundant \.\ segments
-// For 100% accuracy, we preserve paths exactly as they appear in the original vcxproj
+// Helper function to normalize paths using std::filesystem
 static std::string normalize_path(const std::string& path) {
-    // Return path unchanged to preserve exact formatting including \.\ segments
-    return path;
+    if (path.empty()) return path;
+
+    try {
+        namespace fs = std::filesystem;
+        // Use filesystem to normalize the path
+        fs::path p(path);
+        std::string normalized = p.lexically_normal().string();
+
+        // Preserve trailing slash/backslash if original had one
+        if (!path.empty() && (path.back() == '/' || path.back() == '\\')) {
+            if (!normalized.empty() && normalized.back() != '/' && normalized.back() != '\\') {
+                normalized += path.back();
+            }
+        }
+
+        return normalized;
+    } catch (...) {
+        // If filesystem operation fails, return original path
+        return path;
+    }
 }
 
 // Helper function to normalize paths within build event commands

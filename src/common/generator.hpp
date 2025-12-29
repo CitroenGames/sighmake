@@ -15,7 +15,7 @@ public:
 
     // Generate project files for a solution
     // Returns true on success, false on failure
-    virtual bool generate(const Solution& solution, const std::string& output_dir) = 0;
+    virtual bool generate(Solution& solution, const std::string& output_dir) = 0;
 
     // Get the name of this generator (e.g., "vcxproj", "make", "cmake")
     virtual std::string name() const = 0;

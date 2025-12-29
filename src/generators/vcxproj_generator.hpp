@@ -13,7 +13,7 @@ public:
     VcxprojGenerator() = default;
 
     // Generate all project files (implements Generator interface)
-    bool generate(const Solution& solution, const std::string& output_dir) override;
+    bool generate(Solution& solution, const std::string& output_dir) override;
 
     // Get generator name
     std::string name() const override { return "vcxproj"; }
@@ -39,8 +39,8 @@ private:
     std::string join_vector(const std::vector<std::string>& vec, const std::string& separator);
     std::string get_file_type_name(FileType type);
 
-    // Determine if solution should use .slnx format based on toolsets
-    bool should_use_slnx_format(const Solution& solution) const;
+    // Determine if solution should use .slnx format based on detected VS installation
+    bool should_use_slnx_format() const;
 
     // Determine ToolsVersion based on toolset
     std::string get_tools_version(const std::string& toolset) const;

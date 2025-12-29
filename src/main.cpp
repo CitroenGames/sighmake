@@ -17,13 +17,14 @@ void print_usage(const char* program_name) {
     std::cout << "  " << program_name << " <buildscript> [options]\n";
     std::cout << "  " << program_name << " --convert <solution.sln> [options]\n\n";
     std::cout << "Options:\n";
-    std::cout << "  -g, --generator <type> Generator type (default: vcxproj)\n";
-    std::cout << "  -c, --convert          Convert Visual Studio solution to buildscripts\n";
-    std::cout << "  -t, --toolset <version>    Default toolset (2026, v145, etc)\n";
-    std::cout << "      --list-toolsets        List known MSVC toolsets\n";
-    std::cout << "  -l, --list             List available generators\n";
-    std::cout << "  -h, --help             Show this help message\n\n";
+    std::cout << "  -g, --generator <type>     Generator type (default: vcxproj)\n";
+    std::cout << "  -c, --convert              Convert Visual Studio solution to buildscripts\n";
+    std::cout << "  -t, --toolset <name>       Default toolset (msvc2022, msvc2019, etc)\n";
+    std::cout << "      --list-toolsets        List available toolsets\n";
+    std::cout << "  -l, --list                 List available generators\n";
+    std::cout << "  -h, --help                 Show this help message\n\n";
     std::cout << "Examples:\n";
+    std::cout << "  " << program_name << " project.buildscript -t msvc2022\n";
     std::cout << "  " << program_name << " --convert solution.sln\n";
 }
 
@@ -63,19 +64,19 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
         } else if (strcmp(argv[i], "--list-toolsets") == 0) {
-            std::cout << "Known MSVC toolsets:\n\n";
-            std::cout << "  Year   Toolset  Description\n";
-            std::cout << "  ----   -------  -----------\n";
-            std::cout << "  2026   v145     Visual Studio 2026 (predicted)\n";
-            std::cout << "  2026   v144     Visual Studio 2026 (alternate)\n";
-            std::cout << "  2022   v143     Visual Studio 2022 (default)\n";
-            std::cout << "  2019   v142     Visual Studio 2019\n";
-            std::cout << "  2017   v141     Visual Studio 2017\n";
-            std::cout << "  2015   v140     Visual Studio 2015\n";
-            std::cout << "  2013   v120     Visual Studio 2013\n";
-            std::cout << "  2012   v110     Visual Studio 2012\n";
-            std::cout << "  2010   v100     Visual Studio 2010\n";
-            std::cout << "\nYou can specify either year or toolset ID.\n";
+            std::cout << "Available toolsets:\n\n";
+            std::cout << "  Toolset     Description\n";
+            std::cout << "  -------     -----------\n";
+            std::cout << "  msvc2026    Visual Studio 2026\n";
+            std::cout << "  msvc2022    Visual Studio 2022 (default)\n";
+            std::cout << "  msvc2019    Visual Studio 2019\n";
+            std::cout << "  msvc2017    Visual Studio 2017\n";
+            std::cout << "  msvc2015    Visual Studio 2015\n";
+            std::cout << "  msvc2013    Visual Studio 2013\n";
+            std::cout << "  msvc2012    Visual Studio 2012\n";
+            std::cout << "  msvc2010    Visual Studio 2010\n";
+            std::cout << "\nUse the normalized toolset name (e.g., 'msvc2022').\n";
+            std::cout << "Case-insensitive: MSVC2022, msvc2022, Msvc2022 all work.\n";
             return 0;
         } else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--list") == 0) {
             std::cout << "Available generators:\n";

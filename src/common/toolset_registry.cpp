@@ -1,4 +1,5 @@
 #include "toolset_registry.hpp"
+#include <algorithm>
 #include <iostream>
 
 namespace vcxproj {
@@ -34,6 +35,20 @@ ToolsetRegistry::ToolsetRegistry() : default_toolset_("v143") {
     year_to_id_[2013] = "v120";
     year_to_id_[2012] = "v110";
     year_to_id_[2010] = "v100";
+
+    // Normalized toolchain name mappings
+    toolchain_to_toolset_["msvc2026"] = "v145";
+    toolchain_to_toolset_["msvc2022"] = "v143";
+    toolchain_to_toolset_["msvc2019"] = "v142";
+    toolchain_to_toolset_["msvc2017"] = "v141";
+    toolchain_to_toolset_["msvc2015"] = "v140";
+    toolchain_to_toolset_["msvc2013"] = "v120";
+    toolchain_to_toolset_["msvc2012"] = "v110";
+    toolchain_to_toolset_["msvc2010"] = "v100";
+
+    // Future: other toolchains
+    // toolchain_to_toolset_["gcc13"] = "gcc-13";
+    // toolchain_to_toolset_["clang16"] = "clang-16";
 }
 
 std::optional<std::string> ToolsetRegistry::resolve(const std::string& input) const {
@@ -41,24 +56,18 @@ std::optional<std::string> ToolsetRegistry::resolve(const std::string& input) co
         return default_toolset_;
     }
 
-    // Try as direct toolset ID (e.g., "v143")
-    if (toolsets_.count(input) > 0) {
-        return input;
-    }
+    // Convert to lowercase for case-insensitive matching
+    std::string lower_input = input;
+    std::transform(lower_input.begin(), lower_input.end(), lower_input.begin(),
+                   [](unsigned char c){ return std::tolower(c); });
 
-    // Try as year (e.g., "2026")
-    try {
-        int year = std::stoi(input);
-        auto it = year_to_id_.find(year);
-        if (it != year_to_id_.end()) {
-            return it->second;
-        }
-    } catch (const std::exception&) {
-        // Not a valid integer, continue
+    // Look up normalized toolchain name (e.g., "msvc2022" -> "v143")
+    auto it = toolchain_to_toolset_.find(lower_input);
+    if (it != toolchain_to_toolset_.end()) {
+        return it->second;
     }
 
     // Unknown toolset - return as-is for forward compatibility
-    // (allows users to use preview/unreleased toolsets)
     return input;
 }
 
@@ -80,6 +89,29 @@ std::string ToolsetRegistry::get_default() const {
 
 void ToolsetRegistry::set_default(const std::string& toolset) {
     default_toolset_ = toolset;
+}
+
+int ToolsetRegistry::get_toolset_year(const std::string& toolset) const {
+#ifndef NDEBUG
+    std::cout << "[DEBUG] get_toolset_year('" << toolset << "'): ";
+#endif
+
+    // Map toolset to year for comparison
+    int year = 0;
+    if (toolset == "v145" || toolset == "v144") year = 2026;
+    else if (toolset == "v143") year = 2022;
+    else if (toolset == "v142") year = 2019;
+    else if (toolset == "v141") year = 2017;
+    else if (toolset == "v140") year = 2015;
+    else if (toolset == "v120") year = 2013;
+    else if (toolset == "v110") year = 2012;
+    else if (toolset == "v100") year = 2010;
+
+#ifndef NDEBUG
+    std::cout << year << "\n";
+#endif
+
+    return year;
 }
 
 } // namespace vcxproj

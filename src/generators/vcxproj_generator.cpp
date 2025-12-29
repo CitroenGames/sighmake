@@ -1,5 +1,7 @@
 #include "config.hpp"
 #include "vcxproj_generator.hpp"
+#include "common/vs_detector.hpp"
+#include "common/toolset_registry.hpp"
 #define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"
 #include <fstream>
@@ -148,17 +150,30 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     std::string tools_version = "4.0"; // Default legacy
     for (const auto& [config_key, cfg] : project.configurations) {
         std::string ts_version = get_tools_version(cfg.platform_toolset);
+#ifndef NDEBUG
+        std::cout << "[DEBUG] .vcxproj generation for '" << project.name
+                  << "': Config '" << config_key
+                  << "' has toolset '" << cfg.platform_toolset
+                  << "' -> ToolsVersion '" << ts_version << "'\n";
+#endif
         if (ts_version == "18.0") {
             tools_version = "18.0";
             break; // MSVC 2026 takes precedence
         }
     }
 
+#ifndef NDEBUG
+    std::cout << "[DEBUG] Final ToolsVersion for " << project.name << ": " << tools_version << "\n";
+#endif
+
     root.append_attribute("ToolsVersion") = tools_version.c_str();
     root.append_attribute("xmlns") = "http://schemas.microsoft.com/developer/msbuild/2003";
 
     // Add VCProjectUpgraderObjectName for MSVC 2026 to prevent auto-upgrade prompts
     if (tools_version == "18.0") {
+#ifndef NDEBUG
+        std::cout << "[DEBUG] Adding VCProjectUpgraderObjectName=NoUpgrade for MSVC 2026\n";
+#endif
         root.append_attribute("VCProjectUpgraderObjectName") = "NoUpgrade";
     }
 
@@ -1173,7 +1188,7 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
     return doc.save_file(output_path.c_str(), "\t", pugi::format_default);
 }
 
-bool VcxprojGenerator::generate(const Solution& solution, const std::string& output_dir) {
+bool VcxprojGenerator::generate(Solution& solution, const std::string& output_dir) {
     namespace fs = std::filesystem;
 
     // Create output directory if it doesn't exist
@@ -1186,7 +1201,88 @@ bool VcxprojGenerator::generate(const Solution& solution, const std::string& out
         }
     }
 
-    // Generate project files
+    // 1. FIRST: Detect Visual Studio installation
+    auto vs_info = VSDetector::detect_latest_vs();
+
+    if (!vs_info.has_value()) {
+        std::cerr << "Error: No Visual Studio installation detected.\n";
+        std::cerr << "Please install Visual Studio 2017 or later.\n";
+        return false;
+    }
+
+    std::cout << "Detected: Visual Studio " << vs_info->year
+              << " (toolset " << vs_info->platform_toolset << ")\n";
+
+    // 2. SECOND: Set default toolsets and validate
+    auto& toolset_registry = ToolsetRegistry::instance();
+    std::string registry_default = toolset_registry.get_default();
+    bool already_logged = false;
+
+    for (auto& proj : solution.projects) {
+#ifndef NDEBUG
+        std::cout << "[DEBUG] Processing project: " << proj.name << "\n";
+#endif
+        for (auto& config_pair : proj.configurations) {
+            auto& cfg = config_pair.second;
+
+#ifndef NDEBUG
+            std::cout << "[DEBUG]   Config: " << config_pair.first
+                      << ", current toolset: '" << cfg.platform_toolset << "'\n";
+#endif
+
+            // If no toolset specified, use this priority:
+            // 1. CLI default (from -t flag)
+            // 2. Detected VS toolset (fallback)
+            if (cfg.platform_toolset.empty()) {
+                // Check if a default was set via CLI (-t flag) or environment variable
+                if (!registry_default.empty()) {
+                    cfg.platform_toolset = registry_default;
+#ifndef NDEBUG
+                    std::cout << "[DEBUG]   -> Set to CLI default toolset: " << cfg.platform_toolset << "\n";
+#endif
+                    if (!already_logged) {
+                        std::cout << "Using CLI default toolset " << cfg.platform_toolset
+                                  << " for projects without explicit toolset\n";
+                        already_logged = true;
+                    }
+                } else {
+                    // No CLI default, fall back to detected VS toolset
+                    cfg.platform_toolset = vs_info->platform_toolset;
+#ifndef NDEBUG
+                    std::cout << "[DEBUG]   -> Set to detected toolset: " << cfg.platform_toolset << "\n";
+#endif
+                    if (!already_logged) {
+                        std::cout << "Using detected toolset " << cfg.platform_toolset
+                                  << " for projects without explicit toolset\n";
+                        already_logged = true;
+                    }
+                }
+            } else {
+#ifndef NDEBUG
+                std::cout << "[DEBUG]   -> Keeping explicit toolset: " << cfg.platform_toolset << "\n";
+#endif
+                // Validate explicitly specified toolset
+                int specified_year = toolset_registry.get_toolset_year(cfg.platform_toolset);
+
+#ifndef NDEBUG
+                std::cout << "[DEBUG]   -> Toolset year: " << specified_year
+                          << ", detected VS year: " << vs_info->year << "\n";
+#endif
+
+                if (specified_year > vs_info->year) {
+                    std::cerr << "Error: Project '" << proj.name << "' requires toolset "
+                              << cfg.platform_toolset << " (Visual Studio " << specified_year << ")\n";
+                    std::cerr << "       but only Visual Studio " << vs_info->year
+                              << " is installed.\n";
+                    std::cerr << "       Please install Visual Studio " << specified_year
+                              << " or newer, or change the toolset in the buildscript.\n";
+                    return false;
+                }
+            }
+        }
+    }
+
+    // 3. THIRD: Generate project files (now with correct toolsets)
     for (const auto& project : solution.projects) {
         fs::path vcxproj_path;
 
@@ -1214,12 +1310,22 @@ bool VcxprojGenerator::generate(const Solution& solution, const std::string& out
         }
     }
 
-    // Generate solution file
+    // 4. FOURTH: Generate solution file
     if (!solution.projects.empty()) {
+#ifndef NDEBUG
+        std::cout << "[DEBUG] ========== Solution Generation Start ==========\n";
+#endif
+
         std::string sln_name = solution.name.empty() ? solution.projects[0].name : solution.name;
 
-        // Determine solution format based on toolsets
-        bool use_slnx = should_use_slnx_format(solution);
+        // Determine solution format based on detected VS installation
+        bool use_slnx = (vs_info->year >= 2026);
+
+#ifndef NDEBUG
+        std::cout << "[DEBUG] Solution format decision: VS year " << vs_info->year
+                  << " -> " << (use_slnx ? ".slnx" : ".sln") << "\n";
+        std::cout << "[DEBUG] ========== Solution Generation End ==========\n";
+#endif
 
         if (use_slnx) {
             // Generate .slnx for MSVC 2026
@@ -1230,7 +1336,7 @@ bool VcxprojGenerator::generate(const Solution& solution, const std::string& out
             slnx_path = fs::path(output_dir) / (sln_name + ".slnx");
 #endif
 
-            std::cout << "Generating .slnx format for MSVC 2026...\n";
+            std::cout << "Generating .slnx format for Visual Studio " << vs_info->year << "...\n";
 
             if (!generate_slnx(solution, slnx_path.string())) {
                 std::cerr << "Error: Failed to generate " << slnx_path << "\n";
@@ -1255,17 +1361,18 @@ bool VcxprojGenerator::generate(const Solution& solution, const std::string& out
     return true;
 }
 
-// Determine if solution should use .slnx format based on toolsets
-bool VcxprojGenerator::should_use_slnx_format(const Solution& solution) const {
-    // Check if any project uses MSVC 2026 toolsets (v145 or v144)
-    for (const auto& proj : solution.projects) {
-        for (const auto& [config_key, cfg] : proj.configurations) {
-            if (cfg.platform_toolset == "v145" || cfg.platform_toolset == "v144") {
-                return true;
-            }
-        }
+// Determine if solution should use .slnx format based on detected VS installation
+bool VcxprojGenerator::should_use_slnx_format() const {
+    // Detect latest VS installation
+    auto vs_info = VSDetector::detect_latest_vs();
+
+    if (!vs_info.has_value()) {
+        // No VS detected - this will cause error later
+        return false;
     }
-    return false;
+
+    // Use .slnx for VS 2026+
+    return vs_info->year >= 2026;
 }
 
 // Determine ToolsVersion based on toolset
