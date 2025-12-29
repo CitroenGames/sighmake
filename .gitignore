@@ -1,10 +1,12 @@
 build/
 vs_project/
 output/
+.vs/
 *.vcxproj
 *.vcxproj.filters
 *.vcxproj.user
 *.sln
+*.slnx
 *.suo
 *.user
 *.aps

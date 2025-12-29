@@ -143,8 +143,24 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     // Root Project element
     auto root = doc.append_child("Project");
     root.append_attribute("DefaultTargets") = "Build";
-    root.append_attribute("ToolsVersion") = "4.0";
+
+    // Determine ToolsVersion based on project's toolsets
+    std::string tools_version = "4.0"; // Default legacy
+    for (const auto& [config_key, cfg] : project.configurations) {
+        std::string ts_version = get_tools_version(cfg.platform_toolset);
+        if (ts_version == "18.0") {
+            tools_version = "18.0";
+            break; // MSVC 2026 takes precedence
+        }
+    }
+
+    root.append_attribute("ToolsVersion") = tools_version.c_str();
     root.append_attribute("xmlns") = "http://schemas.microsoft.com/developer/msbuild/2003";
+
+    // Add VCProjectUpgraderObjectName for MSVC 2026 to prevent auto-upgrade prompts
+    if (tools_version == "18.0") {
+        root.append_attribute("VCProjectUpgraderObjectName") = "NoUpgrade";
+    }
 
     // ProjectConfigurations
     auto configs_group = root.append_child("ItemGroup");
@@ -1068,6 +1084,95 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
     return true;
 }
 
+bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string& output_path) {
+    pugi::xml_document doc;
+
+    // XML declaration
+    auto decl = doc.prepend_child(pugi::node_declaration);
+    decl.append_attribute("version") = "1.0";
+    decl.append_attribute("encoding") = "UTF-8";
+
+    // Root Solution element
+    auto root = doc.append_child("Solution");
+
+    // Configurations section
+    auto configs = root.append_child("Configurations");
+
+    // Build types (configurations like Debug, Release)
+    for (const auto& config : solution.configurations) {
+        auto build_type = configs.append_child("BuildType");
+        build_type.append_attribute("Name") = config.c_str();
+    }
+
+    // Platforms (Win32, x64, etc.)
+    for (const auto& platform : solution.platforms) {
+        auto plat_elem = configs.append_child("Platform");
+        plat_elem.append_attribute("Name") = platform.c_str();
+    }
+
+    // Projects
+    for (const auto& proj : solution.projects) {
+        // Compute relative path to vcxproj
+        std::string vcxproj_path;
+#if PROJ_SEPERATOR
+        if (!proj.buildscript_path.empty()) {
+            fs::path proj_path = fs::path(proj.buildscript_path) / (proj.name + "_.vcxproj");
+            fs::path sln_path(output_path);
+            try {
+                vcxproj_path = fs::relative(proj_path, sln_path.parent_path()).string();
+                std::replace(vcxproj_path.begin(), vcxproj_path.end(), '/', '\\');
+            } catch (...) {
+                vcxproj_path = proj.name + "_.vcxproj";
+            }
+        } else {
+            vcxproj_path = proj.name + "_.vcxproj";
+        }
+#else
+        vcxproj_path = proj.name + ".vcxproj";
+#endif
+
+        auto project = root.append_child("Project");
+        project.append_attribute("Path") = vcxproj_path.c_str();
+        project.append_attribute("Type") = "8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942"; // C++ GUID
+        project.append_attribute("Id") = proj.uuid.c_str();
+
+        // Add build dependencies
+        for (const auto& dep_name : proj.project_references) {
+            // Find the referenced project path
+            std::string dep_path;
+            for (const auto& dep_proj : solution.projects) {
+                if (dep_proj.name == dep_name) {
+#if PROJ_SEPERATOR
+                    if (!dep_proj.buildscript_path.empty()) {
+                        fs::path dep_proj_path = fs::path(dep_proj.buildscript_path) / (dep_proj.name + "_.vcxproj");
+                        fs::path sln_path(output_path);
+                        try {
+                            dep_path = fs::relative(dep_proj_path, sln_path.parent_path()).string();
+                            std::replace(dep_path.begin(), dep_path.end(), '/', '\\');
+                        } catch (...) {
+                            dep_path = dep_proj.name + "_.vcxproj";
+                        }
+                    } else {
+                        dep_path = dep_proj.name + "_.vcxproj";
+                    }
+#else
+                    dep_path = dep_proj.name + ".vcxproj";
+#endif
+                    break;
+                }
+            }
+
+            if (!dep_path.empty()) {
+                auto dep_elem = project.append_child("BuildDependency");
+                dep_elem.append_attribute("Project") = dep_path.c_str();
+            }
+        }
+    }
+
+    // Save to file with tab indentation
+    return doc.save_file(output_path.c_str(), "\t", pugi::format_default);
+}
+
 bool VcxprojGenerator::generate(const Solution& solution, const std::string& output_dir) {
     namespace fs = std::filesystem;
 
@@ -1113,21 +1218,64 @@ bool VcxprojGenerator::generate(const Solution& solution, const std::string& out
     if (!solution.projects.empty()) {
         std::string sln_name = solution.name.empty() ? solution.projects[0].name : solution.name;
 
+        // Determine solution format based on toolsets
+        bool use_slnx = should_use_slnx_format(solution);
+
+        if (use_slnx) {
+            // Generate .slnx for MSVC 2026
+            fs::path slnx_path;
 #if PROJ_SEPERATOR
-        // Generate with underscore suffix
-        fs::path sln_path = fs::path(output_dir) / (sln_name + "_.sln");
+            slnx_path = fs::path(output_dir) / (sln_name + "_.slnx");
 #else
-        // Generate without underscore
-        fs::path sln_path = fs::path(output_dir) / (sln_name + ".sln");
+            slnx_path = fs::path(output_dir) / (sln_name + ".slnx");
 #endif
 
-        if (!generate_sln(solution, sln_path.string())) {
-            std::cerr << "Error: Failed to generate " << sln_path << "\n";
-            return false;
+            std::cout << "Generating .slnx format for MSVC 2026...\n";
+
+            if (!generate_slnx(solution, slnx_path.string())) {
+                std::cerr << "Error: Failed to generate " << slnx_path << "\n";
+                return false;
+            }
+        } else {
+            // Generate traditional .sln for older toolsets
+            fs::path sln_path;
+#if PROJ_SEPERATOR
+            sln_path = fs::path(output_dir) / (sln_name + "_.sln");
+#else
+            sln_path = fs::path(output_dir) / (sln_name + ".sln");
+#endif
+
+            if (!generate_sln(solution, sln_path.string())) {
+                std::cerr << "Error: Failed to generate " << sln_path << "\n";
+                return false;
+            }
         }
     }
 
     return true;
+}
+
+// Determine if solution should use .slnx format based on toolsets
+bool VcxprojGenerator::should_use_slnx_format(const Solution& solution) const {
+    // Check if any project uses MSVC 2026 toolsets (v145 or v144)
+    for (const auto& proj : solution.projects) {
+        for (const auto& [config_key, cfg] : proj.configurations) {
+            if (cfg.platform_toolset == "v145" || cfg.platform_toolset == "v144") {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Determine ToolsVersion based on toolset
+std::string VcxprojGenerator::get_tools_version(const std::string& toolset) const {
+    // MSVC 2026 uses ToolsVersion 18.0
+    if (toolset == "v145" || toolset == "v144") {
+        return "18.0";
+    }
+    // Legacy toolsets use 4.0
+    return "4.0";
 }
 
 // Register the vcxproj generator

@@ -1,4 +1,5 @@
 #include "buildscript_parser.hpp"
+#include "common/toolset_registry.hpp"
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -331,7 +332,7 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
 
             // Set defaults if not already set
             if (cfg.platform_toolset.empty()) {
-                cfg.platform_toolset = "v143";
+                cfg.platform_toolset = ToolsetRegistry::instance().get_default();
             }
             if (cfg.windows_target_platform_version.empty()) {
                 cfg.windows_target_platform_version = "10.0";
@@ -795,8 +796,20 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             proj.configurations[config_key].config_type = config_type;
         }
     } else if (key == "toolset" || key == "platform_toolset") {
-        for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].platform_toolset = value;
+        auto& registry = ToolsetRegistry::instance();
+        auto resolved = registry.resolve(value);
+        
+        if (resolved) {
+            std::string toolset_id = *resolved;
+            
+            // Warn if unknown (but still allow for forward compatibility)
+            if (!registry.is_known(toolset_id)) {
+                std::cerr << "Warning: Unknown toolset '" << toolset_id << "'\n";
+            }
+            
+            for (const auto& config_key : state.solution->get_config_keys()) {
+                proj.configurations[config_key].platform_toolset = toolset_id;
+            }
         }
     } else if (key == "windows_sdk" || key == "windows_sdk_version" || key == "windows_target_platform_version") {
         for (const auto& config_key : state.solution->get_config_keys()) {
@@ -1398,7 +1411,16 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
     } else if (key == "debug_info" || key == "debug_information_format") {
         cfg.cl_compile.debug_information_format = value;
     } else if (key == "toolset" || key == "platform_toolset") {
-        cfg.platform_toolset = value;
+        auto& registry = ToolsetRegistry::instance();
+        auto resolved = registry.resolve(value);
+        
+        if (resolved) {
+            cfg.platform_toolset = *resolved;
+            
+            if (!registry.is_known(*resolved)) {
+                std::cerr << "Warning: Unknown toolset '" << *resolved << "'\n";
+            }
+        }
     } else if (key == "windows_sdk" || key == "windows_sdk_version" || key == "windows_target_platform_version") {
         cfg.windows_target_platform_version = value;
     } else if (key == "outdir" || key == "output_dir") {

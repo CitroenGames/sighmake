@@ -1,8 +1,10 @@
 #include "config.hpp"
 #include "parsers/buildscript_parser.hpp"
-#include "vcxproj_generator.hpp"
-#include "generator.hpp"
+#include "generators/vcxproj_generator.hpp"
 #include "parsers/vcxproj_reader.hpp"
+#include "common/toolset_registry.hpp"
+
+// Standard library includes
 #include <iostream>
 #include <filesystem>
 #include <cstring>
@@ -17,6 +19,8 @@ void print_usage(const char* program_name) {
     std::cout << "Options:\n";
     std::cout << "  -g, --generator <type> Generator type (default: vcxproj)\n";
     std::cout << "  -c, --convert          Convert Visual Studio solution to buildscripts\n";
+    std::cout << "  -t, --toolset <version>    Default toolset (2026, v145, etc)\n";
+    std::cout << "      --list-toolsets        List known MSVC toolsets\n";
     std::cout << "  -l, --list             List available generators\n";
     std::cout << "  -h, --help             Show this help message\n\n";
     std::cout << "Examples:\n";
@@ -24,6 +28,15 @@ void print_usage(const char* program_name) {
 }
 
 int main(int argc, char* argv[]) {
+
+    // Check for SIGHMAKE_DEFAULT_TOOLSET environment variable
+    if (const char* env_toolset = std::getenv("SIGHMAKE_DEFAULT_TOOLSET")) {
+        auto& registry = vcxproj::ToolsetRegistry::instance();
+        auto resolved = registry.resolve(env_toolset);
+        if (resolved) {
+            registry.set_default(*resolved);
+        }
+    }
     if (argc < 2) {
         print_usage(argv[0]);
         return 1;
@@ -32,6 +45,7 @@ int main(int argc, char* argv[]) {
     std::string buildscript_path;
     std::string output_dir = ".";
     std::string generator_type = "vcxproj";  // Default generator
+    std::string default_toolset;
     bool convert_mode = false;
 
     // Parse command line arguments
@@ -41,6 +55,28 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--convert") == 0) {
             convert_mode = true;
+        } else if (strcmp(argv[i], "-t") == 0 || strcmp(argv[i], "--toolset") == 0) {
+            if (i + 1 < argc) {
+                default_toolset = argv[++i];
+            } else {
+                std::cerr << "Error: -t requires an argument\n";
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--list-toolsets") == 0) {
+            std::cout << "Known MSVC toolsets:\n\n";
+            std::cout << "  Year   Toolset  Description\n";
+            std::cout << "  ----   -------  -----------\n";
+            std::cout << "  2026   v145     Visual Studio 2026 (predicted)\n";
+            std::cout << "  2026   v144     Visual Studio 2026 (alternate)\n";
+            std::cout << "  2022   v143     Visual Studio 2022 (default)\n";
+            std::cout << "  2019   v142     Visual Studio 2019\n";
+            std::cout << "  2017   v141     Visual Studio 2017\n";
+            std::cout << "  2015   v140     Visual Studio 2015\n";
+            std::cout << "  2013   v120     Visual Studio 2013\n";
+            std::cout << "  2012   v110     Visual Studio 2012\n";
+            std::cout << "  2010   v100     Visual Studio 2010\n";
+            std::cout << "\nYou can specify either year or toolset ID.\n";
+            return 0;
         } else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--list") == 0) {
             std::cout << "Available generators:\n";
             auto& factory = vcxproj::GeneratorFactory::instance();
@@ -70,6 +106,18 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: No input file specified\n";
         print_usage(argv[0]);
         return 1;
+
+    }
+    // Apply CLI default toolset if specified
+    if (!default_toolset.empty()) {
+        auto& registry = vcxproj::ToolsetRegistry::instance();
+        auto resolved = registry.resolve(default_toolset);
+        if (resolved) {
+            registry.set_default(*resolved);
+            std::cout << "Using default toolset: " << *resolved << "\n";
+        } else {
+            std::cerr << "Warning: Could not resolve toolset '" << default_toolset << "'\n";
+        }
     }
 
     // Check if input file exists

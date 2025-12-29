@@ -1,7 +1,7 @@
 #pragma once
 
-#include "project_types.hpp"
-#include "generator.hpp"
+#include "common/project_types.hpp"
+#include "common/generator.hpp"
 #include <string>
 #include <filesystem>
 
@@ -30,11 +30,20 @@ public:
     // Generate a .sln file from a Solution
     bool generate_sln(const Solution& solution, const std::string& output_path);
 
+    // Generate a .slnx file from a Solution (XML format for VS 2026)
+    bool generate_slnx(const Solution& solution, const std::string& output_path);
+
 private:
     // Helper functions for generating XML elements
     std::string escape_xml(const std::string& str);
     std::string join_vector(const std::vector<std::string>& vec, const std::string& separator);
     std::string get_file_type_name(FileType type);
+
+    // Determine if solution should use .slnx format based on toolsets
+    bool should_use_slnx_format(const Solution& solution) const;
+
+    // Determine ToolsVersion based on toolset
+    std::string get_tools_version(const std::string& toolset) const;
 };
 
 } // namespace vcxproj
