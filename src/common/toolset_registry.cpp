@@ -26,6 +26,9 @@ ToolsetRegistry::ToolsetRegistry() : default_toolset_("v143") {
     toolsets_["v110"] = {"v110", "Visual Studio 2012", 2012, true};
     toolsets_["v100"] = {"v100", "Visual Studio 2010", 2010, true};
 
+    // Windows XP targeting toolsets
+    toolsets_["v110_xp"] = {"v110_xp", "Visual Studio 2012 (XP)", 2012, true};
+
     // Year-to-toolset mappings for user convenience
     year_to_id_[2026] = "v145";  // Default to v145 for VS 2026
     year_to_id_[2022] = "v143";
@@ -45,6 +48,9 @@ ToolsetRegistry::ToolsetRegistry() : default_toolset_("v143") {
     toolchain_to_toolset_["msvc2013"] = "v120";
     toolchain_to_toolset_["msvc2012"] = "v110";
     toolchain_to_toolset_["msvc2010"] = "v100";
+
+    // XP toolset mappings
+    toolchain_to_toolset_["msvc2012xp"] = "v110_xp";
 
     // Future: other toolchains
     // toolchain_to_toolset_["gcc13"] = "gcc-13";
@@ -106,6 +112,8 @@ int ToolsetRegistry::get_toolset_year(const std::string& toolset) const {
     else if (toolset == "v120") year = 2013;
     else if (toolset == "v110") year = 2012;
     else if (toolset == "v100") year = 2010;
+    // XP toolsets use same year as their base toolset
+    else if (toolset == "v110_xp") year = 2012;
 
 #ifndef NDEBUG
     std::cout << year << "\n";
