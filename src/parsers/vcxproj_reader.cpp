@@ -1030,20 +1030,13 @@ static std::string create_file_settings_signature(const SourceFile* src,
     return sig.str();
 }
 
-bool BuildscriptWriter::write_buildscript(const Project& project, const std::string& filepath,
-                                         const std::vector<std::string>& configurations,
-                                         const std::vector<std::string>& platforms) {
+void BuildscriptWriter::write_project_content(std::ostream& out, const Project& project,
+                                             const std::string& filepath,
+                                             const std::vector<std::string>& configurations,
+                                             const std::vector<std::string>& platforms) {
     // Suppress unused parameter warnings (these may be used in future enhancements)
     (void)configurations;
     (void)platforms;
-
-    std::ofstream out(filepath);
-    if (!out.is_open()) {
-        return false;
-    }
-
-    out << "# Generated buildscript from " << project.name << ".vcxproj\n";
-    out << "# You may need to adjust paths and settings\n\n";
 
     out << "[project:" << project.name << "]\n";
 
@@ -1950,59 +1943,144 @@ bool BuildscriptWriter::write_buildscript(const Project& project, const std::str
             }
         }
     }
+}
+
+bool BuildscriptWriter::write_buildscript(const Project& project, const std::string& filepath,
+                                         const std::vector<std::string>& configurations,
+                                         const std::vector<std::string>& platforms) {
+    std::ofstream out(filepath);
+    if (!out.is_open()) {
+        return false;
+    }
+
+    out << "# Generated buildscript from " << project.name << ".vcxproj\n";
+    out << "# You may need to adjust paths and settings\n\n";
+
+    write_project_content(out, project, filepath, configurations, platforms);
 
     out.close();
     return true;
 }
 
-bool BuildscriptWriter::write_solution_buildscripts(const Solution& solution, const std::string& base_dir) {
-    fs::path sln_base = fs::path(base_dir);
-    std::vector<std::string> buildscript_paths;
+// Helper function to determine if a buildscript should be merged with the solution buildscript
+static bool should_merge_buildscript(
+    const std::string& solution_name,
+    const std::string& project_name,
+    const std::string& vcxproj_rel_path)
+{
+    // Check if names match (case-insensitive comparison for Windows compatibility)
+    std::string sln_lower = solution_name;
+    std::string proj_lower = project_name;
+    std::transform(sln_lower.begin(), sln_lower.end(), sln_lower.begin(), ::tolower);
+    std::transform(proj_lower.begin(), proj_lower.end(), proj_lower.begin(), ::tolower);
 
-    // Generate individual buildscripts next to each vcxproj
-    for (const auto& project : solution.projects) {
-        // Determine output path: same directory as the vcxproj file
-        fs::path vcxproj_rel_path(project.vcxproj_path);
-        fs::path buildscript_path = sln_base / vcxproj_rel_path.parent_path() / (project.name + ".buildscript");
-
-        std::cout << "  Generating: " << buildscript_path.string() << "\n";
-
-        if (!write_buildscript(project, buildscript_path.string(),
-                              solution.configurations, solution.platforms)) {
-            std::cerr << "Error: Failed to write " << buildscript_path.string() << "\n";
-            return false;
-        }
-
-        // Store relative path from solution directory for include directive
-        fs::path rel_include_path = vcxproj_rel_path.parent_path() / (project.name + ".buildscript");
-        buildscript_paths.push_back(rel_include_path.string());
-    }
-
-    // Generate root buildscript that includes all individual buildscripts
-    fs::path root_buildscript = sln_base / (solution.name + ".buildscript");
-    std::ofstream root_out(root_buildscript);
-    if (!root_out.is_open()) {
-        std::cerr << "Error: Failed to create root buildscript: " << root_buildscript.string() << "\n";
+    if (sln_lower != proj_lower) {
         return false;
     }
 
-    std::cout << "  Generating root: " << root_buildscript.string() << "\n";
+    // Check if vcxproj is in same directory as solution
+    fs::path vcxproj_path(vcxproj_rel_path);
+    fs::path parent = vcxproj_path.parent_path();
 
-    root_out << "# Generated root buildscript for solution: " << solution.name << "\n";
-    root_out << "# This file includes all project buildscripts\n\n";
-    root_out << "[solution]\n";
-    root_out << "name = " << solution.name << "\n";
-    root_out << "uuid = " << solution.uuid << "\n\n";
+    // Empty or "." means same directory
+    return parent.empty() || parent.string() == ".";
+}
 
-    // Write include directives for all project buildscripts
-    for (const auto& include_path : buildscript_paths) {
-        // Convert backslashes to forward slashes for consistency
-        std::string normalized_path = include_path;
-        std::replace(normalized_path.begin(), normalized_path.end(), '\\', '/');
-        root_out << "include = " << normalized_path << "\n";
+// Helper function to write [solution] section
+static void write_solution_section(
+    std::ostream& out,
+    const std::string& solution_name,
+    const std::string& solution_uuid)
+{
+    out << "[solution]\n";
+    out << "name = " << solution_name << "\n";
+    out << "uuid = " << solution_uuid << "\n\n";
+}
+
+bool BuildscriptWriter::write_solution_buildscripts(const Solution& solution, const std::string& base_dir) {
+    fs::path sln_base = fs::path(base_dir);
+    std::vector<std::string> buildscript_paths;
+    std::vector<size_t> merged_project_indices;
+
+    // Phase 1: Process projects - detect which ones should be merged
+    for (size_t i = 0; i < solution.projects.size(); ++i) {
+        const auto& project = solution.projects[i];
+
+        if (should_merge_buildscript(solution.name, project.name, project.vcxproj_path)) {
+            // Mark for merging - skip individual buildscript
+            merged_project_indices.push_back(i);
+            std::cout << "  Merging project '" << project.name
+                      << "' with solution buildscript (same name and directory)\n";
+        } else {
+            // Generate individual buildscript (existing logic)
+            fs::path vcxproj_rel_path(project.vcxproj_path);
+            fs::path buildscript_path = sln_base / vcxproj_rel_path.parent_path() / (project.name + ".buildscript");
+
+            std::cout << "  Generating: " << buildscript_path.string() << "\n";
+
+            if (!write_buildscript(project, buildscript_path.string(),
+                                  solution.configurations, solution.platforms)) {
+                std::cerr << "Error: Failed to write " << buildscript_path.string() << "\n";
+                return false;
+            }
+
+            // Store relative path from solution directory for include directive
+            fs::path rel_include_path = vcxproj_rel_path.parent_path() / (project.name + ".buildscript");
+            buildscript_paths.push_back(rel_include_path.string());
+        }
     }
 
-    root_out.close();
+    // Phase 2: Generate merged buildscripts
+    for (size_t idx : merged_project_indices) {
+        const auto& project = solution.projects[idx];
+        fs::path merged_path = sln_base / (solution.name + ".buildscript");
+
+        std::cout << "  Generating merged: " << merged_path.string() << "\n";
+
+        std::ofstream merged_out(merged_path);
+        if (!merged_out.is_open()) {
+            std::cerr << "Error: Failed to create merged buildscript: " << merged_path.string() << "\n";
+            return false;
+        }
+
+        merged_out << "# Generated merged buildscript for solution and project: " << solution.name << "\n";
+        merged_out << "# Solution and project share the same name and directory\n\n";
+
+        // Write solution section
+        write_solution_section(merged_out, solution.name, solution.uuid);
+
+        // Write project section (reusing existing logic)
+        write_project_content(merged_out, project, merged_path.string(),
+                             solution.configurations, solution.platforms);
+
+        merged_out.close();
+    }
+
+    // Phase 3: Generate root buildscript only if there are non-merged projects
+    if (!buildscript_paths.empty()) {
+        fs::path root_buildscript = sln_base / (solution.name + ".buildscript");
+        std::ofstream root_out(root_buildscript);
+        if (!root_out.is_open()) {
+            std::cerr << "Error: Failed to create root buildscript: " << root_buildscript.string() << "\n";
+            return false;
+        }
+
+        std::cout << "  Generating root: " << root_buildscript.string() << "\n";
+
+        root_out << "# Generated root buildscript for solution: " << solution.name << "\n";
+        root_out << "# This file includes all project buildscripts\n\n";
+
+        write_solution_section(root_out, solution.name, solution.uuid);
+
+        // Write include directives for non-merged projects
+        for (const auto& include_path : buildscript_paths) {
+            std::string normalized_path = include_path;
+            std::replace(normalized_path.begin(), normalized_path.end(), '\\', '/');
+            root_out << "include = " << normalized_path << "\n";
+        }
+
+        root_out.close();
+    }
 
     return true;
 }

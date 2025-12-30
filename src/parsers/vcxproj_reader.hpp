@@ -69,6 +69,12 @@ private:
 
     // Helper to join vector with commas
     std::string join_vector(const std::vector<std::string>& vec, const std::string& sep = ", ");
+
+    // Helper to write project content to stream (extracted for reuse in merged buildscripts)
+    void write_project_content(std::ostream& out, const Project& project,
+                              const std::string& filepath,
+                              const std::vector<std::string>& configurations,
+                              const std::vector<std::string>& platforms);
 };
 
 } // namespace vcxproj
