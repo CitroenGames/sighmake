@@ -162,6 +162,57 @@ static bool looks_like_file_path(const std::string& token) {
     return result;
 }
 
+// Structure to hold property sheet settings
+struct PropSheetSettings {
+    std::vector<std::string> preprocessor_definitions;
+    std::vector<std::string> additional_include_directories;
+};
+
+// Read a .props file and extract ItemDefinitionGroup settings
+static PropSheetSettings read_props_file(const std::string& filepath) {
+    PropSheetSettings settings;
+    pugi::xml_document doc;
+
+    if (!doc.load_file(filepath.c_str())) {
+        std::cerr << "Warning: Failed to load property sheet: " << filepath << std::endl;
+        return settings;
+    }
+
+    auto root = doc.child("Project");
+    if (!root) return settings;
+
+    // Parse ItemDefinitionGroup
+    for (auto item_def_group : root.children("ItemDefinitionGroup")) {
+        if (auto cl = item_def_group.child("ClCompile")) {
+            // Parse PreprocessorDefinitions
+            if (auto n = cl.child("PreprocessorDefinitions")) {
+                std::string val = n.text().as_string();
+                std::istringstream ss(val);
+                std::string item;
+                while (std::getline(ss, item, ';')) {
+                    if (!item.empty() && item.find("%(") != 0) {
+                        settings.preprocessor_definitions.push_back(item);
+                    }
+                }
+            }
+
+            // Parse AdditionalIncludeDirectories
+            if (auto n = cl.child("AdditionalIncludeDirectories")) {
+                std::string val = n.text().as_string();
+                std::istringstream ss(val);
+                std::string item;
+                while (std::getline(ss, item, ';')) {
+                    if (!item.empty() && item.find("%(") != 0) {
+                        settings.additional_include_directories.push_back(item);
+                    }
+                }
+            }
+        }
+    }
+
+    return settings;
+}
+
 Project VcxprojReader::read_vcxproj(const std::string& filepath) {
     Project project;
     pugi::xml_document doc;
@@ -286,6 +337,48 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
         }
     }
 
+    // Parse ImportGroup sections to find property sheets and accumulate their settings
+    std::map<std::string, PropSheetSettings> prop_sheet_settings;
+    fs::path vcxproj_dir = fs::path(filepath).parent_path();
+
+    for (auto import_group : root.children("ImportGroup")) {
+        std::string label = import_group.attribute("Label").as_string();
+        if (label != "PropertySheets") continue;
+
+        // Get configuration condition
+        std::string condition = import_group.attribute("Condition").as_string();
+        std::string config_key = parse_condition(condition);
+
+        // Read each imported property sheet
+        PropSheetSettings& settings = prop_sheet_settings[config_key];
+
+        for (auto import_node : import_group.children("Import")) {
+            std::string props_path = import_node.attribute("Project").as_string();
+
+            // Skip MSBuild system property sheets (they contain MSBuild variables we can't resolve)
+            if (props_path.find("$(") != std::string::npos) continue;
+
+            // Resolve relative path
+            fs::path abs_props_path = vcxproj_dir / props_path;
+            abs_props_path = abs_props_path.lexically_normal();
+
+            // Read the property sheet
+            PropSheetSettings props_settings = read_props_file(abs_props_path.string());
+
+            // Accumulate settings
+            settings.preprocessor_definitions.insert(
+                settings.preprocessor_definitions.end(),
+                props_settings.preprocessor_definitions.begin(),
+                props_settings.preprocessor_definitions.end()
+            );
+            settings.additional_include_directories.insert(
+                settings.additional_include_directories.end(),
+                props_settings.additional_include_directories.begin(),
+                props_settings.additional_include_directories.end()
+            );
+        }
+    }
+
     // Parse ItemDefinitionGroup (compiler, linker, etc. settings)
     for (auto item_def : root.children("ItemDefinitionGroup")) {
         std::string condition = item_def.attribute("Condition").as_string();
@@ -315,8 +408,49 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             READ_TEXT("InlineFunctionExpansion", inline_function_expansion);
             READ_BOOL("IntrinsicFunctions", intrinsic_functions);
             READ_TEXT("FavorSizeOrSpeed", favor_size_or_speed);
-            READ_VECTOR("AdditionalIncludeDirectories", additional_include_directories);
-            READ_VECTOR("PreprocessorDefinitions", preprocessor_definitions);
+
+            // Parse AdditionalIncludeDirectories with %(AdditionalIncludeDirectories) expansion
+            if (auto n = cl.child("AdditionalIncludeDirectories")) {
+                std::string val = n.text().as_string();
+                std::istringstream ss(val);
+                std::string item;
+                while (std::getline(ss, item, ';')) {
+                    if (!item.empty()) {
+                        if (item == "%(AdditionalIncludeDirectories)") {
+                            // Expand to property sheet includes for this config
+                            if (prop_sheet_settings.count(config_key)) {
+                                for (const auto& inc : prop_sheet_settings[config_key].additional_include_directories) {
+                                    settings.additional_include_directories.push_back(inc);
+                                }
+                            }
+                        } else {
+                            settings.additional_include_directories.push_back(item);
+                        }
+                    }
+                }
+            }
+
+            // Parse PreprocessorDefinitions with %(PreprocessorDefinitions) expansion
+            if (auto n = cl.child("PreprocessorDefinitions")) {
+                std::string val = n.text().as_string();
+                std::istringstream ss(val);
+                std::string item;
+                while (std::getline(ss, item, ';')) {
+                    if (!item.empty()) {
+                        if (item == "%(PreprocessorDefinitions)") {
+                            // Expand to property sheet defines for this config
+                            if (prop_sheet_settings.count(config_key)) {
+                                for (const auto& def : prop_sheet_settings[config_key].preprocessor_definitions) {
+                                    settings.preprocessor_definitions.push_back(def);
+                                }
+                            }
+                        } else {
+                            settings.preprocessor_definitions.push_back(item);
+                        }
+                    }
+                }
+            }
+
             READ_VECTOR("ForcedIncludeFiles", forced_include_files);
             READ_BOOL("StringPooling", string_pooling);
             READ_BOOL("MinimalRebuild", minimal_rebuild);

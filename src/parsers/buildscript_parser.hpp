@@ -3,6 +3,7 @@
 #include "common/project_types.hpp"
 #include <string>
 #include <iostream>
+#include <set>
 
 namespace vcxproj {
 
@@ -33,6 +34,8 @@ private:
         bool in_file_properties = false;  // Track if we're inside a file_properties() block
         SourceFile* set_file_properties_file = nullptr;  // File being set in set_file_properties() block
         bool in_set_file_properties = false;  // Track if we're inside a set_file_properties() block
+        std::set<std::string> discovered_configs;  // Track configs discovered from [config:...] sections
+        std::set<std::string> discovered_platforms;  // Track platforms discovered from [config:...] sections
     };
     
     // Parse a single line

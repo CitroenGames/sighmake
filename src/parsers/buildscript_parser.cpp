@@ -324,9 +324,10 @@ Solution BuildscriptParser::parse(const std::string& filepath) {
 Solution BuildscriptParser::parse_string(const std::string& content, const std::string& base_path) {
     Solution solution;
     solution.uuid = generate_uuid();
+    // Initialize with defaults - these will be updated if [config:...] sections are discovered
     solution.configurations = {"Debug", "Release"};
-    solution.platforms = {"Win32"};
-    
+    solution.platforms = {"Win32", "x64"};
+
     ParseState state;
     state.solution = &solution;
     state.base_path = base_path;
@@ -342,12 +343,27 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
         state.line_number++;
         parse_line(line, state);
     }
-    
+
+    // Update configurations from discovered [config:...] sections
+    // (this is redundant if configs were discovered, since they're updated immediately,
+    // but ensures the final state is correct)
+    if (!state.discovered_configs.empty() && !state.discovered_platforms.empty()) {
+        solution.configurations = std::vector<std::string>(
+            state.discovered_configs.begin(),
+            state.discovered_configs.end()
+        );
+        solution.platforms = std::vector<std::string>(
+            state.discovered_platforms.begin(),
+            state.discovered_platforms.end()
+        );
+    }
+    // If no configs were discovered, defaults (set at initialization) remain
+
     // Set default solution name if not specified
     if (solution.name.empty() && !solution.projects.empty()) {
         solution.name = solution.projects[0].name;
     }
-    
+
     // Ensure all projects have configurations set up
     for (auto& project : solution.projects) {
         for (const auto& config_key : solution.get_config_keys()) {
@@ -405,6 +421,18 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
 
             // Don't automatically add library ignore lists - preserve what's in the buildscript
             // Users can manually specify ignore_libs if needed
+        }
+
+        // Apply project-level preprocessor definitions to ALL final configurations
+        // This ensures defines are present even if configs were discovered after parsing project settings
+        if (!project.project_level_preprocessor_definitions.empty()) {
+            for (const auto& config_key : solution.get_config_keys()) {
+                auto& defines = project.configurations[config_key].cl_compile.preprocessor_definitions;
+                // Insert project-level defines at the beginning (they should come before config-specific ones)
+                defines.insert(defines.begin(),
+                              project.project_level_preprocessor_definitions.begin(),
+                              project.project_level_preprocessor_definitions.end());
+            }
         }
     }
 
@@ -614,8 +642,33 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
     
     // [config:Debug|Win32] - for config-specific settings
     if (section.rfind("config:", 0) == 0) {
-        state.current_config = trim(section.substr(7));  // Extract config name
+        state.current_config = trim(section.substr(7));  // Extract config name (e.g., "Debug|x64")
         state.current_file = nullptr;  // Leave file context
+
+        // Parse config|platform and track them for solution-level configuration generation
+        size_t pipe_pos = state.current_config.find('|');
+        if (pipe_pos != std::string::npos) {
+            std::string config = state.current_config.substr(0, pipe_pos);
+            std::string platform = state.current_config.substr(pipe_pos + 1);
+            if (!config.empty() && !platform.empty()) {
+                state.discovered_configs.insert(config);
+                state.discovered_platforms.insert(platform);
+
+                // Update solution configurations/platforms immediately so project-level settings
+                // can be applied to all configs (including newly discovered ones)
+                state.solution->configurations = std::vector<std::string>(
+                    state.discovered_configs.begin(),
+                    state.discovered_configs.end()
+                );
+                state.solution->platforms = std::vector<std::string>(
+                    state.discovered_platforms.begin(),
+                    state.discovered_platforms.end()
+                );
+            }
+        } else {
+            std::cerr << "Warning: Invalid config format (missing platform): " << state.current_config << "\n";
+        }
+
         return true;
     }
     
@@ -931,10 +984,13 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         }
     } else if (key == "defines" || key == "preprocessor" || key == "preprocessor_definitions") {
         auto defs = split(value, ',');
-        for (const auto& config_key : state.solution->get_config_keys()) {
-            auto& defines = proj.configurations[config_key].cl_compile.preprocessor_definitions;
-            defines.insert(defines.end(), defs.begin(), defs.end());
-        }
+        // Store as project-level defines that will be applied to all final configs
+        // Note: Unlike other settings, defines use deferred application (post-parsing) to ensure
+        // they appear in ALL configurations, even those discovered later from other buildscripts
+        proj.project_level_preprocessor_definitions.insert(
+            proj.project_level_preprocessor_definitions.end(),
+            defs.begin(), defs.end()
+        );
     } else if (key == "std" || key == "cpp_standard" || key == "language_standard") {
         std::string std_value = "stdcpp" + value;
         for (const auto& config_key : state.solution->get_config_keys()) {

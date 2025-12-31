@@ -218,6 +218,12 @@ struct Project {
     std::vector<std::string> project_references;        // Names of dependent projects
 
     std::map<std::string, Configuration> configurations; // Key is "Config|Platform"
+
+    // Project-level settings that apply to ALL configurations
+    // These are stored separately and applied post-parsing to handle cases where
+    // configurations are discovered after project settings are parsed (e.g., when
+    // including multiple buildscripts, configs from later projects affect all projects)
+    std::vector<std::string> project_level_preprocessor_definitions;
 };
 
 // Solution
