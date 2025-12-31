@@ -1,6 +1,7 @@
 #include "config.hpp"
 #include "parsers/buildscript_parser.hpp"
 #include "generators/vcxproj_generator.hpp"
+#include "generators/makefile_generator.hpp"
 #include "parsers/vcxproj_reader.hpp"
 #include "common/toolset_registry.hpp"
 
