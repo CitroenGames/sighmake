@@ -23,30 +23,75 @@ std::string MakefileGenerator::make_relative_or_keep(const std::string& path, co
 // Helper to compute relative path from makefile directory
 std::string MakefileGenerator::compute_relative_path(const std::string& path, const std::filesystem::path& makefile_dir) {
     namespace fs = std::filesystem;
-    std::string p = path;
-    // Replace backslashes with forward slashes
-    std::replace(p.begin(), p.end(), '\\', '/');
 
-    // Try to compute relative path from makefile directory
+    if (path.empty()) return ".";
+
     try {
-        fs::path abs_path = fs::absolute(path);
-        fs::path abs_makefile_dir = fs::absolute(makefile_dir);
-        fs::path rel_path = fs::relative(abs_path, abs_makefile_dir);
-        p = rel_path.string();
-        std::replace(p.begin(), p.end(), '\\', '/');
-        return p;
+        // Make both paths absolute and normalize
+        fs::path abs_target = fs::absolute(path).lexically_normal();
+        fs::path abs_base = fs::absolute(makefile_dir).lexically_normal();
+
+        // Try standard library function
+        fs::path rel_path = fs::relative(abs_target, abs_base);
+        std::string result = rel_path.string();
+        std::replace(result.begin(), result.end(), '\\', '/');
+        return result;
+
     } catch (...) {
-        // Fallback: just strip drive letter
-        if (p.size() >= 2 && p[1] == ':') {
-            p = p.substr(2);
-            if (!p.empty() && p[0] == '/') {
-                p = p.substr(1);
+        // Manual fallback when fs::relative() fails
+        try {
+            fs::path abs_target = fs::absolute(path).lexically_normal();
+            fs::path abs_base = fs::absolute(makefile_dir).lexically_normal();
+
+            // Check for different drives (Windows-specific)
+            if (abs_target.root_name() != abs_base.root_name()) {
+                std::string result = abs_target.string();
+                std::replace(result.begin(), result.end(), '\\', '/');
+                return result;
             }
+
+            // Split paths into components
+            std::vector<fs::path> target_parts;
+            std::vector<fs::path> base_parts;
+
+            for (const auto& part : abs_target) {
+                if (part != "/" && part != "\\") {
+                    target_parts.push_back(part);
+                }
+            }
+            for (const auto& part : abs_base) {
+                if (part != "/" && part != "\\") {
+                    base_parts.push_back(part);
+                }
+            }
+
+            // Find common prefix length
+            size_t common = 0;
+            while (common < target_parts.size() &&
+                   common < base_parts.size() &&
+                   target_parts[common] == base_parts[common]) {
+                common++;
+            }
+
+            // Build relative path: "../" for each level up, then remaining components
+            std::string result;
+            for (size_t i = common; i < base_parts.size(); i++) {
+                if (!result.empty()) result += "/";
+                result += "..";
+            }
+            for (size_t i = common; i < target_parts.size(); i++) {
+                if (!result.empty()) result += "/";
+                result += target_parts[i].string();
+            }
+
+            return result.empty() ? "." : result;
+
+        } catch (...) {
+            // Ultimate fallback - return with Unix separators
+            std::string result = path;
+            std::replace(result.begin(), result.end(), '\\', '/');
+            return result;
         }
-        while (!p.empty() && p[0] == '/') {
-            p = p.substr(1);
-        }
-        return p;
     }
 }
 
@@ -148,6 +193,11 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
         ss << map_warning_level(config.cl_compile.warning_level) << " ";
     }
 
+    // Position-independent code for shared libraries
+    if (config.config_type == "DynamicLibrary") {
+        ss << "-fPIC ";
+    }
+
     // Include directories - convert to relative paths
     for (const auto& inc : config.cl_compile.additional_include_directories) {
         std::string inc_path = compute_relative_path(inc, makefile_dir);
@@ -246,6 +296,11 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
         }
     }
 
+    // Strip .exe extension for Makefiles (Linux)
+    if (target_ext == ".exe") {
+        target_ext = "";
+    }
+
     // Get the directory containing the makefile for computing relative paths
     fs::path makefile_dir = fs::path(output_path).parent_path();
     if (makefile_dir.empty()) {
@@ -253,36 +308,8 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     }
 
     // Output and intermediate directories - convert to relative paths
-    auto make_relative = [&makefile_dir](const std::string& path) -> std::string {
-        std::string p = path;
-        // Replace backslashes with forward slashes
-        std::replace(p.begin(), p.end(), '\\', '/');
-
-        // Try to compute relative path from makefile directory
-        try {
-            fs::path abs_path = fs::absolute(path);
-            fs::path abs_makefile_dir = fs::absolute(makefile_dir);
-            fs::path rel_path = fs::relative(abs_path, abs_makefile_dir);
-            p = rel_path.string();
-            std::replace(p.begin(), p.end(), '\\', '/');
-            return p;
-        } catch (...) {
-            // Fallback: just strip drive letter
-            if (p.size() >= 2 && p[1] == ':') {
-                p = p.substr(2);
-                if (!p.empty() && p[0] == '/') {
-                    p = p.substr(1);
-                }
-            }
-            while (!p.empty() && p[0] == '/') {
-                p = p.substr(1);
-            }
-            return p;
-        }
-    };
-
-    std::string out_dir = make_relative(config.out_dir.empty() ? "build/" + config_name : config.out_dir);
-    std::string int_dir = make_relative(config.int_dir.empty() ? "build/" + config_name + "/obj" : config.int_dir);
+    std::string out_dir = compute_relative_path(config.out_dir.empty() ? "build/" + config_name : config.out_dir, makefile_dir);
+    std::string int_dir = compute_relative_path(config.int_dir.empty() ? "build/" + config_name + "/obj" : config.int_dir, makefile_dir);
 
     // Ensure directories end with /
     if (!out_dir.empty() && out_dir.back() != '/') out_dir += '/';
@@ -369,7 +396,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
             std::string obj_path = int_dir + obj_name;
 
             // Convert source path to relative (using the same logic as output dirs)
-            std::string src_relative = make_relative(src.path);
+            std::string src_relative = compute_relative_path(src.path, makefile_dir);
 
             obj_files.push_back(obj_path);
             source_to_obj.push_back({src_relative, obj_path});
@@ -466,20 +493,6 @@ bool MakefileGenerator::generate(Solution& solution, const std::string& output_d
 
     // Generate Makefiles for each project and configuration
     for (const auto& project : solution.projects) {
-        // Skip non-executable projects for now
-        bool has_exe = false;
-        for (const auto& [config_key, config] : project.configurations) {
-            if (config.config_type == "Application") {
-                has_exe = true;
-                break;
-            }
-        }
-
-        if (!has_exe) {
-            std::cout << "Skipping project '" << project.name << "' (not an executable)\n";
-            continue;
-        }
-
         // Create project directory
         fs::path project_dir = fs::path(output_dir) / project.name;
         if (!fs::exists(project_dir)) {
