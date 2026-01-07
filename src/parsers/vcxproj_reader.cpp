@@ -1304,7 +1304,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         if (cl.multi_processor_compilation)
             out << "multiprocessor = true\n";
         if (!cl.enhanced_instruction_set.empty())
-            out << "sse = " << cl.enhanced_instruction_set << "\n";
+            out << "simd = " << cl.enhanced_instruction_set << "\n";
         if (!cl.floating_point_model.empty())
             out << "floating_point = " << cl.floating_point_model << "\n";
         if (cl.string_pooling)

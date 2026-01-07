@@ -1095,7 +1095,7 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.multi_processor_compilation = mp;
         }
-    } else if (key == "sse" || key == "simd" || key == "enhanced_instruction_set") {
+    } else if (key == "simd" || key == "enhanced_instruction_set") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.enhanced_instruction_set = value;
         }
@@ -1634,7 +1634,7 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.cl_compile.runtime_type_info = (value == "true" || value == "yes" || value == "1");
     } else if (key == "multi_processor_compilation" || key == "multiprocessor" || key == "mp") {
         cfg.cl_compile.multi_processor_compilation = (value == "true" || value == "yes" || value == "1");
-    } else if (key == "enhanced_instruction_set" || key == "sse" || key == "simd") {
+    } else if (key == "enhanced_instruction_set" || key == "simd") {
         cfg.cl_compile.enhanced_instruction_set = value;
     } else if (key == "floating_point_model" || key == "floating_point" || key == "fp_model") {
         cfg.cl_compile.floating_point_model = value;
