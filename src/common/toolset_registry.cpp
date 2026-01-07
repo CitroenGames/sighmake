@@ -9,7 +9,7 @@ ToolsetRegistry& ToolsetRegistry::instance() {
     return registry;
 }
 
-ToolsetRegistry::ToolsetRegistry() : default_toolset_("v143") {
+ToolsetRegistry::ToolsetRegistry() : default_toolset_("") {
     // Modern toolsets (officially released)
     toolsets_["v143"] = {"v143", "Visual Studio 2022", 2022, false};
     toolsets_["v142"] = {"v142", "Visual Studio 2019", 2019, false};
@@ -98,7 +98,7 @@ void ToolsetRegistry::set_default(const std::string& toolset) {
 }
 
 int ToolsetRegistry::get_toolset_year(const std::string& toolset) const {
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << "[DEBUG] get_toolset_year('" << toolset << "'): ";
 #endif
 
@@ -115,7 +115,7 @@ int ToolsetRegistry::get_toolset_year(const std::string& toolset) const {
     // XP toolsets use same year as their base toolset
     else if (toolset == "v110_xp") year = 2012;
 
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << year << "\n";
 #endif
 

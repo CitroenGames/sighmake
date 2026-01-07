@@ -134,7 +134,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     std::string tools_version = "4.0"; // Default legacy
     for (const auto& [config_key, cfg] : project.configurations) {
         std::string ts_version = get_tools_version(cfg.platform_toolset);
-#ifndef NDEBUG
+#ifdef NDEBUG
         std::cout << "[DEBUG] .vcxproj generation for '" << project.name
                   << "': Config '" << config_key
                   << "' has toolset '" << cfg.platform_toolset
@@ -146,7 +146,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
         }
     }
 
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << "[DEBUG] Final ToolsVersion for " << project.name << ": " << tools_version << "\n";
 #endif
 
@@ -155,7 +155,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
 
     // Add VCProjectUpgraderObjectName for MSVC 2026 to prevent auto-upgrade prompts
     if (tools_version == "18.0") {
-#ifndef NDEBUG
+#ifdef NDEBUG
         std::cout << "[DEBUG] Adding VCProjectUpgraderObjectName=NoUpgrade for MSVC 2026\n";
 #endif
         root.append_attribute("VCProjectUpgraderObjectName") = "NoUpgrade";
@@ -1211,13 +1211,13 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
     bool already_logged = false;
 
     for (auto& proj : solution.projects) {
-#ifndef NDEBUG
+#ifdef NDEBUG
         std::cout << "[DEBUG] Processing project: " << proj.name << "\n";
 #endif
         for (auto& config_pair : proj.configurations) {
             auto& cfg = config_pair.second;
 
-#ifndef NDEBUG
+#ifdef NDEBUG
             std::cout << "[DEBUG]   Config: " << config_pair.first
                       << ", current toolset: '" << cfg.platform_toolset << "'\n";
 #endif
@@ -1229,7 +1229,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
                 // Check if a default was set via CLI (-t flag) or environment variable
                 if (!registry_default.empty()) {
                     cfg.platform_toolset = registry_default;
-#ifndef NDEBUG
+#ifdef NDEBUG
                     std::cout << "[DEBUG]   -> Set to CLI default toolset: " << cfg.platform_toolset << "\n";
 #endif
                     if (!already_logged) {
@@ -1240,7 +1240,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
                 } else {
                     // No CLI default, fall back to detected VS toolset
                     cfg.platform_toolset = vs_info->platform_toolset;
-#ifndef NDEBUG
+#ifdef NDEBUG
                     std::cout << "[DEBUG]   -> Set to detected toolset: " << cfg.platform_toolset << "\n";
 #endif
                     if (!already_logged) {
@@ -1250,13 +1250,13 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
                     }
                 }
             } else {
-#ifndef NDEBUG
+#ifdef NDEBUG
                 std::cout << "[DEBUG]   -> Keeping explicit toolset: " << cfg.platform_toolset << "\n";
 #endif
                 // Validate explicitly specified toolset
                 int specified_year = toolset_registry.get_toolset_year(cfg.platform_toolset);
 
-#ifndef NDEBUG
+#ifdef NDEBUG
                 std::cout << "[DEBUG]   -> Toolset year: " << specified_year
                           << ", detected VS year: " << vs_info->year << "\n";
 #endif
@@ -1304,7 +1304,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
 
     // 4. FOURTH: Generate solution file
     if (!solution.projects.empty()) {
-#ifndef NDEBUG
+#ifdef NDEBUG
         std::cout << "[DEBUG] ========== Solution Generation Start ==========\n";
 #endif
 
@@ -1313,7 +1313,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
         // Determine solution format based on detected VS installation
         bool use_slnx = (vs_info->year >= 2026);
 
-#ifndef NDEBUG
+#ifdef NDEBUG
         std::cout << "[DEBUG] Solution format decision: VS year " << vs_info->year
                   << " -> " << (use_slnx ? ".slnx" : ".sln") << "\n";
         std::cout << "[DEBUG] ========== Solution Generation End ==========\n";
