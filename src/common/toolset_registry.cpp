@@ -98,7 +98,7 @@ void ToolsetRegistry::set_default(const std::string& toolset) {
 }
 
 int ToolsetRegistry::get_toolset_year(const std::string& toolset) const {
-#ifdef NDEBUG
+#ifndef NDEBUG
     std::cout << "[DEBUG] get_toolset_year('" << toolset << "'): ";
 #endif
 
@@ -115,7 +115,7 @@ int ToolsetRegistry::get_toolset_year(const std::string& toolset) const {
     // XP toolsets use same year as their base toolset
     else if (toolset == "v110_xp") year = 2012;
 
-#ifdef NDEBUG
+#ifndef NDEBUG
     std::cout << year << "\n";
 #endif
 
