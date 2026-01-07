@@ -1,12 +1,12 @@
 # sighmake
 
-A build system generator that converts simple buildscript files into Visual Studio project files (.vcxproj and .sln).
+A build system generator that converts simple buildscript files into Visual Studio project files (.vcxproj and .sln) and Makefiles.
 
 ## Features
 
 - Simple, readable buildscript format
-- Generates Visual Studio project files (.vcxproj)
-- Generates Visual Studio solution files (.sln)
+- Generates Visual Studio project files (.vcxproj) and solutions (.sln)
+- Generates Makefiles for Linux/MinGW
 - Supports multiple configurations (Debug, Release, etc.)
 - Per-file compiler settings
 - Wildcard support for source files
@@ -16,17 +16,20 @@ A build system generator that converts simple buildscript files into Visual Stud
 ## Building
 
 ### Prerequisites
-- C++17 compatible compiler (MSVC)
+- C++17 compatible compiler (MSVC on Windows, GCC/Clang on Linux)
 
 ### Build Instructions
 
-#### Windows (Command Prompt)
+#### Windows
+Run `GenerateSolution.bat` to generate the Visual Studio solution, then build with VS. Or use the provided `sighmake.exe`.
 
-```batch
-sighmake.exe sighmake.buildscript -b build
+#### Linux
+Run the bootstrap script to compile and generate Makefiles:
+```bash
+chmod +x generate_linux.sh
+./generate_linux.sh
+make -f build/sighmake.Release
 ```
-
-open solution in build/sighmake.sln
 
 ## Usage
 
@@ -34,17 +37,28 @@ open solution in build/sighmake.sln
 sighmake <buildscript> [options]
 
 Options:
-  -b, --build <dir>    Output directory (default: current directory)
-  -h, --help            Show help message
+  -g, --generator <type>     Generator type (vcxproj, makefile)
+  -t, --toolset <name>       Default toolset (msvc2022, msvc2019, etc)
+  -c, --convert              Convert Visual Studio solution to buildscripts
+  -l, --list                 List available generators
+  -h, --help                 Show help message
 ```
 
-### Example
+### Examples
 
+**Generate Visual Studio project:**
 ```batch
-sighmake build.txt -b ./output
+sighmake project.buildscript -g vcxproj
 ```
+
+**Generate Makefiles (default on Linux):**
+```bash
+./sighmake project.buildscript -g makefile
+```
+Makefiles are generated in the `build/` directory with the format `ProjectName.Configuration`.
 
 ## Buildscript Format
+... (rest of the content)
 
 ### Basic Structure
 
