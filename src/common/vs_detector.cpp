@@ -17,7 +17,7 @@ namespace vcxproj {
 // Helper: Execute command and get output
 std::string VSDetector::execute_command(const std::string& command) {
 #ifdef _WIN32
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << "[DEBUG] Executing command: " << command << "\n";
 #endif
 
@@ -27,7 +27,7 @@ std::string VSDetector::execute_command(const std::string& command) {
     // Use _popen to execute command and read output
     FILE* pipe = _popen(command.c_str(), "r");
     if (!pipe) {
-#ifndef NDEBUG
+#ifdef NDEBUG
         std::cout << "[DEBUG] Failed to execute command\n";
 #endif
         return "";
@@ -44,7 +44,7 @@ std::string VSDetector::execute_command(const std::string& command) {
         result.pop_back();
     }
 
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << "[DEBUG] Command output: '" << result << "'\n";
 #endif
 
@@ -101,14 +101,14 @@ std::string VSDetector::year_to_toolset(int year) {
 // Detection via vswhere.exe (VS 2017+)
 std::optional<VSInstallation> VSDetector::detect_via_vswhere() {
 #ifdef _WIN32
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << "[DEBUG] Attempting VS detection via vswhere.exe\n";
 #endif
 
     // Get ProgramFiles(x86) path
     const char* prog_files_x86 = std::getenv("ProgramFiles(x86)");
     if (!prog_files_x86) {
-#ifndef NDEBUG
+#ifdef NDEBUG
         std::cout << "[DEBUG] ProgramFiles(x86) environment variable not found\n";
 #endif
         return std::nullopt;
@@ -117,19 +117,19 @@ std::optional<VSInstallation> VSDetector::detect_via_vswhere() {
     // Build path to vswhere.exe
     fs::path vswhere_path = fs::path(prog_files_x86) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe";
 
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << "[DEBUG] Looking for vswhere at: " << vswhere_path << "\n";
 #endif
 
     // Check if vswhere.exe exists
     if (!fs::exists(vswhere_path)) {
-#ifndef NDEBUG
+#ifdef NDEBUG
         std::cout << "[DEBUG] vswhere.exe not found\n";
 #endif
         return std::nullopt;
     }
 
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << "[DEBUG] vswhere.exe found, querying version...\n";
 #endif
 
@@ -143,12 +143,12 @@ std::optional<VSInstallation> VSDetector::detect_via_vswhere() {
 
     // Parse version to year
     int year = version_to_year(version_output);
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << "[DEBUG] Parsed version: " << version_output << " -> year: " << year << "\n";
 #endif
 
     if (year == 0) {
-#ifndef NDEBUG
+#ifdef NDEBUG
         std::cout << "[DEBUG] Could not parse year from version\n";
 #endif
         return std::nullopt;
@@ -166,7 +166,7 @@ std::optional<VSInstallation> VSDetector::detect_via_vswhere() {
     vs_info.installation_path = install_path;
     vs_info.platform_toolset = year_to_toolset(year);
 
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << "[DEBUG] Detected VS via vswhere: " << year << " (toolset " << vs_info.platform_toolset << ")\n";
 #endif
 
@@ -179,7 +179,7 @@ std::optional<VSInstallation> VSDetector::detect_via_vswhere() {
 // Detection via Windows Registry (VS 2015 and older)
 std::optional<VSInstallation> VSDetector::detect_via_registry() {
 #ifdef _WIN32
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << "[DEBUG] Attempting VS detection via Windows Registry\n";
 #endif
 
@@ -212,7 +212,7 @@ std::optional<VSInstallation> VSDetector::detect_via_registry() {
                     vs_info.installation_path = path;
                     vs_info.platform_toolset = year_to_toolset(year);
 
-#ifndef NDEBUG
+#ifdef NDEBUG
                     std::cout << "[DEBUG] Detected VS via registry: " << year << " (toolset " << vs_info.platform_toolset << ")\n";
 #endif
 
@@ -239,7 +239,7 @@ std::optional<VSInstallation> VSDetector::detect_via_registry() {
                     vs_info.installation_path = path;
                     vs_info.platform_toolset = year_to_toolset(year);
 
-#ifndef NDEBUG
+#ifdef NDEBUG
                     std::cout << "[DEBUG] Detected VS via registry: " << year << " (toolset " << vs_info.platform_toolset << ")\n";
 #endif
 
@@ -251,7 +251,7 @@ std::optional<VSInstallation> VSDetector::detect_via_registry() {
         }
     }
 
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << "[DEBUG] No VS found in registry\n";
 #endif
 
@@ -263,27 +263,27 @@ std::optional<VSInstallation> VSDetector::detect_via_registry() {
 
 // Detect latest VS installation
 std::optional<VSInstallation> VSDetector::detect_latest_vs() {
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << "[DEBUG] ========== VS Detection Start ==========\n";
 #endif
 
     // Try vswhere first (VS 2017+)
     auto vs_info = detect_via_vswhere();
     if (vs_info.has_value()) {
-#ifndef NDEBUG
+#ifdef NDEBUG
         std::cout << "[DEBUG] VS detected successfully via vswhere\n";
         std::cout << "[DEBUG] ========== VS Detection End ==========\n";
 #endif
         return vs_info;
     }
 
-#ifndef NDEBUG
+#ifdef NDEBUG
     std::cout << "[DEBUG] vswhere detection failed, trying registry...\n";
 #endif
 
     // Fall back to registry (VS 2015 and older)
     auto registry_result = detect_via_registry();
-#ifndef NDEBUG
+#ifdef NDEBUG
     if (registry_result.has_value()) {
         std::cout << "[DEBUG] VS detected successfully via registry\n";
     } else {
