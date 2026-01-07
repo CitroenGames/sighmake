@@ -472,6 +472,54 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
         return;
     }
 
+    // Check for if statement
+    if (trimmed.rfind("if", 0) == 0) {
+        size_t start_paren = trimmed.find('(');
+        size_t end_paren = trimmed.rfind(')');
+        size_t brace_pos = trimmed.rfind('{');
+        
+        if (start_paren != std::string::npos && end_paren != std::string::npos && 
+            brace_pos != std::string::npos && brace_pos > end_paren) {
+            
+            std::string condition = trimmed.substr(start_paren + 1, end_paren - start_paren - 1);
+            bool cond_met = evaluate_condition(condition);
+            bool parent_exec = state.is_executing();
+            
+            state.conditional_stack.push_back({parent_exec && cond_met, cond_met, 0});
+            return;
+        }
+    }
+
+    // Handle skipping (must be done before other checks)
+    if (!state.is_executing()) {
+        // Track nested braces to handle if blocks or other blocks inside skipped code
+        if (trimmed.find('{') != std::string::npos) {
+             state.conditional_stack.back().ignored_brace_depth++;
+        }
+        if (trimmed.find('}') != std::string::npos) {
+             if (state.conditional_stack.back().ignored_brace_depth > 0) {
+                 state.conditional_stack.back().ignored_brace_depth--;
+             } else {
+                 state.conditional_stack.pop_back();
+             }
+        }
+        return;
+    }
+
+    // Check for closing brace }
+    if (trimmed == "}") {
+        if (state.in_file_properties) {
+             state.in_file_properties = false;
+             state.file_properties_files.clear();
+             return;
+        }
+        
+        if (!state.conditional_stack.empty()) {
+             state.conditional_stack.pop_back();
+             return;
+        }
+    }
+
     // Check for section headers
     if (trimmed[0] == '[' && trimmed.back() == ']') {
         parse_section(trimmed, state);
@@ -508,13 +556,6 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
                 state.current_file = nullptr;  // Clear current file since we're setting multiple files
             }
         }
-        return;
-    }
-
-    // Check for closing brace of file_properties() block
-    if (state.in_file_properties && trimmed == "}") {
-        state.in_file_properties = false;
-        state.file_properties_files.clear();
         return;
     }
 
@@ -1868,6 +1909,37 @@ void BuildscriptParser::parse_uses_pch(const std::string& line, ParseState& stat
             }
         }
     }
+}
+
+bool BuildscriptParser::evaluate_condition(const std::string& condition) {
+    std::string cond = trim(condition);
+    
+    bool is_windows = false;
+    bool is_linux = false;
+    bool is_osx = false;
+
+#if defined(_WIN32)
+    is_windows = true;
+#elif defined(__linux__)
+    is_linux = true;
+#elif defined(__APPLE__)
+    is_osx = true;
+#endif
+
+    if (cond == "windows" || cond == "win32") return is_windows;
+    if (cond == "linux") return is_linux;
+    if (cond == "osx" || cond == "macos" || cond == "darwin") return is_osx;
+    
+    // Check for negation
+    if (cond.size() > 1 && cond[0] == '!') {
+         std::string sub = cond.substr(1);
+         if (sub == "windows" || sub == "win32") return !is_windows;
+         if (sub == "linux") return !is_linux;
+         if (sub == "osx" || sub == "macos" || sub == "darwin") return !is_osx;
+    }
+
+    std::cerr << "Warning: Unknown condition '" << condition << "'\n";
+    return false;
 }
 
 } // namespace vcxproj

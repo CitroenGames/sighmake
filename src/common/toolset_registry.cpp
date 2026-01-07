@@ -65,7 +65,7 @@ std::optional<std::string> ToolsetRegistry::resolve(const std::string& input) co
     // Convert to lowercase for case-insensitive matching
     std::string lower_input = input;
     std::transform(lower_input.begin(), lower_input.end(), lower_input.begin(),
-                   [](unsigned char c){ return std::tolower(c); });
+                   [](unsigned char c){ return (char)std::tolower(c); });
 
     // Look up normalized toolchain name (e.g., "msvc2022" -> "v143")
     auto it = toolchain_to_toolset_.find(lower_input);

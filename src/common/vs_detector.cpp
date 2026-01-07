@@ -1,5 +1,9 @@
 #include "vs_detector.hpp"
+
+#ifdef _WIN32
 #include <windows.h>
+#endif
+
 #include <array>
 #include <algorithm>
 #include <cstdlib>
@@ -12,6 +16,7 @@ namespace vcxproj {
 
 // Helper: Execute command and get output
 std::string VSDetector::execute_command(const std::string& command) {
+#ifdef _WIN32
 #ifndef NDEBUG
     std::cout << "[DEBUG] Executing command: " << command << "\n";
 #endif
@@ -44,6 +49,10 @@ std::string VSDetector::execute_command(const std::string& command) {
 #endif
 
     return result;
+#else
+    (void)command;
+    return "";
+#endif
 }
 
 // Helper: Parse vswhere version to year
@@ -91,6 +100,7 @@ std::string VSDetector::year_to_toolset(int year) {
 
 // Detection via vswhere.exe (VS 2017+)
 std::optional<VSInstallation> VSDetector::detect_via_vswhere() {
+#ifdef _WIN32
 #ifndef NDEBUG
     std::cout << "[DEBUG] Attempting VS detection via vswhere.exe\n";
 #endif
@@ -161,10 +171,14 @@ std::optional<VSInstallation> VSDetector::detect_via_vswhere() {
 #endif
 
     return vs_info;
+#else
+    return std::nullopt;
+#endif
 }
 
 // Detection via Windows Registry (VS 2015 and older)
 std::optional<VSInstallation> VSDetector::detect_via_registry() {
+#ifdef _WIN32
 #ifndef NDEBUG
     std::cout << "[DEBUG] Attempting VS detection via Windows Registry\n";
 #endif
@@ -242,6 +256,9 @@ std::optional<VSInstallation> VSDetector::detect_via_registry() {
 #endif
 
     return std::nullopt;
+#else
+    return std::nullopt;
+#endif
 }
 
 // Detect latest VS installation

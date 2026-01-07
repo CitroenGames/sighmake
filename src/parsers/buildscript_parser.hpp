@@ -36,11 +36,28 @@ private:
         bool in_set_file_properties = false;  // Track if we're inside a set_file_properties() block
         std::set<std::string> discovered_configs;  // Track configs discovered from [config:...] sections
         std::set<std::string> discovered_platforms;  // Track platforms discovered from [config:...] sections
+
+        struct ScopeState {
+            bool executing;
+            bool condition_met;
+            int ignored_brace_depth = 0;
+        };
+        std::vector<ScopeState> conditional_stack;
+
+        bool is_executing() const {
+            for (const auto& scope : conditional_stack) {
+                if (!scope.executing) return false;
+            }
+            return true;
+        }
     };
     
     // Parse a single line
     void parse_line(const std::string& line, ParseState& state);
     
+    // Evaluate if condition
+    bool evaluate_condition(const std::string& condition);
+
     // Parse section header [section] or [project:name]
     bool parse_section(const std::string& line, ParseState& state);
     

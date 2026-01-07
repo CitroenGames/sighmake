@@ -46,7 +46,11 @@ int main(int argc, char* argv[]) {
 
     std::string buildscript_path;
     std::string output_dir = ".";
+#ifdef _WIN32
     std::string generator_type = "vcxproj";  // Default generator
+#else
+    std::string generator_type = "makefile"; // Default generator for non-Windows
+#endif
     std::string default_toolset;
     bool convert_mode = false;
 

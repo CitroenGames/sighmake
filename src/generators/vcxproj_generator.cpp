@@ -33,26 +33,10 @@ static std::string unescape_newlines(const std::string& str) {
     return result;
 }
 
-// Helper to check if a path looks like a file path (not a macro or argument)
-static bool looks_like_file_path(const std::string& token) {
-    // Skip MSBuild macros
-    if (token.find("$(") != std::string::npos || token.find("%(") != std::string::npos)
-        return false;
-    // Skip shell operators
-    if (token == ">" || token == "<" || token == "|" || token == "||" || token == "&&")
-        return false;
-    // Check if it has path separators or file extension
-    return (token.find('\\') != std::string::npos ||
-            token.find('/') != std::string::npos ||
-            (token.find('.') != std::string::npos && token.find(".exe") != std::string::npos) ||
-            (token.find('.') != std::string::npos && token.find(".pl") != std::string::npos) ||
-            (token.find('.') != std::string::npos && token.find(".py") != std::string::npos));
-}
-
 // Adjust relative file paths in a custom build command
 static std::string adjust_command_paths(const std::string& command,
-                                       const std::string& from_dir,
-                                       const std::string& to_dir) {
+                                       const std::string&,
+                                       const std::string&) {
     // Return command unchanged to preserve exact formatting, paths, and command structure
     return command;
 }
@@ -286,6 +270,10 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             node.append_attribute("Condition") = condition.c_str();
             // Make relative to vcxproj output location
             std::string relative_out = make_relative_path(cfg.out_dir, output_path);
+            // Ensure trailing slash for MSBuild
+            if (!relative_out.empty() && relative_out.back() != '\\') {
+                relative_out += '\\';
+            }
             node.text() = relative_out.c_str();
         }
         if (!cfg.int_dir.empty()) {
@@ -308,6 +296,10 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             node.append_attribute("Condition") = condition.c_str();
             // Make relative to vcxproj output location
             std::string relative_int = make_relative_path(cfg.int_dir, output_path);
+            // Ensure trailing slash for MSBuild
+            if (!relative_int.empty() && relative_int.back() != '\\') {
+                relative_int += '\\';
+            }
             node.text() = relative_int.c_str();
         }
         // Note: TargetName is written in the Configuration PropertyGroup, not here

@@ -1089,7 +1089,7 @@ bool all_configs_have_same_bool(const std::map<std::string, bool>& map,
 
 // Helper function to create a signature for file settings for grouping purposes
 static std::string create_file_settings_signature(const SourceFile* src,
-                                                   const std::vector<std::string>& config_keys,
+                                                   const std::vector<std::string>&,
                                                    const std::map<std::string, std::string>& default_pch_mode,
                                                    const std::map<std::string, std::string>& default_pch_header,
                                                    bool has_project_common_pch_mode,
@@ -1919,7 +1919,6 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         if (has_pch_exception || has_other_settings) {
             // Write header: either file_properties() for groups or set_file_properties() for single files
             std::string indent = "";
-            bool is_single_file = (files.size() == 1);
 
             if (files.size() > 1) {
                 out << "\nfile_properties(";
@@ -2105,8 +2104,8 @@ static bool should_merge_buildscript(
     // Check if names match (case-insensitive comparison for Windows compatibility)
     std::string sln_lower = solution_name;
     std::string proj_lower = project_name;
-    std::transform(sln_lower.begin(), sln_lower.end(), sln_lower.begin(), ::tolower);
-    std::transform(proj_lower.begin(), proj_lower.end(), proj_lower.begin(), ::tolower);
+    std::transform(sln_lower.begin(), sln_lower.end(), sln_lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    std::transform(proj_lower.begin(), proj_lower.end(), proj_lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
 
     if (sln_lower != proj_lower) {
         return false;

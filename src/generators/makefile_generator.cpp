@@ -14,7 +14,7 @@ std::string MakefileGenerator::to_unix_path(const std::string& path) {
 }
 
 // Make path relative or keep as-is
-std::string MakefileGenerator::make_relative_or_keep(const std::string& path, const std::string& base) {
+std::string MakefileGenerator::make_relative_or_keep(const std::string& path, const std::string& /*base*/) {
     // For simplicity, just convert to Unix path
     // In a more complete implementation, we would compute relative paths
     return to_unix_path(path);
@@ -169,7 +169,7 @@ std::string MakefileGenerator::map_language_standard(const std::string& std) {
 }
 
 // Get all compiler flags for a configuration
-std::string MakefileGenerator::get_compiler_flags(const Configuration& config, const Project& project,
+std::string MakefileGenerator::get_compiler_flags(const Configuration& config, const Project& /*project*/,
                                                    const std::filesystem::path& makefile_dir) {
     std::stringstream ss;
 
@@ -260,7 +260,7 @@ std::string MakefileGenerator::get_linker_libs(const Configuration& config) {
 }
 
 // Generate a single Makefile for a project and configuration
-bool MakefileGenerator::generate_makefile(const Project& project, const Solution& solution,
+bool MakefileGenerator::generate_makefile(const Project& project, const Solution& /*solution*/,
                                          const std::string& config_key, const std::string& output_path) {
     namespace fs = std::filesystem;
 
@@ -335,7 +335,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     for (const auto& src : project.sources) {
         if (src.type == FileType::ClCompile) {
             std::string ext = fs::path(src.path).extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
             if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") {
                 has_cpp_files = true;
             } else if (ext == ".c") {
@@ -440,7 +440,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     for (const auto& [src, obj] : source_to_obj) {
         fs::path src_path(src);
         std::string ext = src_path.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
 
         std::string compiler;
         std::string flags;
@@ -489,21 +489,21 @@ bool MakefileGenerator::generate(Solution& solution, const std::string& output_d
         }
     }
 
+    // Create build directory
+    fs::path build_dir = fs::path(output_dir) / "build";
+    if (!fs::exists(build_dir)) {
+        try {
+            fs::create_directories(build_dir);
+        } catch (const std::exception& e) {
+            std::cerr << "Error: Failed to create build directory: " << e.what() << "\n";
+            return false;
+        }
+    }
+
     std::cout << "Generating Makefiles for solution: " << solution.name << "\n";
 
     // Generate Makefiles for each project and configuration
     for (const auto& project : solution.projects) {
-        // Create project directory
-        fs::path project_dir = fs::path(output_dir) / project.name;
-        if (!fs::exists(project_dir)) {
-            try {
-                fs::create_directories(project_dir);
-            } catch (const std::exception& e) {
-                std::cerr << "Error: Failed to create project directory: " << e.what() << "\n";
-                return false;
-            }
-        }
-
         // Generate a Makefile for each configuration
         for (const auto& [config_key, config] : project.configurations) {
             // Parse config key
@@ -517,8 +517,8 @@ bool MakefileGenerator::generate(Solution& solution, const std::string& output_d
             }
 
             // Generate Makefile path
-            std::string makefile_name = "Makefile." + config_name;
-            fs::path makefile_path = project_dir / makefile_name;
+            std::string makefile_name = project.name + "." + config_name;
+            fs::path makefile_path = build_dir / makefile_name;
 
             if (!generate_makefile(project, solution, config_key, makefile_path.string())) {
                 return false;
