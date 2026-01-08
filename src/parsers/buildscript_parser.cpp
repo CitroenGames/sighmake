@@ -62,16 +62,27 @@ std::string unescape_value(const std::string& str) {
     return result;
 }
 
+static std::string trim_local(const std::string& str) {
+    size_t first = str.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    size_t last = str.find_last_not_of(" \t\r\n");
+    return str.substr(first, last - first + 1);
+}
+
 std::string preprocess_multiline(const std::string& content) {
     std::string processed_content;
     std::istringstream preprocess_stream(content);
     std::string line;
-    bool in_multiline = false;
+    
+    bool in_multiline_quote = false; // """
+    bool in_brace_block = false;     // { }
+    
     std::string multiline_accumulator;
     std::string multiline_prefix;
+    std::vector<std::string> brace_items;
 
     while (std::getline(preprocess_stream, line)) {
-        if (in_multiline) {
+        if (in_multiline_quote) {
             // Check if this line contains the closing """
             size_t close_pos = line.find("\"\"\"");
             if (close_pos != std::string::npos) {
@@ -90,50 +101,103 @@ std::string preprocess_multiline(const std::string& content) {
                     }
                 }
                 processed_content += "\n";
-                in_multiline = false;
+                in_multiline_quote = false;
                 multiline_accumulator.clear();
                 multiline_prefix.clear();
             } else {
                 // Continue accumulating
                 multiline_accumulator += line + "\n";
             }
-        } else {
-            // Check if this line starts a multiline value
-            size_t eq_pos = line.find('=');
-            if (eq_pos != std::string::npos) {
-                std::string value_part = line.substr(eq_pos + 1);
-                size_t first_nonspace = value_part.find_first_not_of(" \t");
-                if (first_nonspace != std::string::npos &&
-                    value_part.substr(first_nonspace, 3) == "\"\"\"") {
-                    // Start of multiline value
-                    in_multiline = true;
-                    multiline_prefix = line.substr(0, eq_pos + 1) + " ";
-                    // Check if closing """ is on the same line
-                    size_t close_pos = value_part.find("\"\"\"", first_nonspace + 3);
-                    if (close_pos != std::string::npos) {
-                        // Single line with """ ... """
-                        multiline_accumulator = value_part.substr(first_nonspace + 3, close_pos - first_nonspace - 3);
-                        processed_content += multiline_prefix;
-                        for (char c : multiline_accumulator) {
-                            if (c == '\n') {
-                                processed_content += "\\n";
-                            } else if (c == '\\') {
-                                processed_content += "\\\\";
-                            } else {
-                                processed_content += c;
-                            }
-                        }
-                        processed_content += "\n";
-                        in_multiline = false;
-                        multiline_accumulator.clear();
-                        multiline_prefix.clear();
-                    }
-                    continue;
+            continue;
+        }
+
+        if (in_brace_block) {
+            // Remove comments for checking }
+            std::string no_comment = line;
+            size_t comment_pos = line.find('#');
+            if (comment_pos != std::string::npos) no_comment = line.substr(0, comment_pos);
+            
+            std::string trimmed = trim_local(no_comment);
+            
+            // Check for closing brace
+            // We assume } is the last significant char or the only one
+            if (trimmed == "}" || (trimmed.size() > 0 && trimmed.back() == '}')) {
+                 // If line is "file.cpp }", we should capture "file.cpp"
+                 if (trimmed != "}") {
+                     std::string item = trimmed.substr(0, trimmed.size() - 1);
+                     item = trim_local(item);
+                     if (!item.empty()) brace_items.push_back(item);
+                 }
+                 
+                 // Join items
+                 std::string joined;
+                 for(size_t i=0; i<brace_items.size(); ++i) {
+                     if (i > 0) joined += ",";
+                     joined += brace_items[i];
+                 }
+                 
+                 processed_content += multiline_prefix + joined + "\n";
+                 in_brace_block = false;
+                 brace_items.clear();
+                 multiline_prefix.clear();
+            } else {
+                if (!trimmed.empty()) {
+                    brace_items.push_back(trimmed);
                 }
             }
-            // Normal line, pass through
-            processed_content += line + "\n";
+            continue;
         }
+
+        // Check for start of multiline value or brace block
+        size_t eq_pos = line.find('=');
+        if (eq_pos != std::string::npos) {
+            std::string value_part = line.substr(eq_pos + 1);
+            size_t first_nonspace = value_part.find_first_not_of(" \t");
+            
+            // Check for """
+            if (first_nonspace != std::string::npos &&
+                value_part.substr(first_nonspace, 3) == "\"\"\"") {
+                // Start of multiline value
+                in_multiline_quote = true;
+                multiline_prefix = line.substr(0, eq_pos + 1) + " ";
+                // Check if closing """ is on the same line
+                size_t close_pos = value_part.find("\"\"\"", first_nonspace + 3);
+                if (close_pos != std::string::npos) {
+                    // Single line with """ ... """
+                    multiline_accumulator = value_part.substr(first_nonspace + 3, close_pos - first_nonspace - 3);
+                    processed_content += multiline_prefix;
+                    for (char c : multiline_accumulator) {
+                        if (c == '\n') {
+                            processed_content += "\\n";
+                        } else if (c == '\\') {
+                            processed_content += "\\\\";
+                        } else {
+                            processed_content += c;
+                        }
+                    }
+                    processed_content += "\n";
+                    in_multiline_quote = false;
+                    multiline_accumulator.clear();
+                    multiline_prefix.clear();
+                }
+                continue;
+            }
+            
+            // Check for {
+            // Ignore comments in value part
+            std::string no_comment = value_part;
+            size_t comment_pos = value_part.find('#');
+            if (comment_pos != std::string::npos) no_comment = value_part.substr(0, comment_pos);
+            
+            if (trim_local(no_comment) == "{") {
+                in_brace_block = true;
+                multiline_prefix = line.substr(0, eq_pos + 1) + " ";
+                continue;
+            }
+        }
+        
+        // Normal line, pass through
+        processed_content += line + "\n";
     }
 
     return processed_content;
@@ -150,6 +214,31 @@ std::vector<std::string> BuildscriptParser::split(const std::string& str, char d
         }
     }
     return tokens;
+}
+
+std::pair<std::string, bool> BuildscriptParser::parse_filename_with_condition(const std::string& entry) {
+    std::string trimmed = trim(entry);
+    if (trimmed.empty()) return {"", false};
+
+    bool include = true;
+    std::string path = trimmed;
+
+    // Check for condition [condition] at the end
+    if (trimmed.back() == ']') {
+        size_t open_bracket = trimmed.find_last_of('[');
+        if (open_bracket != std::string::npos) {
+            std::string condition = trimmed.substr(open_bracket + 1, trimmed.size() - open_bracket - 2);
+            path = trim(trimmed.substr(0, open_bracket));
+            include = evaluate_condition(condition);
+        }
+    }
+
+    // Remove quotes if present
+    if (path.size() >= 2 && path.front() == '"' && path.back() == '"') {
+        path = path.substr(1, path.size() - 2);
+    }
+
+    return {path, include};
 }
 
 std::vector<std::string> BuildscriptParser::expand_wildcards(const std::string& pattern,
@@ -960,29 +1049,38 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
     // Source files
     else if (key == "sources" || key == "src" || key == "files") {
         for (const auto& src : split(value, ',')) {
-            auto expanded = expand_wildcards(src, state.base_path);
+            auto [path, include] = parse_filename_with_condition(src);
+            if (!include) continue;
+
+            auto expanded = expand_wildcards(path, state.base_path);
             if (expanded.empty()) {
                 // If no expansion, add as-is
-                find_or_create_source(src, state);
+                find_or_create_source(path, state);
             } else {
-                for (const auto& path : expanded) {
-                    find_or_create_source(path, state);
+                for (const auto& expanded_path : expanded) {
+                    find_or_create_source(expanded_path, state);
                 }
             }
         }
     } else if (key == "headers" || key == "includes_files") {
         for (const auto& src : split(value, ',')) {
-            auto expanded = expand_wildcards(src, state.base_path);
-            for (const auto& path : expanded) {
-                auto* file = find_or_create_source(path, state);
+            auto [path, include] = parse_filename_with_condition(src);
+            if (!include) continue;
+
+            auto expanded = expand_wildcards(path, state.base_path);
+            for (const auto& expanded_path : expanded) {
+                auto* file = find_or_create_source(expanded_path, state);
                 if (file) file->type = FileType::ClInclude;
             }
         }
     } else if (key == "resources" || key == "resource_files") {
         for (const auto& src : split(value, ',')) {
-            auto expanded = expand_wildcards(src, state.base_path);
-            for (const auto& path : expanded) {
-                auto* file = find_or_create_source(path, state);
+            auto [path, include] = parse_filename_with_condition(src);
+            if (!include) continue;
+
+            auto expanded = expand_wildcards(path, state.base_path);
+            for (const auto& expanded_path : expanded) {
+                auto* file = find_or_create_source(expanded_path, state);
                 if (file) file->type = FileType::ResourceCompile;
             }
         }
@@ -991,17 +1089,20 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
 
         // Split libraries into file paths vs system libraries
         for (const auto& lib : libs) {
+            auto [path, include] = parse_filename_with_condition(lib);
+            if (!include) continue;
+
             // If the library has a path separator, it's a file path → use <Library> element
-            if (lib.find('/') != std::string::npos || lib.find('\\') != std::string::npos) {
+            if (path.find('/') != std::string::npos || path.find('\\') != std::string::npos) {
                 LibraryFile lf;
                 // Don't normalize library paths - preserve exact case and format
-                lf.path = lib;
+                lf.path = path;
                 proj.libraries.push_back(lf);
             } else {
                 // System library (e.g., shell32.lib) → use <AdditionalDependencies>
                 for (const auto& config_key : state.solution->get_config_keys()) {
                     auto& deps = proj.configurations[config_key].link.additional_dependencies;
-                    deps.push_back(lib);
+                    deps.push_back(path);
                 }
             }
         }

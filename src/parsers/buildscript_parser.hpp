@@ -97,6 +97,10 @@ private:
     // Helper to process include directive
     void process_include(const std::string& include_path, ParseState& state);
 
+    // Helper to parse filename with optional condition: "file.cpp" [!linux]
+    // Returns pair of {clean_path, should_include}
+    std::pair<std::string, bool> parse_filename_with_condition(const std::string& entry);
+
     // Helper to resolve a path relative to base_path and return absolute path
     static std::string resolve_path(const std::string& path, const std::string& base_path);
 };
