@@ -12,6 +12,16 @@
 #include <set>
 #include <map>
 
+#if PROJ_SEPERATOR
+#define GENERATED_VCXPROJ "_.vcxproj"
+#define GENERATED_SLNX "_.slnx"
+#define GENERATED_SLN "_.sln"
+#else
+#define GENERATED_VCXPROJ ".vcxproj"
+#define GENERATED_SLNX ".slnx"
+#define GENERATED_SLN ".sln"
+#endif
+
 namespace fs = std::filesystem;
 
 namespace vcxproj {
@@ -953,9 +963,10 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             // assume it's in the same directory as this project
             std::string ref_path;
             if (ref.find('/') == std::string::npos && ref.find('\\') == std::string::npos) {
-                ref_path = ref + ".vcxproj";
+
+                ref_path = ref + GENERATED_VCXPROJ;
             } else {
-                ref_path = make_relative_path(ref + ".vcxproj", output_path);
+                ref_path = make_relative_path(ref + GENERATED_VCXPROJ, output_path);
             }
             ref_elem.append_attribute("Include") = ref_path.c_str();
 
@@ -1034,20 +1045,20 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
         std::string vcxproj_path;
         if (!proj.buildscript_path.empty()) {
             // vcxproj is at buildscript_path/name_.vcxproj
-            fs::path proj_path = fs::path(proj.buildscript_path) / (proj.name + "_.vcxproj");
+            fs::path proj_path = fs::path(proj.buildscript_path) / (proj.name + GENERATED_VCXPROJ);
             fs::path sln_path(output_path);
             try {
                 vcxproj_path = fs::relative(proj_path, sln_path.parent_path()).string();
                 // Convert to backslashes for Windows
                 std::replace(vcxproj_path.begin(), vcxproj_path.end(), '/', '\\');
             } catch (...) {
-                vcxproj_path = proj.name + "_.vcxproj";
+                vcxproj_path = proj.name + GENERATED_VCXPROJ;
             }
         } else {
-            vcxproj_path = proj.name + "_.vcxproj";
+            vcxproj_path = proj.name + GENERATED_VCXPROJ;
         }
 #else
-        std::string vcxproj_path = proj.name + ".vcxproj";
+        std::string vcxproj_path = proj.name + GENERATED_VCXPROJ;
 #endif
         file << "Project(\"{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}\") = \""
              << proj.name << "\", \"" << vcxproj_path << "\", \"{"
@@ -1138,19 +1149,19 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
         std::string vcxproj_path;
 #if PROJ_SEPERATOR
         if (!proj.buildscript_path.empty()) {
-            fs::path proj_path = fs::path(proj.buildscript_path) / (proj.name + "_.vcxproj");
+            fs::path proj_path = fs::path(proj.buildscript_path) / (proj.name + GENERATED_VCXPROJ);
             fs::path sln_path(output_path);
             try {
                 vcxproj_path = fs::relative(proj_path, sln_path.parent_path()).string();
                 std::replace(vcxproj_path.begin(), vcxproj_path.end(), '/', '\\');
             } catch (...) {
-                vcxproj_path = proj.name + "_.vcxproj";
+                vcxproj_path = proj.name + GENERATED_VCXPROJ;
             }
         } else {
-            vcxproj_path = proj.name + "_.vcxproj";
+            vcxproj_path = proj.name + GENERATED_VCXPROJ;
         }
 #else
-        vcxproj_path = proj.name + ".vcxproj";
+        vcxproj_path = proj.name + GENERATED_VCXPROJ;
 #endif
 
         auto project = root.append_child("Project");
@@ -1166,19 +1177,19 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
                 if (dep_proj.name == dep_name) {
 #if PROJ_SEPERATOR
                     if (!dep_proj.buildscript_path.empty()) {
-                        fs::path dep_proj_path = fs::path(dep_proj.buildscript_path) / (dep_proj.name + "_.vcxproj");
+                        fs::path dep_proj_path = fs::path(dep_proj.buildscript_path) / (dep_proj.name + GENERATED_VCXPROJ);
                         fs::path sln_path(output_path);
                         try {
                             dep_path = fs::relative(dep_proj_path, sln_path.parent_path()).string();
                             std::replace(dep_path.begin(), dep_path.end(), '/', '\\');
                         } catch (...) {
-                            dep_path = dep_proj.name + "_.vcxproj";
+                            dep_path = dep_proj.name + GENERATED_VCXPROJ;
                         }
                     } else {
-                        dep_path = dep_proj.name + "_.vcxproj";
+                        dep_path = dep_proj.name + GENERATED_VCXPROJ;
                     }
 #else
-                    dep_path = dep_proj.name + ".vcxproj";
+                    dep_path = dep_proj.name + GENERATED_VCXPROJ;
 #endif
                     break;
                 }
@@ -1295,7 +1306,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
 
 #if PROJ_SEPERATOR
         // Generate at buildscript location with underscore suffix
-        std::string filename = project.name + "_" + ".vcxproj";
+        std::string filename = project.name + GENERATED_VCXPROJ;
         if (!project.buildscript_path.empty()) {
             vcxproj_path = fs::path(project.buildscript_path) / filename;
         } else {
@@ -1303,7 +1314,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
         }
 #else
         // Generate without underscore at buildscript location
-        std::string filename = project.name + ".vcxproj";
+        std::string filename = project.name + GENERATED_VCXPROJ;
         if (!project.buildscript_path.empty()) {
             vcxproj_path = fs::path(project.buildscript_path) / filename;
         } else {
@@ -1337,11 +1348,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
         if (use_slnx) {
             // Generate .slnx for MSVC 2026
             fs::path slnx_path;
-#if PROJ_SEPERATOR
-            slnx_path = fs::path(output_dir) / (sln_name + "_.slnx");
-#else
-            slnx_path = fs::path(output_dir) / (sln_name + ".slnx");
-#endif
+            slnx_path = fs::path(output_dir) / (sln_name + GENERATED_SLNX);
 
             std::cout << "Generating .slnx format for Visual Studio " << vs_info->year << "...\n";
 
@@ -1352,11 +1359,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
         } else {
             // Generate traditional .sln for older toolsets
             fs::path sln_path;
-#if PROJ_SEPERATOR
-            sln_path = fs::path(output_dir) / (sln_name + "_.sln");
-#else
-            sln_path = fs::path(output_dir) / (sln_name + ".sln");
-#endif
+            sln_path = fs::path(output_dir) / (sln_name + GENERATED_SLN);
 
             if (!generate_sln(solution, sln_path.string())) {
                 std::cerr << "Error: Failed to generate " << sln_path << "\n";

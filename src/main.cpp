@@ -1,5 +1,6 @@
 #include "config.hpp"
 #include "parsers/buildscript_parser.hpp"
+#include "parsers/cmake_parser.hpp"
 #include "generators/vcxproj_generator.hpp"
 #include "generators/makefile_generator.hpp"
 #include "parsers/vcxproj_reader.hpp"
@@ -9,13 +10,14 @@
 #include <iostream>
 #include <filesystem>
 #include <cstring>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
 void print_usage(const char* program_name) {
     std::cout << "sighmake - Build system generator\n\n";
     std::cout << "Usage:\n";
-    std::cout << "  " << program_name << " <buildscript> [options]\n";
+    std::cout << "  " << program_name << " <buildscript|CMakeLists.txt> [options]\n";
     std::cout << "  " << program_name << " --convert <solution.sln> [options]\n\n";
     std::cout << "Options:\n";
     std::cout << "  -g, --generator <type>     Generator type (default: vcxproj)\n";
@@ -26,6 +28,7 @@ void print_usage(const char* program_name) {
     std::cout << "  -h, --help                 Show this help message\n\n";
     std::cout << "Examples:\n";
     std::cout << "  " << program_name << " project.buildscript -t msvc2022\n";
+    std::cout << "  " << program_name << " CMakeLists.txt -g makefile\n";
     std::cout << "  " << program_name << " --convert solution.sln\n";
 }
 
@@ -182,10 +185,24 @@ int main(int argc, char* argv[]) {
         }
 
         // Normal mode: buildscript -> project files
-        // Parse buildscript
-        std::cout << "Parsing buildscript: " << buildscript_path << "\n";
-        vcxproj::BuildscriptParser parser;
-        vcxproj::Solution solution = parser.parse(buildscript_path);
+        vcxproj::Solution solution;
+        fs::path input_path(buildscript_path);
+        std::string filename = input_path.filename().string();
+        std::string ext = input_path.extension().string();
+        
+        // Convert to lowercase for checking
+        std::transform(filename.begin(), filename.end(), filename.begin(), 
+                      [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+        
+        if (filename == "cmakelists.txt" || ext == ".cmake") {
+            std::cout << "Parsing CMake file: " << buildscript_path << "\n";
+            vcxproj::CMakeParser parser;
+            solution = parser.parse(buildscript_path);
+        } else {
+            std::cout << "Parsing buildscript: " << buildscript_path << "\n";
+            vcxproj::BuildscriptParser parser;
+            solution = parser.parse(buildscript_path);
+        }
 
         std::cout << "Solution: " << solution.name << "\n";
         std::cout << "Projects: " << solution.projects.size() << "\n";
