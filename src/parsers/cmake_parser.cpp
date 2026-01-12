@@ -262,6 +262,15 @@ void CMakeParser::handle_add_executable(const std::vector<std::string>& args, Pa
         proj->configurations[config_key].config_type = "Application";
     }
 
+    // Apply CMAKE_CXX_STANDARD if set
+    auto std_it = state.variables.find("CMAKE_CXX_STANDARD");
+    if (std_it != state.variables.end() && !std_it->second.empty()) {
+        std::string std_value = "stdcpp" + std_it->second;
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj->configurations[config_key].cl_compile.language_standard = std_value;
+        }
+    }
+
     // Add sources (remaining args)
     std::vector<std::string> sources;
     for (size_t i = 1; i < args.size(); ++i) {
@@ -326,6 +335,15 @@ void CMakeParser::handle_add_library(const std::vector<std::string>& args, Parse
         proj->configurations[config_key].config_type = lib_type;
     }
 
+    // Apply CMAKE_CXX_STANDARD if set
+    auto std_it = state.variables.find("CMAKE_CXX_STANDARD");
+    if (std_it != state.variables.end() && !std_it->second.empty()) {
+        std::string std_value = "stdcpp" + std_it->second;
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj->configurations[config_key].cl_compile.language_standard = std_value;
+        }
+    }
+
     // Add sources
     std::vector<std::string> sources;
     for (size_t i = source_start_idx; i < args.size(); ++i) {
@@ -361,6 +379,9 @@ void CMakeParser::handle_add_subdirectory(const std::vector<std::string>& args, 
     // Update CMake variables for the new scope
     sub_state.variables["CMAKE_CURRENT_SOURCE_DIR"] = subdir_path.string();
     
+    // Clear parent-scope vars before parsing subdirectory
+    sub_state.parent_scope_vars.clear();
+
     // Read and parse
     try {
         std::ifstream file(cmakelists_path);
@@ -372,27 +393,71 @@ void CMakeParser::handle_add_subdirectory(const std::vector<std::string>& args, 
         auto tokens = tokenize(buffer.str());
         size_t i = 0;
         execute_tokens(tokens, i, sub_state);
-        
-        // Note: variables modified in sub_state are discarded (scoping)
+
+        // Apply parent-scope variables back to parent state
+        for (const auto& [name, value] : sub_state.parent_scope_vars) {
+            state.variables[name] = value;
+        }
+
+        // Note: Other variables modified in sub_state are discarded (proper scoping)
         // Targets added to state.solution are preserved because it's a pointer.
     } catch (const std::exception& e) {
-        std::cerr << "Error parsing subdirectory " << subdir << ": " << e.what() << "\n";
+        std::cerr << "[CMake] Error parsing subdirectory " << subdir << ": " << e.what() << "\n";
     }
 }
 
 void CMakeParser::handle_set(const std::vector<std::string>& args, ParseState& state) {
-    if (args.size() < 2) return;
+    if (args.empty()) return;
+
     std::string var_name = args[0];
-    
-    // Concatenate remaining args with ; as separator (standard CMake list)
-    // Or spaces? CMake uses ; for lists internally.
-    std::string value;
+    bool parent_scope = false;
+    bool is_cache = false;
+
+    // Check for PARENT_SCOPE and CACHE keywords
+    size_t value_end = args.size();
     for (size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "PARENT_SCOPE") {
+            parent_scope = true;
+            value_end = i;
+            break;
+        }
+        if (args[i] == "CACHE") {
+            is_cache = true;
+            value_end = i;
+            // Note: CACHE has additional parameters (type, docstring) which we ignore for now
+            break;
+        }
+    }
+
+    // Collect value (skip variable name at index 0)
+    std::string value;
+    for (size_t i = 1; i < value_end; ++i) {
         if (i > 1) value += ";";
         value += args[i];
     }
-    
-    state.variables[var_name] = value;
+
+    if (parent_scope) {
+        // Set in parent scope (will be applied by caller)
+        state.parent_scope_vars[var_name] = value;
+    } else if (is_cache) {
+        // For CACHE variables, set in current scope
+        // In real CMake, CACHE variables persist across runs, but we simulate
+        state.variables[var_name] = value;
+    } else {
+        // Normal variable set
+        state.variables[var_name] = value;
+    }
+
+    // Handle special CMake variables
+    if (var_name == "CMAKE_CXX_STANDARD" && !value.empty()) {
+        // Apply C++ standard to all existing projects
+        std::string std_value = "stdcpp" + value;
+        for (auto& proj : state.solution->projects) {
+            for (const auto& config_key : state.solution->get_config_keys()) {
+                proj.configurations[config_key].cl_compile.language_standard = std_value;
+            }
+        }
+    }
 }
 
 void CMakeParser::handle_option(const std::vector<std::string>& args, ParseState& state) {
@@ -446,16 +511,38 @@ void CMakeParser::handle_target_compile_options(const std::vector<std::string>& 
     std::string target_name = sanitize_target_name(args[0]);
     Project* proj = find_project(target_name, state);
     if (!proj) return;
-    
+
     for (size_t i = 1; i < args.size(); ++i) {
         std::string opt = args[i];
         if (opt == "PRIVATE" || opt == "PUBLIC" || opt == "INTERFACE") continue;
-        
-        // Add to all configs
-        for (const auto& config_key : state.solution->get_config_keys()) {
-            std::string& opts = proj->configurations[config_key].cl_compile.additional_options;
-            if (!opts.empty()) opts += " ";
-            opts += opt;
+
+        // Evaluate generator expressions if present
+        if (is_generator_expression(opt)) {
+            for (const auto& config_key : state.solution->get_config_keys()) {
+                size_t pipe_pos = config_key.find('|');
+                std::string config = config_key.substr(0, pipe_pos);
+                std::string platform = (pipe_pos != std::string::npos) ? config_key.substr(pipe_pos + 1) : "";
+
+                GenExprContext ctx;
+                ctx.current_config = config;
+                ctx.current_platform = platform;
+                ctx.state = &state;
+                ctx.project = proj;
+
+                std::string evaluated = evaluate_generator_expression(opt, ctx);
+                if (!evaluated.empty()) {
+                    std::string& opts = proj->configurations[config_key].cl_compile.additional_options;
+                    if (!opts.empty()) opts += " ";
+                    opts += evaluated;
+                }
+            }
+        } else {
+            // Add to all configs
+            for (const auto& config_key : state.solution->get_config_keys()) {
+                std::string& opts = proj->configurations[config_key].cl_compile.additional_options;
+                if (!opts.empty()) opts += " ";
+                opts += opt;
+            }
         }
     }
 }
@@ -515,6 +602,92 @@ void CMakeParser::handle_find_path(const std::vector<std::string>& args, ParseSt
     }
 }
 
+void CMakeParser::handle_find_package(const std::vector<std::string>& args, ParseState& state) {
+    if (args.empty()) return;
+
+    std::string package_name = args[0];
+    bool required = false;
+    std::vector<std::string> components;
+
+    // Parse arguments
+    for (size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "REQUIRED") {
+            required = true;
+        } else if (args[i] == "COMPONENTS") {
+            // Collect components
+            for (size_t j = i + 1; j < args.size(); ++j) {
+                if (args[j] == "REQUIRED" || args[j] == "QUIET" || args[j] == "CONFIG") break;
+                components.push_back(args[j]);
+            }
+            break;
+        }
+    }
+
+    // Set found variable
+    state.variables[package_name + "_FOUND"] = "TRUE";
+    state.variables[package_name + "_VERSION"] = "1.0.0";
+
+    // Check for environment variable override
+    std::string env_var = package_name + "_DIR";
+    const char* env_path = std::getenv(env_var.c_str());
+
+    if (env_path) {
+        state.variables[package_name + "_DIR"] = env_path;
+        state.variables[package_name + "_INCLUDE_DIRS"] = std::string(env_path) + "/include";
+        state.variables[package_name + "_LIBRARIES"] = package_name;
+        std::cout << "[CMake] Found package " << package_name << " at " << env_path << "\n";
+    } else {
+        // Hardcoded well-known packages
+        if (package_name == "Boost") {
+            state.variables["Boost_INCLUDE_DIRS"] = "C:/boost/include";
+            state.variables["Boost_LIBRARY_DIRS"] = "C:/boost/lib";
+            std::string libs;
+            for (const auto& comp : components) {
+                if (!libs.empty()) libs += ";";
+                libs += "boost_" + comp;
+            }
+            state.variables["Boost_LIBRARIES"] = libs.empty() ? "boost_system" : libs;
+        } else if (package_name == "OpenGL") {
+            state.variables["OPENGL_FOUND"] = "TRUE";
+            state.variables["OPENGL_INCLUDE_DIR"] = "";
+            state.variables["OPENGL_LIBRARIES"] = "opengl32.lib";
+        } else if (package_name == "Threads") {
+            state.variables["CMAKE_THREAD_LIBS_INIT"] = "";
+            state.variables["Threads_FOUND"] = "TRUE";
+        } else if (package_name == "OpenCV") {
+            state.variables["OpenCV_INCLUDE_DIRS"] = "C:/opencv/include";
+            state.variables["OpenCV_LIBS"] = "opencv_core;opencv_imgproc;opencv_highgui";
+        } else if (package_name == "Qt5" || package_name == "Qt6") {
+            state.variables[package_name + "_FOUND"] = "TRUE";
+            state.variables[package_name + "_INCLUDE_DIRS"] = "C:/" + package_name + "/include";
+            for (const auto& comp : components) {
+                state.variables[package_name + comp + "_FOUND"] = "TRUE";
+                state.variables[package_name + comp + "_LIBRARIES"] = "Qt::" + comp;
+            }
+        } else if (package_name == "GTest" || package_name == "gtest") {
+            state.variables["GTest_FOUND"] = "TRUE";
+            state.variables["GTEST_INCLUDE_DIRS"] = "";
+            state.variables["GTEST_LIBRARIES"] = "gtest;gtest_main";
+            state.variables["GTEST_MAIN_LIBRARIES"] = "gtest_main";
+        } else {
+            // Generic simulation
+            state.variables[package_name + "_INCLUDE_DIRS"] = "";
+            state.variables[package_name + "_LIBRARIES"] = package_name;
+        }
+
+        std::cout << "[CMake] Simulated finding package " << package_name;
+        if (!components.empty()) {
+            std::cout << " (components: ";
+            for (size_t i = 0; i < components.size(); ++i) {
+                if (i > 0) std::cout << ", ";
+                std::cout << components[i];
+            }
+            std::cout << ")";
+        }
+        std::cout << "\n";
+    }
+}
+
 void CMakeParser::handle_cmake_minimum_required(const std::vector<std::string>& /*args*/, ParseState& /*state*/) {
     // No-op
 }
@@ -529,31 +702,61 @@ void CMakeParser::handle_add_test(const std::vector<std::string>& /*args*/, Pars
 
 void CMakeParser::handle_target_include_directories(const std::vector<std::string>& args, ParseState& state) {
     if (args.size() < 2) return;
-    
+
     std::string target_name = sanitize_target_name(args[0]);
     Project* proj = find_project(target_name, state);
-    if (!proj) return; // Warning?
+    if (!proj) return;
 
     // Iterate args, skipping PUBLIC/PRIVATE/INTERFACE keywords
     for (size_t i = 1; i < args.size(); ++i) {
         const std::string& arg = args[i];
         if (arg == "PUBLIC" || arg == "PRIVATE" || arg == "INTERFACE") continue;
-        
-        // Resolve absolute path
-        std::string inc_dir = arg;
-        
-        // Handle generator expressions partially? e.g. $<BUILD_INTERFACE:...>
-        // For now, strip them if simple, or ignore complex ones.
-        if (inc_dir.find("$<") == 0) continue; 
 
-        // Resolve path relative to current source dir if relative
-        fs::path p(inc_dir);
-        if (!p.is_absolute()) {
-            p = fs::path(state.base_path) / p;
-        }
-        
-        // Add to all configs
+        // Evaluate generator expressions for each configuration
         for (const auto& config_key : state.solution->get_config_keys()) {
+            // Parse config_key to get config and platform
+            size_t pipe_pos = config_key.find('|');
+            std::string config = config_key.substr(0, pipe_pos);
+            std::string platform = (pipe_pos != std::string::npos) ? config_key.substr(pipe_pos + 1) : "";
+
+            // Setup generator expression context
+            GenExprContext ctx;
+            ctx.current_config = config;
+            ctx.current_platform = platform;
+            ctx.state = &state;
+            ctx.project = proj;
+
+            // Evaluate generator expression
+            std::string inc_dir = evaluate_generator_expression(arg, ctx);
+
+            // Skip if expression evaluated to empty
+            if (inc_dir.empty()) continue;
+
+            // Resolve path relative to current source dir if relative
+            fs::path p(inc_dir);
+            if (!p.is_absolute()) {
+                fs::path base_path_normalized = fs::path(state.base_path).lexically_normal();
+                fs::path inc_dir_normalized = fs::path(inc_dir).lexically_normal();
+
+                // Convert to strings with forward slashes for consistent comparison
+                std::string base_str = base_path_normalized.string();
+                std::string inc_str = inc_dir_normalized.string();
+                std::replace(base_str.begin(), base_str.end(), '\\', '/');
+                std::replace(inc_str.begin(), inc_str.end(), '\\', '/');
+
+                // Check if inc_dir equals or starts with base_path
+                // If so, it's already project-root-relative (from CMAKE_CURRENT_SOURCE_DIR)
+                if (inc_str == base_str || inc_str.find(base_str + "/") == 0) {
+                    // Already project-root-relative, use as-is
+                    p = inc_dir_normalized;
+                } else {
+                    // Truly relative path (like "include" or "../other"), resolve it
+                    p = base_path_normalized / inc_dir_normalized;
+                }
+            } else {
+                p = fs::path(inc_dir).lexically_normal();
+            }
+
             proj->configurations[config_key].cl_compile.additional_include_directories.push_back(p.string());
         }
     }
@@ -572,10 +775,56 @@ void CMakeParser::handle_target_link_libraries(const std::vector<std::string>& a
         // Skip CMake visibility keywords
         if (arg == "PUBLIC" || arg == "PRIVATE" || arg == "INTERFACE") continue;
 
-        // Skip generator expressions for now (e.g., $<CONFIG:...>)
-        if (arg.find("$<") != std::string::npos) continue;
+        // If there's a generator expression, evaluate it per-config
+        if (is_generator_expression(arg)) {
+            for (const auto& config_key : state.solution->get_config_keys()) {
+                // Parse config_key to get config and platform
+                size_t pipe_pos = config_key.find('|');
+                std::string config = config_key.substr(0, pipe_pos);
+                std::string platform = (pipe_pos != std::string::npos) ? config_key.substr(pipe_pos + 1) : "";
 
-        // Sanitize library name (in case it has :: namespace separator)
+                // Setup generator expression context
+                GenExprContext ctx;
+                ctx.current_config = config;
+                ctx.current_platform = platform;
+                ctx.state = &state;
+                ctx.project = proj;
+
+                // Evaluate generator expression
+                std::string evaluated = evaluate_generator_expression(arg, ctx);
+                if (evaluated.empty()) continue;
+
+                // Process the evaluated library for this config
+                std::string sanitized_name = sanitize_target_name(evaluated);
+
+                // Check if it's an internal project reference
+                Project* dep_proj = find_project(sanitized_name, state);
+                if (dep_proj) {
+                    auto it = std::find(proj->project_references.begin(),
+                                       proj->project_references.end(), sanitized_name);
+                    if (it == proj->project_references.end()) {
+                        proj->project_references.push_back(sanitized_name);
+                    }
+                    continue;
+                }
+
+                // System/external library for this config only
+                std::string lib_name = sanitized_name;
+                fs::path lib_path(sanitized_name);
+                if (!lib_path.has_extension()) {
+                    lib_name += ".lib";
+                }
+
+                auto& deps = proj->configurations[config_key].link.additional_dependencies;
+                auto it = std::find(deps.begin(), deps.end(), lib_name);
+                if (it == deps.end()) {
+                    deps.push_back(lib_name);
+                }
+            }
+            continue;
+        }
+
+        // No generator expression - original logic
         std::string sanitized_name = sanitize_target_name(arg);
 
         // 1. Check if it's an internal project reference
@@ -635,7 +884,7 @@ void CMakeParser::handle_target_link_libraries(const std::vector<std::string>& a
 
 void CMakeParser::handle_target_compile_definitions(const std::vector<std::string>& args, ParseState& state) {
     if (args.size() < 2) return;
-    
+
     std::string target_name = sanitize_target_name(args[0]);
     Project* proj = find_project(target_name, state);
     if (!proj) return;
@@ -643,9 +892,30 @@ void CMakeParser::handle_target_compile_definitions(const std::vector<std::strin
     for (size_t i = 1; i < args.size(); ++i) {
         const std::string& arg = args[i];
         if (arg == "PUBLIC" || arg == "PRIVATE" || arg == "INTERFACE") continue;
-        
-        // Add to project level definitions
-        proj->project_level_preprocessor_definitions.push_back(arg);
+
+        // Evaluate generator expressions if present
+        if (is_generator_expression(arg)) {
+            // Evaluate for each configuration
+            for (const auto& config_key : state.solution->get_config_keys()) {
+                size_t pipe_pos = config_key.find('|');
+                std::string config = config_key.substr(0, pipe_pos);
+                std::string platform = (pipe_pos != std::string::npos) ? config_key.substr(pipe_pos + 1) : "";
+
+                GenExprContext ctx;
+                ctx.current_config = config;
+                ctx.current_platform = platform;
+                ctx.state = &state;
+                ctx.project = proj;
+
+                std::string evaluated = evaluate_generator_expression(arg, ctx);
+                if (!evaluated.empty()) {
+                    proj->configurations[config_key].cl_compile.preprocessor_definitions.push_back(evaluated);
+                }
+            }
+        } else {
+            // Add to project level definitions (applies to all configs)
+            proj->project_level_preprocessor_definitions.push_back(arg);
+        }
     }
 }
 
@@ -803,13 +1073,379 @@ void CMakeParser::add_sources_to_project(Project* project, const std::vector<std
     }
 }
 
-std::vector<std::string> CMakeParser::expand_glob(const std::string& pattern, const std::string& /*base_path*/) {
-    // Simple glob expansion
-    // TODO: Reuse BuildscriptParser logic if possible or improve this
-    std::vector<std::string> results;
-    // Just return pattern for now to avoid complexity without full glob lib
-    results.push_back(pattern);
-    return results;
+std::vector<std::string> CMakeParser::expand_glob(const std::string& pattern, const std::string& base_path) {
+    std::vector<std::string> result;
+
+    // Check if pattern includes ** for recursive search
+    bool recursive = pattern.find("**") != std::string::npos;
+
+    std::string dir;
+    std::string file_pattern;
+
+    if (recursive) {
+        // Extract the base directory (part before **)
+        size_t star_pos = pattern.find("**");
+        std::string prefix = pattern.substr(0, star_pos);
+
+        // Remove trailing slash/backslash from prefix
+        while (!prefix.empty() && (prefix.back() == '/' || prefix.back() == '\\')) {
+            prefix.pop_back();
+        }
+
+        // Get the file pattern (part after **)
+        std::string suffix = pattern.substr(star_pos + 2);
+        // Remove leading slash/backslash from suffix
+        while (!suffix.empty() && (suffix.front() == '/' || suffix.front() == '\\')) {
+            suffix.erase(0, 1);
+        }
+
+        // Directory is the prefix, file pattern is the filename part of suffix
+        dir = prefix.empty() ? "." : prefix;
+        fs::path suffix_path(suffix);
+        file_pattern = suffix_path.filename().string();
+    } else {
+        fs::path full_pattern = fs::path(base_path) / pattern;
+        dir = full_pattern.parent_path().string();
+        file_pattern = full_pattern.filename().string();
+    }
+
+    if (dir.empty()) dir = ".";
+
+    // Check if this is a wildcard pattern
+    if (file_pattern.find('*') == std::string::npos && file_pattern.find('?') == std::string::npos) {
+        // Not a wildcard, just return the path
+        result.push_back(pattern);
+        return result;
+    }
+
+    // Convert wildcard to regex
+    std::string regex_pattern = file_pattern;
+    // Escape special regex characters except * and ?
+    for (size_t i = 0; i < regex_pattern.size(); ++i) {
+        char c = regex_pattern[i];
+        if (c == '.' || c == '+' || c == '[' || c == ']' ||
+            c == '(' || c == ')' || c == '{' || c == '}' || c == '^' || c == '$') {
+            regex_pattern.insert(i, "\\");
+            ++i;
+        } else if (c == '*') {
+            regex_pattern.replace(i, 1, ".*");
+            ++i;
+        } else if (c == '?') {
+            regex_pattern.replace(i, 1, ".");
+        }
+    }
+
+    std::regex re(regex_pattern, std::regex::icase);
+
+    try {
+        fs::path search_dir = fs::path(base_path) / dir;
+        if (fs::exists(search_dir) && fs::is_directory(search_dir)) {
+            if (recursive) {
+                for (const auto& entry : fs::recursive_directory_iterator(search_dir)) {
+                    if (entry.is_regular_file()) {
+                        std::string filename = entry.path().filename().string();
+                        if (std::regex_match(filename, re)) {
+                            // Make path relative to base_path
+                            std::string rel_path = fs::relative(entry.path(), base_path).string();
+                            // Normalize path separators to forward slashes (CMake convention)
+                            std::replace(rel_path.begin(), rel_path.end(), '\\', '/');
+                            result.push_back(rel_path);
+                        }
+                    }
+                }
+            } else {
+                for (const auto& entry : fs::directory_iterator(search_dir)) {
+                    if (entry.is_regular_file()) {
+                        std::string filename = entry.path().filename().string();
+                        if (std::regex_match(filename, re)) {
+                            // Make path relative to base_path
+                            std::string rel_path = fs::relative(entry.path(), base_path).string();
+                            // Normalize path separators to forward slashes (CMake convention)
+                            std::replace(rel_path.begin(), rel_path.end(), '\\', '/');
+                            result.push_back(rel_path);
+                        }
+                    }
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[CMake] Warning: Error expanding glob " << pattern << ": " << e.what() << "\n";
+    }
+
+    return result;
+}
+
+bool CMakeParser::is_generator_expression(const std::string& str) {
+    return str.find("$<") != std::string::npos;
+}
+
+std::string CMakeParser::evaluate_generator_expression(const std::string& expr, const GenExprContext& ctx) {
+    if (!is_generator_expression(expr)) return expr;
+
+    std::string result = expr;
+    size_t pos = 0;
+
+    while ((pos = result.find("$<", pos)) != std::string::npos) {
+        // Find matching >
+        int depth = 1;
+        size_t end = pos + 2;
+        while (end < result.size() && depth > 0) {
+            if (result[end] == '<' && end > 0 && result[end-1] == '$') depth++;
+            if (result[end] == '>') depth--;
+            end++;
+        }
+
+        if (depth != 0) {
+            std::cerr << "[CMake] Warning: Unmatched generator expression: " << expr << "\n";
+            return result;
+        }
+
+        // Extract expression content
+        std::string gen_expr = result.substr(pos + 2, end - pos - 3);
+        std::string replacement = evaluate_simple_gen_expr(gen_expr, ctx);
+
+        result.replace(pos, end - pos, replacement);
+        pos += replacement.size();
+    }
+
+    return result;
+}
+
+std::string CMakeParser::evaluate_simple_gen_expr(const std::string& expr, const GenExprContext& ctx) {
+    // Parse expression type and arguments
+    size_t colon = expr.find(':');
+
+    // Boolean expressions without colon
+    if (colon == std::string::npos) {
+        // $<0>, $<1> - literal boolean
+        if (expr == "0") return "0";
+        if (expr == "1") return "1";
+
+        // Check for boolean prefix
+        if (expr.find("BOOL:") == 0) {
+            std::string val = expr.substr(5);
+            // Recursively evaluate in case it's nested
+            val = evaluate_generator_expression(val, ctx);
+            return (val == "1" || val == "ON" || val == "TRUE" || val == "true") ? "1" : "0";
+        }
+
+        return "";
+    }
+
+    std::string type = expr.substr(0, colon);
+    std::string args = expr.substr(colon + 1);
+
+    // CONFIG expression: $<CONFIG:Debug>
+    if (type == "CONFIG") {
+        return (args == ctx.current_config) ? "1" : "0";
+    }
+
+    // Platform/architecture checks
+    if (type == "PLATFORM_ID") {
+        #ifdef _WIN32
+        return (args == "Windows") ? "1" : "0";
+        #else
+        return (args == "Linux") ? "1" : "0";
+        #endif
+    }
+
+    // BUILD_INTERFACE: Always include (sighmake is build-time)
+    if (type == "BUILD_INTERFACE") {
+        return evaluate_generator_expression(args, ctx);
+    }
+
+    // INSTALL_INTERFACE: Never include (sighmake doesn't handle install)
+    if (type == "INSTALL_INTERFACE") {
+        return "";
+    }
+
+    // TARGET_PROPERTY: Access target properties
+    if (type == "TARGET_PROPERTY") {
+        // Format: TARGET_PROPERTY:target,property or TARGET_PROPERTY:property (for current target)
+        // For now, return empty as we don't track all properties
+        return "";
+    }
+
+    // Conditional: $<$<condition>:true_value>
+    if (type.find("$<") == 0) {
+        std::string condition = type;
+        std::string true_value = args;
+        std::string cond_result = evaluate_generator_expression(condition, ctx);
+        if (cond_result == "1" || cond_result == "TRUE" || cond_result == "true") {
+            return evaluate_generator_expression(true_value, ctx);
+        }
+        return "";
+    }
+
+    // Logical operators
+    if (type == "AND") {
+        // $<AND:expr1,expr2,...>
+        std::vector<std::string> parts;
+        std::string current;
+        int depth = 0;
+        for (char c : args) {
+            if (c == '$' && current.size() > 0 && current.back() == '<') depth++;
+            if (c == '>') depth--;
+            if (c == ',' && depth == 0) {
+                parts.push_back(current);
+                current.clear();
+            } else {
+                current += c;
+            }
+        }
+        if (!current.empty()) parts.push_back(current);
+
+        for (const auto& part : parts) {
+            std::string result = evaluate_generator_expression(part, ctx);
+            if (result != "1") return "0";
+        }
+        return "1";
+    }
+
+    if (type == "OR") {
+        // $<OR:expr1,expr2,...>
+        std::vector<std::string> parts;
+        std::string current;
+        int depth = 0;
+        for (char c : args) {
+            if (c == '$' && current.size() > 0 && current.back() == '<') depth++;
+            if (c == '>') depth--;
+            if (c == ',' && depth == 0) {
+                parts.push_back(current);
+                current.clear();
+            } else {
+                current += c;
+            }
+        }
+        if (!current.empty()) parts.push_back(current);
+
+        for (const auto& part : parts) {
+            std::string result = evaluate_generator_expression(part, ctx);
+            if (result == "1") return "1";
+        }
+        return "0";
+    }
+
+    if (type == "NOT") {
+        std::string result = evaluate_generator_expression(args, ctx);
+        return (result == "1") ? "0" : "1";
+    }
+
+    // COMPILE_LANGUAGE: Language-specific expressions
+    if (type == "COMPILE_LANGUAGE") {
+        // For C++ projects, assume CXX
+        return (args == "CXX" || args == "C") ? "1" : "0";
+    }
+
+    // Unknown expression - warn and return empty
+    std::cerr << "[CMake] Warning: Unknown generator expression: $<" << expr << ">\n";
+    return "";
+}
+
+std::vector<CMakeParser::Token> CMakeParser::capture_until(const std::string& end_keyword, size_t& i, const std::vector<Token>& tokens) {
+    std::vector<Token> body;
+    int depth = 1;
+
+    while (i < tokens.size() && depth > 0) {
+        if (tokens[i].type == TokenType::Identifier) {
+            std::string cmd = tokens[i].value;
+            std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::tolower);
+
+            // Increase depth for nested control structures
+            if (cmd == "foreach" || cmd == "while" || cmd == "if" ||
+                cmd == "function" || cmd == "macro") {
+                depth++;
+            }
+            // Decrease depth for matching end keywords
+            if (cmd == end_keyword) {
+                depth--;
+                if (depth == 0) {
+                    i++; // Skip the end keyword
+                    break;
+                }
+            }
+        }
+        body.push_back(tokens[i]);
+        i++;
+    }
+
+    return body;
+}
+
+void CMakeParser::handle_foreach(const std::vector<std::string>& args, size_t& i, const std::vector<Token>& tokens, ParseState& state) {
+    if (args.empty()) {
+        std::cerr << "[CMake] Error: foreach() requires at least 1 argument\n";
+        return;
+    }
+
+    std::string loop_var = args[0];
+    std::vector<std::string> items;
+
+    // Parse foreach syntax
+    if (args.size() > 2 && args[1] == "IN") {
+        std::string mode = args[2];
+        if (mode == "LISTS") {
+            // foreach(var IN LISTS list1 list2 ...)
+            for (size_t j = 3; j < args.size(); ++j) {
+                std::string list_val = state.variables[args[j]];
+                // Split by semicolon
+                std::stringstream ss(list_val);
+                std::string item;
+                while (std::getline(ss, item, ';')) {
+                    if (!item.empty()) items.push_back(item);
+                }
+            }
+        } else if (mode == "ITEMS") {
+            // foreach(var IN ITEMS item1 item2 ...)
+            items.assign(args.begin() + 3, args.end());
+        }
+    } else if (args.size() > 2 && args[1] == "RANGE") {
+        // foreach(var RANGE stop) or foreach(var RANGE start stop [step])
+        int start = 0, stop = 0, step = 1;
+        try {
+            if (args.size() == 3) {
+                stop = std::stoi(args[2]);
+            } else if (args.size() >= 4) {
+                start = std::stoi(args[2]);
+                stop = std::stoi(args[3]);
+                if (args.size() >= 5) step = std::stoi(args[4]);
+            }
+            for (int val = start; val <= stop; val += step) {
+                items.push_back(std::to_string(val));
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[CMake] Error: Invalid RANGE parameters in foreach()\n";
+            // Skip the loop body
+            capture_until("endforeach", i, tokens);
+            return;
+        }
+    } else {
+        // Simple: foreach(var item1 item2 ...)
+        items.assign(args.begin() + 1, args.end());
+    }
+
+    // Capture loop body
+    std::vector<Token> body = capture_until("endforeach", i, tokens);
+
+    // Save old variable value
+    auto old_it = state.variables.find(loop_var);
+    std::string old_value;
+    bool had_value = (old_it != state.variables.end());
+    if (had_value) old_value = old_it->second;
+
+    // Execute loop
+    for (const auto& item : items) {
+        state.variables[loop_var] = item;
+        size_t body_i = 0;
+        execute_tokens(body, body_i, state);
+    }
+
+    // Restore old variable value
+    if (had_value) {
+        state.variables[loop_var] = old_value;
+    } else {
+        state.variables.erase(loop_var);
+    }
 }
 
 void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, ParseState& state) {
@@ -856,6 +1492,7 @@ void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, Pa
                     else if (command == "file") handle_file(args, state);
                     else if (command == "find_library") handle_find_library(args, state);
                     else if (command == "find_path") handle_find_path(args, state);
+                    else if (command == "find_package") handle_find_package(args, state);
                     else if (command == "cmake_minimum_required") handle_cmake_minimum_required(args, state);
                     else if (command == "enable_testing") handle_enable_testing(args, state);
                     else if (command == "add_test") handle_add_test(args, state);
@@ -864,6 +1501,7 @@ void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, Pa
                     else if (command == "macro") handle_macro_def(args, i, tokens, state);
                     else if (command == "if") handle_if(args, i, tokens, state);
                     else if (command == "while") handle_while(args, i, tokens, state);
+                    else if (command == "foreach") handle_foreach(args, i, tokens, state);
                     else if (command == "return") return; // Return from function/file
                     else {
                         // Check user-defined functions

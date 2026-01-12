@@ -44,10 +44,11 @@ private:
         Solution* solution = nullptr;
         std::string base_path;
         int line_number = 0;
-        
+
         // Variables state
         std::map<std::string, std::string> variables;
-        
+        std::map<std::string, std::string> parent_scope_vars;  // For PARENT_SCOPE support
+
         // Current context
         std::string current_source_dir;
         std::string current_binary_dir;
@@ -55,6 +56,14 @@ private:
         // Defined functions and macros
         std::map<std::string, FunctionDef> functions;
         std::map<std::string, FunctionDef> macros;
+    };
+
+    // Context for evaluating generator expressions
+    struct GenExprContext {
+        std::string current_config;   // "Debug" or "Release"
+        std::string current_platform;  // "Win32" or "x64"
+        const ParseState* state;
+        const Project* project;
     };
 
     // Helper to tokenize content
@@ -87,6 +96,7 @@ private:
     void handle_target_compile_options(const std::vector<std::string>& args, ParseState& state);
     void handle_find_library(const std::vector<std::string>& args, ParseState& state);
     void handle_find_path(const std::vector<std::string>& args, ParseState& state);
+    void handle_find_package(const std::vector<std::string>& args, ParseState& state);
     // Stubs for ignored/simple commands
     void handle_cmake_minimum_required(const std::vector<std::string>& args, ParseState& state);
     void handle_enable_testing(const std::vector<std::string>& args, ParseState& state);
@@ -96,6 +106,7 @@ private:
     void handle_macro_def(const std::vector<std::string>& args, size_t& i, const std::vector<Token>& tokens, ParseState& state);
     void handle_if(const std::vector<std::string>& args, size_t& i, const std::vector<Token>& tokens, ParseState& state);
     void handle_while(const std::vector<std::string>& args, size_t& i, const std::vector<Token>& tokens, ParseState& state);
+    void handle_foreach(const std::vector<std::string>& args, size_t& i, const std::vector<Token>& tokens, ParseState& state);
 
     // Helper to find or create a project
     Project* find_project(const std::string& name, ParseState& state);
@@ -108,6 +119,14 @@ private:
 
     // Helper to evaluate conditions
     bool evaluate_condition(const std::vector<std::string>& args, ParseState& state);
+
+    // Helper to capture tokens until a specific end keyword
+    std::vector<Token> capture_until(const std::string& end_keyword, size_t& i, const std::vector<Token>& tokens);
+
+    // Generator expression helpers
+    bool is_generator_expression(const std::string& str);
+    std::string evaluate_generator_expression(const std::string& expr, const GenExprContext& ctx);
+    std::string evaluate_simple_gen_expr(const std::string& expr, const GenExprContext& ctx);
 
     // Helper to propagate include directories from linked projects
     void propagate_include_directories(Solution& solution);
