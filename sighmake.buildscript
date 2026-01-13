@@ -71,3 +71,20 @@ link_incremental[Debug|Win32] = true
 link_incremental[Debug|x64] = true
 link_incremental[Release|Win32] = false
 link_incremental[Release|x64] = false
+
+# Precompiled header settings
+pch = Use
+pch_header = pch.h
+
+# Per-configuration PCH output paths
+pch_output[Debug|Win32] = .\build\obj\Debug\pch.pch
+pch_output[Release|Win32] = .\build\obj\Release\pch.pch
+pch_output[Debug|x64] = .\build\obj\x64\Debug\pch.pch
+pch_output[Release|x64] = .\build\obj\x64\Release\pch.pch
+
+# pch.cpp creates the PCH
+pch.cpp:pch = Create
+pch.cpp:pch_header = pch.h
+
+# Exclude pugixml.cpp from PCH (third-party library)
+pugixml.cpp:pch = NotUsing

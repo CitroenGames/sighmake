@@ -4,6 +4,7 @@
 #include "common/generator.hpp"
 #include <string>
 #include <filesystem>
+#include <tuple>
 
 namespace vcxproj {
 
@@ -48,6 +49,13 @@ private:
 
     // Strip .lib or .dll extension from library names
     std::string strip_lib_extension(const std::string& lib);
+
+    // PCH helper functions
+    std::pair<bool, std::string> get_pch_info(const Configuration& config);
+    std::tuple<std::string, std::string> get_file_pch_mode(
+        const SourceFile& src,
+        const std::string& config_key,
+        const Configuration& config);
 };
 
 } // namespace vcxproj

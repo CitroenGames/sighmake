@@ -168,6 +168,37 @@ std::string MakefileGenerator::map_language_standard(const std::string& std) {
     return "-std=c++17"; // Default to C++17
 }
 
+// Determine if PCH is enabled for a configuration and return the PCH header path
+std::pair<bool, std::string> MakefileGenerator::get_pch_info(const Configuration& config) {
+    bool has_pch = !config.cl_compile.pch.mode.empty() &&
+                   config.cl_compile.pch.mode != "NotUsing";
+    std::string header = config.cl_compile.pch.header;
+    return {has_pch, header};
+}
+
+// Check if a source file uses, creates, or doesn't use PCH
+// Returns: (mode, header) tuple
+std::tuple<std::string, std::string> MakefileGenerator::get_file_pch_mode(
+    const SourceFile& src,
+    const std::string& config_key,
+    const Configuration& config) {
+
+    // Check file-level PCH settings first (config-specific)
+    auto pch_it = src.settings.pch.find(config_key);
+    if (pch_it != src.settings.pch.end() && !pch_it->second.mode.empty()) {
+        return {pch_it->second.mode, pch_it->second.header};
+    }
+
+    // Fall back to ALL_CONFIGS wildcard
+    pch_it = src.settings.pch.find("ALL_CONFIGS");
+    if (pch_it != src.settings.pch.end() && !pch_it->second.mode.empty()) {
+        return {pch_it->second.mode, pch_it->second.header};
+    }
+
+    // Fall back to project-level PCH settings
+    return {config.cl_compile.pch.mode, config.cl_compile.pch.header};
+}
+
 // Get all compiler flags for a configuration
 std::string MakefileGenerator::get_compiler_flags(const Configuration& config, const Project& /*project*/,
                                                    const std::filesystem::path& makefile_dir) {
@@ -378,9 +409,32 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     out << "TARGET = " << target << "\n";
     out << "OBJ_DIR = " << int_dir << "\n\n";
 
+    // Check if PCH is enabled for this configuration
+    auto [has_pch, pch_header] = get_pch_info(config);
+    std::string pch_header_path;
+    std::string pch_output_path;
+    std::string pch_include_base; // The path to include (without .gch extension)
+
+    if (has_pch && !pch_header.empty()) {
+        // Compute relative path to PCH header
+        pch_header_path = compute_relative_path(pch_header, makefile_dir);
+
+        // PCH output path: $(OBJ_DIR)/pch_filename.gch
+        pch_output_path = int_dir + fs::path(pch_header).filename().string() + ".gch";
+
+        // The include base is the path without .gch extension (for -include flag)
+        pch_include_base = int_dir + fs::path(pch_header).filename().string();
+
+        // Write PCH variables
+        out << "# Precompiled header\n";
+        out << "PCH_HEADER = " << pch_header_path << "\n";
+        out << "PCH_OUTPUT = " << pch_output_path << "\n\n";
+    }
+
     // Collect source files and generate object file list
     std::vector<std::string> obj_files;
     std::vector<std::pair<std::string, std::string>> source_to_obj; // (source, object)
+    std::vector<bool> source_uses_pch; // Track which files use PCH
 
     for (const auto& src : project.sources) {
         if (src.type == FileType::ClCompile) {
@@ -388,6 +442,14 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
             auto excl_it = src.settings.excluded.find(config_key);
             if (excl_it != src.settings.excluded.end() && excl_it->second) {
                 continue; // Skip excluded files
+            }
+
+            // Check PCH mode for this file
+            auto [mode, header] = get_file_pch_mode(src, config_key, config);
+
+            // Skip files with "Create" mode - in GCC, we compile the header directly
+            if (mode == "Create") {
+                continue;
             }
 
             // Generate object file path
@@ -398,8 +460,12 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
             // Convert source path to relative (using the same logic as output dirs)
             std::string src_relative = compute_relative_path(src.path, makefile_dir);
 
+            // Determine if this file uses PCH
+            bool uses_pch = has_pch && (mode == "Use" || (mode.empty() && !header.empty()));
+
             obj_files.push_back(obj_path);
             source_to_obj.push_back({src_relative, obj_path});
+            source_uses_pch.push_back(uses_pch);
         }
     }
 
@@ -416,6 +482,14 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
 
     // Default target
     out << "all: $(TARGET)\n\n";
+
+    // PCH compilation rule
+    if (has_pch && !pch_header_path.empty()) {
+        out << "# Precompiled header compilation\n";
+        out << "$(PCH_OUTPUT): $(PCH_HEADER)\n";
+        out << "\t@mkdir -p $(dir $@)\n";
+        out << "\t$(CXX) $(CXXFLAGS) -x c++-header -o $@ $<\n\n";
+    }
 
     // Link rule
     out << "$(TARGET): $(OBJS)\n";
@@ -437,7 +511,10 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     out << "\n";
 
     // Compilation rules for each source file
-    for (const auto& [src, obj] : source_to_obj) {
+    for (size_t i = 0; i < source_to_obj.size(); ++i) {
+        const auto& [src, obj] = source_to_obj[i];
+        bool uses_pch = source_uses_pch[i];
+
         fs::path src_path(src);
         std::string ext = src_path.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
@@ -454,14 +531,31 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
             continue; // Skip unknown file types
         }
 
-        out << obj << ": " << src << "\n";
+        // Write dependency line - add PCH dependency if file uses it
+        out << obj << ": " << src;
+        if (uses_pch && has_pch) {
+            out << " $(PCH_OUTPUT)";
+        }
+        out << "\n";
+
         out << "\t@mkdir -p $(dir $@)\n";
-        out << "\t" << compiler << " " << flags << " -MMD -MP -c -o $@ $<\n\n";
+        out << "\t" << compiler << " " << flags;
+
+        // Add -include flag to force PCH inclusion for files that use it
+        if (uses_pch && has_pch && !pch_include_base.empty()) {
+            out << " -include " << pch_include_base;
+        }
+
+        out << " -MMD -MP -c -o $@ $<\n\n";
     }
 
     // Clean rule
     out << "clean:\n";
-    out << "\trm -rf $(OBJ_DIR) $(TARGET)\n\n";
+    if (has_pch && !pch_output_path.empty()) {
+        out << "\trm -rf $(OBJ_DIR) $(TARGET) $(PCH_OUTPUT)\n\n";
+    } else {
+        out << "\trm -rf $(OBJ_DIR) $(TARGET)\n\n";
+    }
 
     // Include dependency files
     if (!obj_files.empty()) {
