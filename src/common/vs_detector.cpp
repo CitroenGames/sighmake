@@ -1,3 +1,4 @@
+#include "pch.h"
 #include "vs_detector.hpp"
 
 #ifdef _WIN32

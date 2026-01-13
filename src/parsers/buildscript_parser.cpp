@@ -1,3 +1,4 @@
+#include "pch.h"
 #include "buildscript_parser.hpp"
 #include "common/toolset_registry.hpp"
 #include <fstream>

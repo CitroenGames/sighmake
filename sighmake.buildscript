@@ -82,9 +82,9 @@ pch_output[Release|Win32] = .\build\obj\Release\pch.pch
 pch_output[Debug|x64] = .\build\obj\x64\Debug\pch.pch
 pch_output[Release|x64] = .\build\obj\x64\Release\pch.pch
 
-# pch.cpp creates the PCH
-pch.cpp:pch = Create
-pch.cpp:pch_header = pch.h
+# pch.cpp creates the PCH (use full path to match wildcard)
+src/pch.cpp:pch = Create
+src/pch.cpp:pch_header = pch.h
 
 # Exclude pugixml.cpp from PCH (third-party library)
-pugixml.cpp:pch = NotUsing
+src/pugixml.cpp:pch = NotUsing

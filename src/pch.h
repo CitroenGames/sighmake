@@ -19,9 +19,14 @@
 #include <regex>
 
 // Additional commonly used headers
+#include <memory>
+#include <optional>
+#include <functional>
+#include <array>
 #include <random>
 #include <iomanip>
 #include <cctype>
+#include <cstring>
 
 // Core project types - used by almost every file
 #include "common/project_types.hpp"

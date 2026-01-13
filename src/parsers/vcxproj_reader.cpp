@@ -1,3 +1,4 @@
+#include "pch.h"
 #include "vcxproj_reader.hpp"
 #define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"

@@ -1,3 +1,4 @@
+#include "pch.h"
 #include "makefile_generator.hpp"
 #include <fstream>
 #include <iostream>

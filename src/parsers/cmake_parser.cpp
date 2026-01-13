@@ -1,3 +1,4 @@
+#include "pch.h"
 #include "cmake_parser.hpp"
 #include <iostream>
 #include <sstream>
@@ -1349,7 +1350,7 @@ std::vector<CMakeParser::Token> CMakeParser::capture_until(const std::string& en
     while (i < tokens.size() && depth > 0) {
         if (tokens[i].type == TokenType::Identifier) {
             std::string cmd = tokens[i].value;
-            std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::tolower);
+            std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return (char)std::tolower(c); });
 
             // Increase depth for nested control structures
             if (cmd == "foreach" || cmd == "while" || cmd == "if" ||
@@ -1413,7 +1414,7 @@ void CMakeParser::handle_foreach(const std::vector<std::string>& args, size_t& i
             for (int val = start; val <= stop; val += step) {
                 items.push_back(std::to_string(val));
             }
-        } catch (const std::exception& e) {
+        } catch (const std::exception&) {
             std::cerr << "[CMake] Error: Invalid RANGE parameters in foreach()\n";
             // Skip the loop body
             capture_until("endforeach", i, tokens);
@@ -1583,7 +1584,7 @@ void CMakeParser::handle_function_def(const std::vector<std::string>& args, size
     
     // Case-insensitive name
     std::transform(func_name.begin(), func_name.end(), func_name.begin(), 
-                  [](unsigned char c){ return std::tolower(c); });
+                  [](unsigned char c) { return (char)std::tolower(c); });
 
     FunctionDef def;
     // Store params
@@ -1596,7 +1597,7 @@ void CMakeParser::handle_function_def(const std::vector<std::string>& args, size
     while (i < tokens.size()) {
         if (tokens[i].type == TokenType::Identifier) {
             std::string cmd = tokens[i].value;
-            std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c){ return std::tolower(c); });
+            std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return (char)std::tolower(c); });
             
             if (cmd == "function") nesting++;
             else if (cmd == "endfunction") nesting--;
@@ -1623,7 +1624,7 @@ void CMakeParser::handle_macro_def(const std::vector<std::string>& args, size_t&
     if (args.empty()) return;
     std::string macro_name = args[0];
     std::transform(macro_name.begin(), macro_name.end(), macro_name.begin(), 
-                  [](unsigned char c){ return std::tolower(c); });
+                  [](unsigned char c) { return (char)std::tolower(c); });
 
     FunctionDef def;
     for (size_t k = 1; k < args.size(); ++k) {
@@ -1634,7 +1635,7 @@ void CMakeParser::handle_macro_def(const std::vector<std::string>& args, size_t&
     while (i < tokens.size()) {
         if (tokens[i].type == TokenType::Identifier) {
             std::string cmd = tokens[i].value;
-            std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c){ return std::tolower(c); });
+            std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return (char)std::tolower(c); });
             
             if (cmd == "macro") nesting++;
             else if (cmd == "endmacro") nesting--;
@@ -1673,7 +1674,7 @@ void CMakeParser::handle_if(const std::vector<std::string>& args, size_t& i, con
         
         if (t.type == TokenType::Identifier) {
             std::string cmd = t.value;
-            std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c){ return std::tolower(c); });
+            std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return (char)std::tolower(c); });
             
             if (cmd == "if") {
                 nesting++;
@@ -1757,7 +1758,7 @@ void CMakeParser::handle_while(const std::vector<std::string>& args, size_t& i, 
     while (scan < tokens.size()) {
         if (tokens[scan].type == TokenType::Identifier) {
              std::string cmd = tokens[scan].value;
-             std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c){ return std::tolower(c); });
+             std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return (char)std::tolower(c); });
              if (cmd == "while") nesting++;
              else if (cmd == "endwhile") nesting--;
              

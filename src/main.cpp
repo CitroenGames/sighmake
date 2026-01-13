@@ -1,3 +1,4 @@
+#include "pch.h"
 #include "config.hpp"
 #include "parsers/buildscript_parser.hpp"
 #include "parsers/cmake_parser.hpp"

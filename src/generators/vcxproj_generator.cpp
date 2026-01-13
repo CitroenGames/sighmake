@@ -1,3 +1,4 @@
+#include "pch.h"
 #include "config.hpp"
 #include "vcxproj_generator.hpp"
 #include "common/vs_detector.hpp"
