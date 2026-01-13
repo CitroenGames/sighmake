@@ -74,7 +74,7 @@ link_incremental[Release|x64] = false
 
 # Precompiled header settings
 pch = Use
-pch_header = pch.h
+pch_header = src/pch.h
 
 # Per-configuration PCH output paths
 pch_output[Debug|Win32] = .\build\obj\Debug\pch.pch
