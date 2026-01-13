@@ -1,12 +1,6 @@
 #include "pch.h"
 #include "buildscript_parser.hpp"
 #include "common/toolset_registry.hpp"
-#include <fstream>
-#include <sstream>
-#include <filesystem>
-#include <algorithm>
-#include <regex>
-#include <set>
 
 namespace fs = std::filesystem;
 

@@ -27,6 +27,7 @@
 #include <iomanip>
 #include <cctype>
 #include <cstring>
+#include <stack>
 
 // Core project types - used by almost every file
 #include "common/project_types.hpp"

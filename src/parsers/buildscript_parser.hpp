@@ -1,9 +1,6 @@
 #pragma once
 
 #include "common/project_types.hpp"
-#include <string>
-#include <iostream>
-#include <set>
 
 namespace vcxproj {
 

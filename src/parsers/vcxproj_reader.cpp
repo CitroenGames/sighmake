@@ -2,13 +2,6 @@
 #include "vcxproj_reader.hpp"
 #define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"
-#include <fstream>
-#include <sstream>
-#include <iostream>
-#include <filesystem>
-#include <algorithm>
-#include <regex>
-#include <set>
 
 namespace fs = std::filesystem;
 

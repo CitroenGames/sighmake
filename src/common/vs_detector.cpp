@@ -1,16 +1,6 @@
 #include "pch.h"
 #include "vs_detector.hpp"
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
-#include <array>
-#include <algorithm>
-#include <cstdlib>
-#include <filesystem>
-#include <iostream>
-
 namespace fs = std::filesystem;
 
 namespace vcxproj {

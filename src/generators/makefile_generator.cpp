@@ -1,9 +1,5 @@
 #include "pch.h"
 #include "makefile_generator.hpp"
-#include <fstream>
-#include <iostream>
-#include <algorithm>
-#include <sstream>
 
 namespace vcxproj {
 

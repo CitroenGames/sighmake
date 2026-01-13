@@ -1,12 +1,5 @@
 #include "pch.h"
 #include "cmake_parser.hpp"
-#include <iostream>
-#include <sstream>
-#include <stack>
-#include <set>
-#include <filesystem>
-#include <regex>
-#include <algorithm>
 
 namespace fs = std::filesystem;
 

@@ -2,9 +2,6 @@
 
 #include "common/project_types.hpp"
 #include "common/generator.hpp"
-#include <string>
-#include <filesystem>
-#include <tuple>
 
 namespace vcxproj {
 

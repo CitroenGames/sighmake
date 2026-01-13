@@ -7,12 +7,6 @@
 #include "parsers/vcxproj_reader.hpp"
 #include "common/toolset_registry.hpp"
 
-// Standard library includes
-#include <iostream>
-#include <filesystem>
-#include <cstring>
-#include <algorithm>
-
 namespace fs = std::filesystem;
 
 void print_usage(const char* program_name) {

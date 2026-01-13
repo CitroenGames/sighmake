@@ -5,13 +5,6 @@
 #include "common/toolset_registry.hpp"
 #define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"
-#include <fstream>
-#include <sstream>
-#include <algorithm>
-#include <filesystem>
-#include <iostream>
-#include <set>
-#include <map>
 
 #if PROJ_SEPERATOR
 #define GENERATED_VCXPROJ "_.vcxproj"

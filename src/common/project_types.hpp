@@ -1,15 +1,5 @@
 #pragma once
 
-#include <string>
-#include <vector>
-#include <map>
-#include <random>
-#include <sstream>
-#include <iomanip>
-#include <filesystem>
-#include <cctype>
-#include <algorithm>
-
 namespace vcxproj {
 
 // Constant for "all configurations"
