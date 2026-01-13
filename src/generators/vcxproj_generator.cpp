@@ -497,8 +497,11 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
         cl.append_child("PrecompiledHeader").text() = pch_mode.c_str();
         // Always write PrecompiledHeaderFile if specified, even if mode is "NotUsing"
         // This is needed for files that have Create mode - they inherit this header
-        if (!cfg.cl_compile.pch.header.empty())
-            cl.append_child("PrecompiledHeaderFile").text() = cfg.cl_compile.pch.header.c_str();
+        // Extract filename only to match makefile_generator behavior
+        if (!cfg.cl_compile.pch.header.empty()) {
+            std::string pch_filename = fs::path(cfg.cl_compile.pch.header).filename().string();
+            cl.append_child("PrecompiledHeaderFile").text() = pch_filename.c_str();
+        }
         // Only write PrecompiledHeaderOutputFile if mode is not "NotUsing"
         if (pch_mode != "NotUsing" && !cfg.cl_compile.pch.output.empty())
             cl.append_child("PrecompiledHeaderOutputFile").text() = cfg.cl_compile.pch.output.c_str();
@@ -820,10 +823,12 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                         }
 
                         // Only write PrecompiledHeaderFile if it was explicitly specified
+                        // Extract filename only to match makefile_generator behavior
                         if (!header_to_use.empty()) {
+                            std::string pch_filename = fs::path(header_to_use).filename().string();
                             auto node = file_elem.append_child("PrecompiledHeaderFile");
                             node.append_attribute("Condition") = condition.c_str();
-                            node.text() = header_to_use.c_str();
+                            node.text() = pch_filename.c_str();
                         }
                         // Only write PrecompiledHeaderOutputFile if it was explicitly specified
                         // Don't auto-generate - let MSBuild use its defaults
