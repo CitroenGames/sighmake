@@ -494,6 +494,50 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
         }
     }
 
+    // Phase 1.5: Auto-populate Debug/Release if no config sections were defined
+    if (!state.user_defined_config_sections) {
+        for (auto& project : solution.projects) {
+            for (const auto& config_key : solution.get_config_keys()) {
+                auto& cfg = project.configurations[config_key];
+                auto [config, platform] = parse_config_key(config_key);
+
+                // Apply rich defaults for Debug and Release
+                if (config == "Debug") {
+                    // Debug configuration defaults
+                    if (cfg.cl_compile.optimization.empty()) {
+                        cfg.cl_compile.optimization = "Disabled";
+                    }
+                    if (cfg.cl_compile.runtime_library.empty()) {
+                        cfg.cl_compile.runtime_library = "MultiThreadedDebug";
+                    }
+                    if (cfg.cl_compile.debug_information_format.empty()) {
+                        // EditAndContinue only works on Win32
+                        cfg.cl_compile.debug_information_format =
+                            (platform == "Win32") ? "EditAndContinue" : "ProgramDatabase";
+                    }
+                    cfg.link.generate_debug_info = true;
+                    cfg.link_incremental = true;
+                } else if (config == "Release") {
+                    // Release configuration defaults
+                    if (cfg.cl_compile.optimization.empty()) {
+                        cfg.cl_compile.optimization = "MaxSpeed";
+                    }
+                    if (cfg.cl_compile.runtime_library.empty()) {
+                        cfg.cl_compile.runtime_library = "MultiThreaded";
+                    }
+                    if (cfg.cl_compile.debug_information_format.empty()) {
+                        cfg.cl_compile.debug_information_format = "ProgramDatabase";
+                    }
+                    cfg.cl_compile.function_level_linking = true;
+                    cfg.cl_compile.intrinsic_functions = true;
+                    cfg.link.enable_comdat_folding = true;
+                    cfg.link.optimize_references = true;
+                    cfg.link.generate_debug_info = true;  // Even Release should have debug symbols
+                }
+            }
+        }
+    }
+
     // Phase 2: Ensure all projects have configurations set up and apply defaults
     for (auto& project : solution.projects) {
         for (const auto& config_key : solution.get_config_keys()) {
@@ -813,6 +857,8 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
     
     // [config:Debug|Win32] or [config:Test] : Template:Release - for config-specific settings
     if (section.rfind("config:", 0) == 0) {
+        state.user_defined_config_sections = true;  // User defined a config section
+
         std::string config_spec = trim(section.substr(7));  // Extract config spec after "config:"
         state.current_file = nullptr;  // Leave file context
 

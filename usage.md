@@ -98,6 +98,37 @@ make -f build/MyApp.Release
 
 That's it! You now have a working build system. Continue reading for in-depth coverage of all features.
 
+### Even Simpler: Auto-Populated Configurations
+
+If you don't define any `[config:...]` sections, sighmake automatically provides Debug and Release configurations with sensible defaults:
+
+```ini
+[solution]
+name = MyApp
+
+[project:MyApp]
+type = exe
+sources = src/*.cpp
+includes = include
+std = 17
+```
+
+This minimal buildscript automatically gets:
+
+**Debug Configuration:**
+- Optimization: Disabled
+- Runtime Library: MultiThreadedDebug
+- Debug Info: EditAndContinue (Win32) or ProgramDatabase (x64)
+- Incremental Linking: Enabled
+
+**Release Configuration:**
+- Optimization: MaxSpeed
+- Runtime Library: MultiThreaded
+- Debug Info: ProgramDatabase
+- Function-Level Linking, Intrinsic Functions, COMDAT Folding, Optimize References: All enabled
+
+Perfect for quick prototyping! To customize configurations, define your own `[config:Debug]` or `[config:Release]` sections.
+
 ---
 
 ## 2. Command-Line Interface

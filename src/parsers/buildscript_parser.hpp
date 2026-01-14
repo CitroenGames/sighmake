@@ -38,6 +38,9 @@ private:
         std::map<std::string, std::string> config_templates;  // Maps "Config" or "Config|Platform" -> "TemplateName"
         std::set<std::string> pending_template_applications;  // Configs needing template resolution
 
+        // Auto-population tracking
+        bool user_defined_config_sections = false;  // Track if user defined any [config:...] sections
+
         struct ScopeState {
             bool executing;
             bool condition_met;
