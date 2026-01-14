@@ -191,6 +191,10 @@ struct Configuration {
     ManifestSettings manifest;
     XdcmakeSettings xdcmake;
     BscmakeSettings bscmake;
+
+    // Template inheritance
+    std::string template_name;  // Name of template this config inherits from (e.g., "Release")
+    bool is_template = false;   // Whether this is used as a template by other configs
 };
 
 // Project

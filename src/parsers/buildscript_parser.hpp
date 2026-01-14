@@ -34,6 +34,10 @@ private:
         std::set<std::string> discovered_configs;  // Track configs discovered from [config:...] sections
         std::set<std::string> discovered_platforms;  // Track platforms discovered from [config:...] sections
 
+        // Template inheritance tracking
+        std::map<std::string, std::string> config_templates;  // Maps "Config" or "Config|Platform" -> "TemplateName"
+        std::set<std::string> pending_template_applications;  // Configs needing template resolution
+
         struct ScopeState {
             bool executing;
             bool condition_met;
@@ -75,6 +79,10 @@ private:
     // Parse configuration-specific settings
     void parse_config_setting(const std::string& key, const std::string& value,
                               const std::string& config_key, ParseState& state);
+
+    // Apply template configuration settings to derived configuration
+    void apply_template(Project& project, const std::string& derived_key,
+                       const std::string& template_key, ParseState& state);
 
     // Parse uses_pch() function call
     void parse_uses_pch(const std::string& line, ParseState& state);

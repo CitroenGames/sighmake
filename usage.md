@@ -517,6 +517,114 @@ With the above settings:
 - `Release|Win32`: Uses `MaxSpeed` (configuration-specific)
 - `Release|x64`: Uses `Full` (most specific match)
 
+### Configuration Templates
+
+You can define configuration templates to reduce duplication when creating custom configurations. This allows you to create new configurations that inherit all settings from an existing template configuration.
+
+**Syntax:**
+```ini
+[config:DerivedConfig|Platform] : Template:BaseConfig
+[config:DerivedConfig] : Template:BaseConfig
+```
+
+**Features:**
+- Templates are regular configurations that other configs inherit from
+- Derived configs inherit **all** settings from the template
+- Individual settings can be overridden in the derived config
+- Works with platform-specific (`[config:Test|Win32]`) and all-platform (`[config:Test]`) syntax
+
+**Example - Single Platform Template:**
+```ini
+[solution]
+configurations = Debug, Release, Test
+platforms = Win32, x64
+
+[project:MyApp]
+type = exe
+sources = src/*.cpp
+
+# Define Release as a base template
+[config:Release|Win32]
+optimization = MaxSpeed
+runtime_library = MultiThreaded
+whole_program_optimization = true
+defines = NDEBUG
+
+# Test config inherits all Release settings for Win32
+[config:Test|Win32] : Template:Release
+defines = NDEBUG, TEST_MODE  # Override only defines
+```
+
+In this example, `Test|Win32` will have:
+- `optimization = MaxSpeed` (from Release)
+- `runtime_library = MultiThreaded` (from Release)
+- `whole_program_optimization = true` (from Release)
+- `defines = NDEBUG, TEST_MODE` (overridden in Test)
+
+**Example - All Platforms Template:**
+```ini
+[solution]
+configurations = Debug, Release, Profile
+platforms = Win32, x64
+
+[project:MyApp]
+type = exe
+sources = src/*.cpp
+
+# Define Release settings for all platforms
+[config:Release]
+optimization = MaxSpeed
+runtime_library = MultiThreaded
+defines = NDEBUG
+
+# Profile inherits from Release for ALL platforms
+[config:Profile] : Template:Release
+defines = NDEBUG, PROFILE_MODE  # Override defines
+```
+
+In this example:
+- `Profile|Win32` inherits all settings from `Release|Win32`
+- `Profile|x64` inherits all settings from `Release|x64`
+- Both platforms override `defines` to include `PROFILE_MODE`
+
+**Example - Multiple Custom Configurations:**
+```ini
+[solution]
+configurations = Debug, Release, Test, Staging, Production
+platforms = Win32, x64
+
+[project:MyApp]
+type = exe
+sources = src/*.cpp
+
+# Base Release configuration
+[config:Release]
+optimization = MaxSpeed
+runtime_library = MultiThreaded
+function_level_linking = true
+enable_comdat_folding = true
+defines = NDEBUG
+
+# Test: Like Release but with test defines
+[config:Test] : Template:Release
+defines = NDEBUG, ENABLE_TESTING
+
+# Staging: Like Release but with staging URL
+[config:Staging] : Template:Release
+defines = NDEBUG, STAGING_ENV, API_URL="https://staging.api.com"
+
+# Production: Like Release with production settings
+[config:Production] : Template:Release
+defines = NDEBUG, PRODUCTION_ENV, API_URL="https://api.com"
+whole_program_optimization = true  # Extra optimization for production
+```
+
+**Important Notes:**
+- Templates must be defined before they are referenced (define `[config:Release]` before using `: Template:Release`)
+- Templates remain buildable configurations themselves
+- Override order: Derived config settings → Template settings → System defaults
+- Circular template references (e.g., `Test : Template:Test`) are detected and produce an error
+
 ---
 
 ## 5. Per-File Settings

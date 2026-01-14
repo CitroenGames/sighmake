@@ -448,7 +448,53 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
         solution.name = solution.projects[0].name;
     }
 
-    // Ensure all projects have configurations set up
+    // Phase 1: Apply template inheritance
+    for (auto& project : solution.projects) {
+        // First pass: Mark configurations that are used as templates
+        for (const auto& [derived_key, template_name] : state.config_templates) {
+            // Check if this template is used as a base for any derived config
+            // Mark all matching template config keys as templates
+            for (auto& [config_key, cfg] : project.configurations) {
+                auto [config_name, platform] = parse_config_key(config_key);
+
+                // Check if this config matches the template name
+                if (config_name == template_name || config_key == template_name) {
+                    cfg.is_template = true;
+                }
+            }
+        }
+
+        // Second pass: Apply template inheritance to derived configurations
+        for (const auto& pending_config : state.pending_template_applications) {
+            // Determine if this is a config-only or config|platform key
+            size_t pipe_pos = pending_config.find('|');
+
+            if (pipe_pos == std::string::npos) {
+                // Template applies to all platforms (e.g., [config:Test] : Template:Release)
+                std::string config_name = pending_config;
+                std::string template_name = state.config_templates[config_name];
+
+                // Apply to each platform
+                for (const auto& platform : solution.platforms) {
+                    std::string derived_key = config_name + "|" + platform;
+                    std::string template_key = template_name + "|" + platform;
+
+                    apply_template(project, derived_key, template_key, state);
+                }
+            } else {
+                // Template applies to specific config|platform (e.g., [config:Test|Win32] : Template:Release)
+                std::string template_name = state.config_templates[pending_config];
+
+                // Find matching template key - need to extract platform from pending_config
+                auto [config, platform] = parse_config_key(pending_config);
+                std::string template_key = template_name + "|" + platform;
+
+                apply_template(project, pending_config, template_key, state);
+            }
+        }
+    }
+
+    // Phase 2: Ensure all projects have configurations set up and apply defaults
     for (auto& project : solution.projects) {
         for (const auto& config_key : solution.get_config_keys()) {
             auto& cfg = project.configurations[config_key];
@@ -765,14 +811,25 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
         return true;
     }
     
-    // [config:Debug|Win32] - for config-specific settings
+    // [config:Debug|Win32] or [config:Test] : Template:Release - for config-specific settings
     if (section.rfind("config:", 0) == 0) {
-        state.current_config = trim(section.substr(7));  // Extract config name (e.g., "Debug|x64")
+        std::string config_spec = trim(section.substr(7));  // Extract config spec after "config:"
         state.current_file = nullptr;  // Leave file context
+
+        // Parse template syntax: "Test|Win32 : Template:Release" or "Test : Template:Release"
+        std::string template_name;
+        size_t template_pos = config_spec.find(" : Template:");
+        if (template_pos != std::string::npos) {
+            template_name = trim(config_spec.substr(template_pos + 12));
+            config_spec = trim(config_spec.substr(0, template_pos));
+        }
+
+        state.current_config = config_spec;
 
         // Parse config|platform and track them for solution-level configuration generation
         size_t pipe_pos = state.current_config.find('|');
         if (pipe_pos != std::string::npos) {
+            // Platform specified (e.g., "Debug|Win32")
             std::string config = state.current_config.substr(0, pipe_pos);
             std::string platform = state.current_config.substr(pipe_pos + 1);
             if (!config.empty() && !platform.empty()) {
@@ -789,9 +846,31 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
                     state.discovered_platforms.begin(),
                     state.discovered_platforms.end()
                 );
+
+                // Store template relationship if specified
+                if (!template_name.empty()) {
+                    state.config_templates[state.current_config] = template_name;
+                    state.pending_template_applications.insert(state.current_config);
+                }
             }
         } else {
-            std::cerr << "Warning: Invalid config format (missing platform): " << state.current_config << "\n";
+            // No platform specified (e.g., "Debug" or "Test") - applies to all platforms
+            std::string config_name = state.current_config;
+            if (!config_name.empty()) {
+                state.discovered_configs.insert(config_name);
+
+                // Update solution configurations immediately
+                state.solution->configurations = std::vector<std::string>(
+                    state.discovered_configs.begin(),
+                    state.discovered_configs.end()
+                );
+
+                // Store template relationship for all platforms
+                if (!template_name.empty()) {
+                    state.config_templates[config_name] = template_name;
+                    state.pending_template_applications.insert(config_name);
+                }
+            }
         }
 
         return true;
@@ -1893,6 +1972,216 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
         // Forward to project setting parser but it will only affect this config
         // This is a simplified approach - in production you'd want more granular control
     }
+}
+
+void BuildscriptParser::apply_template(Project& project, const std::string& derived_key,
+                                        const std::string& template_key, ParseState& state) {
+    // Validate template exists
+    auto template_it = project.configurations.find(template_key);
+    if (template_it == project.configurations.end()) {
+        std::cerr << "Warning: Template configuration '" << template_key
+                  << "' not found for derived config '" << derived_key << "'\n";
+        return;
+    }
+
+    // Check for circular reference
+    if (derived_key == template_key) {
+        std::cerr << "Error: Circular template reference detected: '"
+                  << derived_key << "' references itself\n";
+        return;
+    }
+
+    // Get or create derived configuration
+    Configuration& derived = project.configurations[derived_key];
+    const Configuration& tmpl = template_it->second;
+
+    // Mark template relationship
+    derived.template_name = template_key;
+
+    // Copy all settings from template, but ONLY if not already set in derived
+    // This allows override behavior
+
+    // Configuration-level settings
+    if (derived.config_type.empty()) derived.config_type = tmpl.config_type;
+    if (derived.platform_toolset.empty()) derived.platform_toolset = tmpl.platform_toolset;
+    if (derived.windows_target_platform_version.empty())
+        derived.windows_target_platform_version = tmpl.windows_target_platform_version;
+    if (derived.character_set.empty()) derived.character_set = tmpl.character_set;
+    if (!derived.use_debug_libraries && tmpl.use_debug_libraries)
+        derived.use_debug_libraries = tmpl.use_debug_libraries;
+    if (!derived.whole_program_optimization && tmpl.whole_program_optimization)
+        derived.whole_program_optimization = tmpl.whole_program_optimization;
+    if (derived.use_of_mfc.empty()) derived.use_of_mfc = tmpl.use_of_mfc;
+    if (derived.use_of_atl.empty()) derived.use_of_atl = tmpl.use_of_atl;
+    if (derived.out_dir.empty()) derived.out_dir = tmpl.out_dir;
+    if (derived.int_dir.empty()) derived.int_dir = tmpl.int_dir;
+    if (derived.target_name.empty()) derived.target_name = tmpl.target_name;
+    if (derived.target_ext.empty()) derived.target_ext = tmpl.target_ext;
+    if (!derived.link_incremental && tmpl.link_incremental)
+        derived.link_incremental = tmpl.link_incremental;
+    if (derived.executable_path.empty()) derived.executable_path = tmpl.executable_path;
+    if (derived.generate_manifest == true && tmpl.generate_manifest == false)
+        derived.generate_manifest = tmpl.generate_manifest;
+    if (!derived.ignore_import_library && tmpl.ignore_import_library)
+        derived.ignore_import_library = tmpl.ignore_import_library;
+    if (derived.import_library.empty()) derived.import_library = tmpl.import_library;
+
+    // Compiler settings - copy if derived hasn't set them
+    auto& d_cl = derived.cl_compile;
+    const auto& t_cl = tmpl.cl_compile;
+
+    if (d_cl.optimization.empty()) d_cl.optimization = t_cl.optimization;
+    if (d_cl.inline_function_expansion.empty())
+        d_cl.inline_function_expansion = t_cl.inline_function_expansion;
+    if (!d_cl.intrinsic_functions && t_cl.intrinsic_functions)
+        d_cl.intrinsic_functions = t_cl.intrinsic_functions;
+    if (d_cl.favor_size_or_speed.empty()) d_cl.favor_size_or_speed = t_cl.favor_size_or_speed;
+
+    // Vector settings - copy if derived is empty
+    if (d_cl.additional_include_directories.empty())
+        d_cl.additional_include_directories = t_cl.additional_include_directories;
+    if (d_cl.preprocessor_definitions.empty())
+        d_cl.preprocessor_definitions = t_cl.preprocessor_definitions;
+    if (d_cl.forced_include_files.empty())
+        d_cl.forced_include_files = t_cl.forced_include_files;
+    if (d_cl.disable_specific_warnings.empty())
+        d_cl.disable_specific_warnings = t_cl.disable_specific_warnings;
+
+    if (!d_cl.string_pooling && t_cl.string_pooling) d_cl.string_pooling = t_cl.string_pooling;
+    if (!d_cl.minimal_rebuild && t_cl.minimal_rebuild) d_cl.minimal_rebuild = t_cl.minimal_rebuild;
+    if (d_cl.exception_handling.empty()) d_cl.exception_handling = t_cl.exception_handling;
+    if (d_cl.basic_runtime_checks.empty()) d_cl.basic_runtime_checks = t_cl.basic_runtime_checks;
+    if (d_cl.runtime_library.empty()) d_cl.runtime_library = t_cl.runtime_library;
+    if (!d_cl.buffer_security_check && t_cl.buffer_security_check)
+        d_cl.buffer_security_check = t_cl.buffer_security_check;
+    if (!d_cl.function_level_linking && t_cl.function_level_linking)
+        d_cl.function_level_linking = t_cl.function_level_linking;
+    if (d_cl.enhanced_instruction_set.empty())
+        d_cl.enhanced_instruction_set = t_cl.enhanced_instruction_set;
+    if (d_cl.floating_point_model.empty()) d_cl.floating_point_model = t_cl.floating_point_model;
+    if (!d_cl.force_conformance_in_for_loop_scope && t_cl.force_conformance_in_for_loop_scope)
+        d_cl.force_conformance_in_for_loop_scope = t_cl.force_conformance_in_for_loop_scope;
+    if (!d_cl.runtime_type_info && t_cl.runtime_type_info)
+        d_cl.runtime_type_info = t_cl.runtime_type_info;
+    if (!d_cl.openmp_support && t_cl.openmp_support)
+        d_cl.openmp_support = t_cl.openmp_support;
+    if (!d_cl.treat_wchar_t_as_built_in_type && t_cl.treat_wchar_t_as_built_in_type)
+        d_cl.treat_wchar_t_as_built_in_type = t_cl.treat_wchar_t_as_built_in_type;
+    if (!d_cl.expand_attributed_source && t_cl.expand_attributed_source)
+        d_cl.expand_attributed_source = t_cl.expand_attributed_source;
+    if (!d_cl.treat_warning_as_error && t_cl.treat_warning_as_error)
+        d_cl.treat_warning_as_error = t_cl.treat_warning_as_error;
+
+    // PCH settings
+    if (d_cl.pch.mode.empty()) d_cl.pch = t_cl.pch;
+
+    if (d_cl.assembler_listing_location.empty())
+        d_cl.assembler_listing_location = t_cl.assembler_listing_location;
+    if (d_cl.object_file_name.empty()) d_cl.object_file_name = t_cl.object_file_name;
+    if (d_cl.program_database_file_name.empty())
+        d_cl.program_database_file_name = t_cl.program_database_file_name;
+    if (!d_cl.generate_xml_documentation_files && t_cl.generate_xml_documentation_files)
+        d_cl.generate_xml_documentation_files = t_cl.generate_xml_documentation_files;
+    if (!d_cl.browse_information && t_cl.browse_information)
+        d_cl.browse_information = t_cl.browse_information;
+    if (d_cl.browse_information_file.empty())
+        d_cl.browse_information_file = t_cl.browse_information_file;
+    if (d_cl.warning_level.empty()) d_cl.warning_level = t_cl.warning_level;
+    if (d_cl.debug_information_format.empty())
+        d_cl.debug_information_format = t_cl.debug_information_format;
+    if (d_cl.compile_as.empty()) d_cl.compile_as = t_cl.compile_as;
+    if (!d_cl.multi_processor_compilation && t_cl.multi_processor_compilation)
+        d_cl.multi_processor_compilation = t_cl.multi_processor_compilation;
+    if (d_cl.error_reporting.empty()) d_cl.error_reporting = t_cl.error_reporting;
+    if (d_cl.additional_options.empty()) d_cl.additional_options = t_cl.additional_options;
+    if (d_cl.language_standard.empty()) d_cl.language_standard = t_cl.language_standard;
+    if (d_cl.assembler_output.empty()) d_cl.assembler_output = t_cl.assembler_output;
+
+    // Linker settings
+    auto& d_link = derived.link;
+    const auto& t_link = tmpl.link;
+
+    if (d_link.show_progress.empty()) d_link.show_progress = t_link.show_progress;
+    if (d_link.output_file.empty()) d_link.output_file = t_link.output_file;
+    if (!d_link.suppress_startup_banner && t_link.suppress_startup_banner)
+        d_link.suppress_startup_banner = t_link.suppress_startup_banner;
+    if (d_link.additional_dependencies.empty())
+        d_link.additional_dependencies = t_link.additional_dependencies;
+    if (d_link.additional_library_directories.empty())
+        d_link.additional_library_directories = t_link.additional_library_directories;
+    if (d_link.ignore_specific_default_libraries.empty())
+        d_link.ignore_specific_default_libraries = t_link.ignore_specific_default_libraries;
+    if (!d_link.generate_debug_info && t_link.generate_debug_info)
+        d_link.generate_debug_info = t_link.generate_debug_info;
+    if (d_link.program_database_file.empty())
+        d_link.program_database_file = t_link.program_database_file;
+    if (d_link.sub_system.empty()) d_link.sub_system = t_link.sub_system;
+    if (!d_link.optimize_references && t_link.optimize_references)
+        d_link.optimize_references = t_link.optimize_references;
+    if (!d_link.enable_comdat_folding && t_link.enable_comdat_folding)
+        d_link.enable_comdat_folding = t_link.enable_comdat_folding;
+    if (d_link.base_address.empty()) d_link.base_address = t_link.base_address;
+    if (d_link.target_machine.empty()) d_link.target_machine = t_link.target_machine;
+    if (d_link.error_reporting.empty()) d_link.error_reporting = t_link.error_reporting;
+    if (!d_link.image_has_safe_exception_handlers && t_link.image_has_safe_exception_handlers)
+        d_link.image_has_safe_exception_handlers = t_link.image_has_safe_exception_handlers;
+    if (d_link.additional_options.empty()) d_link.additional_options = t_link.additional_options;
+    if (d_link.entry_point_symbol.empty()) d_link.entry_point_symbol = t_link.entry_point_symbol;
+    if (d_link.version.empty()) d_link.version = t_link.version;
+    if (!d_link.generate_map_file && t_link.generate_map_file)
+        d_link.generate_map_file = t_link.generate_map_file;
+    if (d_link.map_file_name.empty()) d_link.map_file_name = t_link.map_file_name;
+    if (!d_link.fixed_base_address && t_link.fixed_base_address)
+        d_link.fixed_base_address = t_link.fixed_base_address;
+    if (!d_link.large_address_aware && t_link.large_address_aware)
+        d_link.large_address_aware = t_link.large_address_aware;
+
+    // Librarian settings
+    auto& d_lib = derived.lib;
+    const auto& t_lib = tmpl.lib;
+
+    if (d_lib.output_file.empty()) d_lib.output_file = t_lib.output_file;
+    if (!d_lib.suppress_startup_banner && t_lib.suppress_startup_banner)
+        d_lib.suppress_startup_banner = t_lib.suppress_startup_banner;
+    if (!d_lib.use_unicode_response_files && t_lib.use_unicode_response_files)
+        d_lib.use_unicode_response_files = t_lib.use_unicode_response_files;
+    if (d_lib.additional_options.empty()) d_lib.additional_options = t_lib.additional_options;
+    if (d_lib.additional_dependencies.empty())
+        d_lib.additional_dependencies = t_lib.additional_dependencies;
+
+    // Resource compiler settings
+    auto& d_rc = derived.resource_compile;
+    const auto& t_rc = tmpl.resource_compile;
+
+    if (d_rc.preprocessor_definitions.empty())
+        d_rc.preprocessor_definitions = t_rc.preprocessor_definitions;
+    if (d_rc.culture.empty()) d_rc.culture = t_rc.culture;
+    if (d_rc.additional_include_directories.empty())
+        d_rc.additional_include_directories = t_rc.additional_include_directories;
+
+    // Build events
+    if (derived.pre_build_event.command.empty())
+        derived.pre_build_event = tmpl.pre_build_event;
+    if (derived.pre_link_event.command.empty())
+        derived.pre_link_event = tmpl.pre_link_event;
+    if (derived.post_build_event.command.empty())
+        derived.post_build_event = tmpl.post_build_event;
+
+    // Manifest settings
+    if (!derived.manifest.suppress_startup_banner && tmpl.manifest.suppress_startup_banner)
+        derived.manifest.suppress_startup_banner = tmpl.manifest.suppress_startup_banner;
+    if (derived.manifest.additional_manifest_files.empty())
+        derived.manifest.additional_manifest_files = tmpl.manifest.additional_manifest_files;
+
+    // XDC settings
+    if (!derived.xdcmake.suppress_startup_banner && tmpl.xdcmake.suppress_startup_banner)
+        derived.xdcmake.suppress_startup_banner = tmpl.xdcmake.suppress_startup_banner;
+
+    // BSC settings
+    if (derived.bscmake.output_file.empty())
+        derived.bscmake.output_file = tmpl.bscmake.output_file;
+    if (!derived.bscmake.suppress_startup_banner && tmpl.bscmake.suppress_startup_banner)
+        derived.bscmake.suppress_startup_banner = tmpl.bscmake.suppress_startup_banner;
 }
 
 void BuildscriptParser::parse_uses_pch(const std::string& line, ParseState& state) {
