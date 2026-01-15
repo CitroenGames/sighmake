@@ -2344,7 +2344,11 @@ void BuildscriptParser::parse_uses_pch(const std::string& line, ParseState& stat
 
 bool BuildscriptParser::evaluate_condition(const std::string& condition) {
     std::string cond = trim(condition);
-    
+
+    // Convert to lowercase for case-insensitive matching
+    std::transform(cond.begin(), cond.end(), cond.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
     bool is_windows = false;
     bool is_linux = false;
     bool is_osx = false;
