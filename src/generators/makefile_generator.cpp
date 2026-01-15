@@ -242,6 +242,16 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
         ss << config.cl_compile.additional_options << " ";
     }
 
+    // Function-level linking (allows linker to remove unused functions)
+    if (config.cl_compile.function_level_linking) {
+        ss << "-ffunction-sections ";
+    }
+
+    // Data sections (allows linker to remove unused data)
+    if (config.link.enable_comdat_folding || config.link.optimize_references) {
+        ss << "-fdata-sections ";
+    }
+
     return ss.str();
 }
 
@@ -258,6 +268,11 @@ std::string MakefileGenerator::get_linker_flags(const Configuration& config, con
     // Additional linker options
     if (!config.link.additional_options.empty()) {
         ss << config.link.additional_options << " ";
+    }
+
+    // Garbage collection of unused sections (equivalent to MSVC optimize_references + enable_comdat_folding)
+    if (config.link.optimize_references || config.link.enable_comdat_folding) {
+        ss << "-Wl,--gc-sections ";
     }
 
     return ss.str();
@@ -503,6 +518,19 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     } else if (config.config_type == "StaticLibrary") {
         // Create static library
         out << "\tar rcs $@ $^\n";
+    }
+
+    // Strip debug symbols for Release builds (executables and shared libraries only)
+    // On Linux, debug symbols are embedded in the binary unlike Windows .pdb files
+    if (config.config_type == "Application" || config.config_type == "DynamicLibrary") {
+        std::string config_name = config_key;
+        size_t pipe_pos = config_name.find('|');
+        if (pipe_pos != std::string::npos) {
+            config_name = config_name.substr(0, pipe_pos);
+        }
+        if (config_name == "Release") {
+            out << "\tstrip $@\n";
+        }
     }
 
     out << "\n";
