@@ -610,6 +610,10 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
         }
     }
 
+    // Phase 3: Propagate public_includes, public_libs, and public_defines from dependencies
+    // This must happen after all projects are parsed and defaults are applied
+    propagate_target_link_libraries(solution);
+
     return solution;
 }
 
@@ -651,17 +655,30 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
         size_t start_paren = trimmed.find('(');
         size_t end_paren = trimmed.rfind(')');
         size_t brace_pos = trimmed.rfind('{');
-        
-        if (start_paren != std::string::npos && end_paren != std::string::npos && 
-            brace_pos != std::string::npos && brace_pos > end_paren) {
-            
+
+        if (start_paren != std::string::npos && end_paren != std::string::npos) {
             std::string condition = trimmed.substr(start_paren + 1, end_paren - start_paren - 1);
             bool cond_met = evaluate_condition(condition);
             bool parent_exec = state.is_executing();
-            
-            state.conditional_stack.push_back({parent_exec && cond_met, cond_met, 0});
+
+            if (brace_pos != std::string::npos && brace_pos > end_paren) {
+                // Brace on same line: if(condition) {
+                state.conditional_stack.push_back({parent_exec && cond_met, cond_met, 0});
+            } else {
+                // No brace on this line: if(condition) - wait for { on next line
+                state.pending_if_condition = true;
+                state.pending_if_result = cond_met;
+            }
             return;
         }
+    }
+
+    // Handle opening brace for pending if condition (brace on next line)
+    if (trimmed == "{" && state.pending_if_condition) {
+        bool parent_exec = state.is_executing();
+        state.conditional_stack.push_back({parent_exec && state.pending_if_result, state.pending_if_result, 0});
+        state.pending_if_condition = false;
+        return;
     }
 
     // Handle skipping (must be done before other checks)
@@ -1238,6 +1255,22 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             auto& includes = proj.configurations[config_key].cl_compile.additional_include_directories;
             includes.insert(includes.end(), resolved_dirs.begin(), resolved_dirs.end());
         }
+    } else if (key == "public_includes" || key == "public_include_dirs") {
+        // Public includes that propagate to dependent projects via target_link_libraries
+        auto dirs = split(value, ',');
+        for (const auto& dir : dirs) {
+            proj.public_includes.push_back(resolve_path(dir, state.base_path));
+        }
+    } else if (key == "public_libs" || key == "public_libraries") {
+        // Public libraries that propagate to dependent projects via target_link_libraries
+        auto libs = split(value, ',');
+        for (const auto& lib : libs) {
+            proj.public_libs.push_back(resolve_path(lib, state.base_path));
+        }
+    } else if (key == "public_defines" || key == "public_preprocessor_definitions") {
+        // Public defines that propagate to dependent projects via target_link_libraries
+        auto defs = split(value, ',');
+        proj.public_defines.insert(proj.public_defines.end(), defs.begin(), defs.end());
     } else if (key == "forced_includes" || key == "forced_include_files") {
         auto files = split(value, ',');
         for (const auto& config_key : state.solution->get_config_keys()) {
@@ -2375,6 +2408,73 @@ bool BuildscriptParser::evaluate_condition(const std::string& condition) {
 
     std::cerr << "Warning: Unknown condition '" << condition << "'\n";
     return false;
+}
+
+void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
+    // For each project, propagate public_includes, public_libs, and public_defines
+    // from all projects it depends on via target_link_libraries (project_references)
+    for (auto& proj : solution.projects) {
+        std::vector<std::string> to_process = proj.project_references;
+        std::set<std::string> processed;
+
+        while (!to_process.empty()) {
+            std::string dep_name = to_process.back();
+            to_process.pop_back();
+
+            if (processed.count(dep_name)) continue;
+            processed.insert(dep_name);
+
+            // Find the dependency project
+            Project* dep = nullptr;
+            for (auto& p : solution.projects) {
+                if (p.name == dep_name) {
+                    dep = &p;
+                    break;
+                }
+            }
+            if (!dep) continue;
+
+            // Propagate public_includes, public_libs, and public_defines to all configurations
+            for (const auto& config_key : solution.get_config_keys()) {
+                // Propagate public_includes
+                auto& proj_includes = proj.configurations[config_key]
+                    .cl_compile.additional_include_directories;
+                for (const auto& inc : dep->public_includes) {
+                    if (std::find(proj_includes.begin(), proj_includes.end(), inc)
+                        == proj_includes.end()) {
+                        proj_includes.push_back(inc);
+                    }
+                }
+
+                // Propagate public_libs
+                auto& proj_libs = proj.configurations[config_key]
+                    .link.additional_dependencies;
+                for (const auto& lib : dep->public_libs) {
+                    if (std::find(proj_libs.begin(), proj_libs.end(), lib)
+                        == proj_libs.end()) {
+                        proj_libs.push_back(lib);
+                    }
+                }
+
+                // Propagate public_defines
+                auto& proj_defines = proj.configurations[config_key]
+                    .cl_compile.preprocessor_definitions;
+                for (const auto& def : dep->public_defines) {
+                    if (std::find(proj_defines.begin(), proj_defines.end(), def)
+                        == proj_defines.end()) {
+                        proj_defines.push_back(def);
+                    }
+                }
+            }
+
+            // Handle transitive dependencies (dependencies of dependencies)
+            for (const auto& trans : dep->project_references) {
+                if (!processed.count(trans)) {
+                    to_process.push_back(trans);
+                }
+            }
+        }
+    }
 }
 
 } // namespace vcxproj

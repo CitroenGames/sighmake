@@ -41,6 +41,10 @@ private:
         // Auto-population tracking
         bool user_defined_config_sections = false;  // Track if user defined any [config:...] sections
 
+        // Pending if condition (when { is on next line)
+        bool pending_if_condition = false;  // True if we saw if() without { on same line
+        bool pending_if_result = false;     // Result of evaluate_condition() for pending if
+
         struct ScopeState {
             bool executing;
             bool condition_met;
@@ -86,6 +90,9 @@ private:
     // Apply template configuration settings to derived configuration
     void apply_template(Project& project, const std::string& derived_key,
                        const std::string& template_key, ParseState& state);
+
+    // Propagate public_includes, public_libs, and public_defines from dependencies
+    void propagate_target_link_libraries(Solution& solution);
 
     // Parse uses_pch() function call
     void parse_uses_pch(const std::string& line, ParseState& state);
