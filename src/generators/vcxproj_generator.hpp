@@ -37,6 +37,7 @@ private:
     // Helper functions for generating XML elements
     std::string escape_xml(const std::string& str);
     std::string join_vector(const std::vector<std::string>& vec, const std::string& separator);
+    std::string map_c_standard(const std::string& std);  // Map C standard to MSVC format
     std::string get_file_type_name(FileType type);
 
     // Determine if solution should use .slnx format based on detected VS installation

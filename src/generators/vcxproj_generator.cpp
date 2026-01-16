@@ -111,6 +111,21 @@ std::string VcxprojGenerator::join_vector(const std::vector<std::string>& vec,
     return result;
 }
 
+std::string VcxprojGenerator::map_c_standard(const std::string& std) {
+    if (std == "89" || std == "90") {
+        return "stdc89";
+    } else if (std == "99") {
+        return "stdc99";
+    } else if (std == "11") {
+        return "stdc11";
+    } else if (std == "17") {
+        return "stdc17";
+    } else if (std == "23") {
+        return "stdc23";
+    }
+    return "";  // Let compiler decide
+}
+
 std::string VcxprojGenerator::get_file_type_name(FileType type) {
     switch (type) {
         case FileType::ClCompile: return "ClCompile";
@@ -422,6 +437,13 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                 join_vector(cfg.cl_compile.disable_specific_warnings, ";").c_str();
         if (!cfg.cl_compile.language_standard.empty())
             cl.append_child("LanguageStandard").text() = cfg.cl_compile.language_standard.c_str();
+        // C standard (for C projects)
+        if (!project.c_standard.empty() && detect_project_language(project) == "C") {
+            std::string c_std_mapped = map_c_standard(project.c_standard);
+            if (!c_std_mapped.empty()) {
+                cl.append_child("LanguageStandard_C").text() = c_std_mapped.c_str();
+            }
+        }
         if (!cfg.cl_compile.exception_handling.empty())
             cl.append_child("ExceptionHandling").text() = cfg.cl_compile.exception_handling.c_str();
         if (!cfg.cl_compile.enhanced_instruction_set.empty())
@@ -834,7 +856,28 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                 }
             }
 
-            // Per-file, per-config CompileAs
+            // Auto-set CompileAs based on project language if not explicitly set
+            std::string detected_language = detect_project_language(project);
+            if (src->settings.compile_as.empty() && !detected_language.empty()) {
+                // Auto-apply CompileAs based on detected language for all configurations
+                std::string auto_compile_as;
+                if (detected_language == "C") {
+                    auto_compile_as = "CompileAsC";
+                } else if (detected_language == "C++") {
+                    auto_compile_as = "CompileAsCpp";
+                }
+
+                if (!auto_compile_as.empty()) {
+                    for (const auto& [cfg_name, cfg] : project.configurations) {
+                        std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg_name + "'";
+                        auto node = file_elem.append_child("CompileAs");
+                        node.append_attribute("Condition") = condition.c_str();
+                        node.text() = auto_compile_as.c_str();
+                    }
+                }
+            }
+
+            // Per-file, per-config CompileAs (overrides auto-detection)
             for (const auto& [config_key, compile_as] : src->settings.compile_as) {
                 if (!compile_as.empty()) {
                     // Expand ALL_CONFIGS wildcard to individual configs

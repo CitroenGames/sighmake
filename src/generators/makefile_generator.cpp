@@ -165,6 +165,22 @@ std::string MakefileGenerator::map_language_standard(const std::string& std) {
     return "-std=c++17"; // Default to C++17
 }
 
+// Map C standard (89, 99, 11, 17, 23) to GCC standard flags
+static std::string map_c_standard(const std::string& std) {
+    if (std == "89" || std == "90") {
+        return "-std=c89";
+    } else if (std == "99") {
+        return "-std=c99";
+    } else if (std == "11") {
+        return "-std=c11";
+    } else if (std == "17") {
+        return "-std=c17";
+    } else if (std == "23") {
+        return "-std=c2x";  // GCC uses c2x for C23
+    }
+    return "-std=c17"; // Default to C17
+}
+
 // Determine if PCH is enabled for a configuration and return the PCH header path
 std::pair<bool, std::string> MakefileGenerator::get_pch_info(const Configuration& config) {
     bool has_pch = !config.cl_compile.pch.mode.empty() &&
@@ -197,13 +213,26 @@ std::tuple<std::string, std::string> MakefileGenerator::get_file_pch_mode(
 }
 
 // Get all compiler flags for a configuration
-std::string MakefileGenerator::get_compiler_flags(const Configuration& config, const Project& /*project*/,
+std::string MakefileGenerator::get_compiler_flags(const Configuration& config, const Project& project,
                                                    const std::filesystem::path& makefile_dir) {
     std::stringstream ss;
 
-    // Language standard
-    if (!config.cl_compile.language_standard.empty()) {
-        ss << map_language_standard(config.cl_compile.language_standard) << " ";
+    // Language standard - detect project language and use appropriate standard
+    std::string detected_language = detect_project_language(project);
+    if (detected_language == "C") {
+        // C project - use C standard
+        if (!project.c_standard.empty()) {
+            ss << map_c_standard(project.c_standard) << " ";
+        } else {
+            ss << "-std=c17 "; // Default C standard
+        }
+    } else {
+        // C++ project - use C++ standard
+        if (!config.cl_compile.language_standard.empty()) {
+            ss << map_language_standard(config.cl_compile.language_standard) << " ";
+        } else {
+            ss << "-std=c++17 "; // Default C++ standard
+        }
     }
 
     // Optimization

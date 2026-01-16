@@ -1430,6 +1430,17 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.language_standard = std_value;
         }
+    } else if (key == "language" || key == "lang") {
+        // Validate language value
+        if (value != "C" && value != "C++" && !value.empty()) {
+            std::cerr << "Warning: Invalid language '" << value
+                      << "' at line " << state.line_number
+                      << ". Use 'C' or 'C++'.\n";
+        }
+        proj.language = value;
+    } else if (key == "c_standard" || key == "cstd") {
+        // Store as-is: "89", "99", "11", "17", "23"
+        proj.c_standard = value;
     } else if (key == "cflags" || key == "compiler_flags" || key == "additional_options") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             auto& opts = proj.configurations[config_key].cl_compile.additional_options;

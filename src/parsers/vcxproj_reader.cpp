@@ -474,6 +474,16 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             READ_TEXT("ErrorReporting", error_reporting);
             READ_TEXT("AdditionalOptions", additional_options);
             READ_TEXT("LanguageStandard", language_standard);
+
+            // Read C standard (LanguageStandard_C) and convert to sighmake format
+            if (auto c_std_node = cl.child("LanguageStandard_C")) {
+                std::string c_std = c_std_node.text().as_string();
+                // Convert MSVC format to sighmake format
+                if (c_std == "stdc89" || c_std == "stdc90") proj->c_standard = "89";
+                else if (c_std == "stdc11") proj->c_standard = "11";
+                else if (c_std == "stdc17") proj->c_standard = "17";
+            }
+
             READ_BOOL("TreatWChar_tAsBuiltInType", treat_wchar_t_as_built_in_type);
             READ_TEXT("AssemblerOutput", assembler_output);
             READ_BOOL("ExpandAttributedSource", expand_attributed_source);
@@ -768,6 +778,43 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             std::string proj_name = p.stem().string();
             project.project_references.push_back(ProjectDependency(proj_name));
         }
+    }
+
+    // Detect project language from CompileAs settings and file extensions if not explicitly set
+    if (project.language.empty()) {
+        int c_count = 0;
+        int cpp_count = 0;
+
+        for (const auto& src : project.sources) {
+            // Check file-specific CompileAs settings
+            for (const auto& [config, compile_as] : src.settings.compile_as) {
+                if (compile_as == "CompileAsC") {
+                    c_count++;
+                } else if (compile_as == "CompileAsCpp") {
+                    cpp_count++;
+                }
+            }
+
+            // Check file extension
+            fs::path p(src.path);
+            std::string ext = p.extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(),
+                          [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+            if (ext == ".c") {
+                c_count++;
+            } else if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") {
+                cpp_count++;
+            }
+        }
+
+        // Set language if there's a clear majority
+        if (c_count > 0 && cpp_count == 0) {
+            project.language = "C";
+        } else if (cpp_count > 0) {
+            project.language = "C++";
+        }
+        // Leave empty if can't determine (will auto-detect later)
     }
 
     return project;

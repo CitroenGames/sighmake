@@ -2407,6 +2407,243 @@ std = 20
 
 Use `msvc2019` or newer for full C++20 support.
 
+### C Language Projects
+
+Sighmake supports pure C projects with C-specific standards and compilation settings. This enables using C libraries like GLAD (OpenGL loader) as dependencies.
+
+#### Declaring a C Project
+
+Use the `language` property to explicitly declare a project as C:
+
+```ini
+[project:GLAD]
+type = lib
+language = C           # Declare project as C
+c_standard = 99        # C standard: 89, 99, 11, 17, 23
+sources = src/glad.c
+headers = include/**/*.h
+public_includes = include
+```
+
+#### Auto-Detection
+
+If `language` is not specified, sighmake auto-detects based on file extensions:
+- **Only `.c` files** → Detected as C project
+- **Any `.cpp`/`.cc`/`.cxx` files** → Detected as C++ project
+- **Mixed** → Defaults to C++ (can compile both)
+
+**Example (auto-detected as C):**
+```ini
+[project:MyLib]
+type = lib
+c_standard = 11
+sources = src/*.c      # Only .c files → Auto-detected as C
+headers = include/*.h
+```
+
+#### C Standards Supported
+
+| Value | Standard | MSVC Flag | GCC/Clang Flag |
+|-------|----------|-----------|----------------|
+| `89` | C89/C90 | `/std:c89` | `-std=c89` |
+| `99` | C99 | N/A (default) | `-std=c99` |
+| `11` | C11 | `/std:c11` | `-std=c11` |
+| `17` | C17 | `/std:c17` | `-std=c17` |
+| `23` | C23 | N/A | `-std=c2x` |
+
+**Note:** MSVC only supports `/std:c11` and `/std:c17`. For C99, use compiler defaults.
+
+#### Example: GLAD (OpenGL Loader)
+
+GLAD is a pure C library commonly used for OpenGL:
+
+```ini
+# glad.buildscript
+[project:GLAD]
+type = lib
+language = C
+c_standard = 99
+sources = glad/src/glad.c
+headers = glad/include/**/*.h
+public_includes = glad/include
+
+# Using GLAD in your C++ project
+[project:MyGame]
+type = exe
+language = C++
+std = 20
+sources = src/**/*.cpp
+target_link_libraries(
+    GLAD PRIVATE          # GLAD compiled as C, linked into C++ project
+    SDL3 INTERFACE
+)
+```
+
+#### Mixed C/C++ Projects
+
+You can have both C and C++ files in the same project:
+
+```ini
+[project:MixedLib]
+type = lib
+# language auto-detected as C++ (safest for mixed)
+sources =
+    src/legacy.c      # Compiled as C
+    src/modern.cpp    # Compiled as C++
+headers = include/**/*.h
+```
+
+**How it works:**
+- MSVC: `.c` files get `<CompileAs>CompileAsC</CompileAs>`, `.cpp` files get `CompileAsCpp`
+- GCC/Clang: Uses `g++` compiler (can handle both C and C++)
+
+**Per-file override (if needed):**
+```ini
+# Force specific file to compile as C
+legacy.c:compile_as = CompileAsC
+modern.cpp:compile_as = CompileAsCpp
+```
+
+#### Compiler Selection
+
+Sighmake selects the appropriate compiler based on detected language:
+
+**Windows (MSVC):**
+- All projects use `cl.exe`
+- C projects: `/TC` flag (compile as C)
+- C++ projects: `/TP` flag (compile as C++)
+
+**Linux/macOS (Makefile):**
+- **C projects**: Uses `gcc` (or `$CC` environment variable)
+- **C++ projects**: Uses `g++` (or `$CXX` environment variable)
+- **Mixed projects**: Uses `g++` (can compile both)
+
+**Example Makefile output for C project:**
+```makefile
+CC = gcc
+CFLAGS = -std=c99 -O3 -Wall
+```
+
+**Example Makefile output for C++ project:**
+```makefile
+CXX = g++
+CXXFLAGS = -std=c++20 -O3 -Wall
+```
+
+#### Real-World Example: SnakeGame with GLAD
+
+Directory structure:
+```
+snakegame/
+├── engine/
+│   ├── 3rdparty/
+│   │   ├── glad/
+│   │   │   ├── include/
+│   │   │   │   └── glad/glad.h
+│   │   │   └── src/
+│   │   │       └── glad.c
+│   │   └── glad.buildscript      # C library
+│   └── engine.buildscript         # C++ library using GLAD
+└── game/
+    └── game.buildscript           # C++ executable
+```
+
+**3rdparty/glad.buildscript:**
+```ini
+[project:GLAD]
+type = lib
+language = C
+c_standard = 99
+sources = glad/src/glad.c
+headers = glad/include/**/*.h
+public_includes = glad/include
+```
+
+**engine/engine.buildscript:**
+```ini
+include = 3rdparty/glad.buildscript
+
+[project:Engine]
+type = lib
+language = C++
+std = 20
+sources = src/**/*.cpp
+headers = src/**/*.h
+public_includes = src
+target_link_libraries(
+    INTERFACE SDL3       # Headers only
+    PUBLIC entt          # Header-only ECS
+    PRIVATE GLAD         # C library (implementation detail)
+)
+```
+
+**game/game.buildscript:**
+```ini
+include = ../engine/engine.buildscript
+
+[project:SnakeGame]
+type = exe
+language = C++
+std = 20
+sources = src/**/*.cpp
+target_link_libraries(
+    PRIVATE Engine
+)
+```
+
+Result:
+- GLAD compiles as pure C with `-std=c99` (gcc) or default C (MSVC)
+- Engine compiles as C++ with `-std=c++20`, links GLAD.lib
+- SnakeGame compiles as C++, links Engine.lib (transitively includes GLAD)
+
+#### When to Use `language = C`
+
+**Use explicit `language = C` when:**
+1. Building pure C libraries (GLAD, stb_image, etc.)
+2. Enforcing C-only compilation for strict C99/C11 compatibility
+3. Ensuring the project uses `gcc` instead of `g++` in Makefiles
+
+**Auto-detection works when:**
+1. File extensions clearly indicate language (.c only → C, .cpp present → C++)
+2. Default compiler behavior is acceptable
+
+#### Troubleshooting C Projects
+
+**Problem: "C standard not supported"**
+```
+Warning: MSVC does not support /std:c99
+```
+
+**Solution:**
+- MSVC only supports C11 and C17 standards
+- For C99 code, rely on MSVC's default C mode (or use `c_standard = 11`)
+
+**Problem: ".c files compiling as C++"**
+
+**Solution:**
+```ini
+# Add explicit language declaration
+language = C
+```
+
+This forces all `.c` files to compile with C compiler and C standards.
+
+**Problem: "Mixed C/C++ linking errors"**
+
+**Solution:**
+- Ensure C headers use `extern "C"` guards:
+```c
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// C function declarations here
+
+#ifdef __cplusplus
+}
+#endif
+```
+
 ### Toolset Examples
 
 **Target Visual Studio 2019:**

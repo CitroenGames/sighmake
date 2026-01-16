@@ -238,6 +238,11 @@ struct Project {
     std::string project_name;                           // Custom display name (ProjectName in vcxproj)
     std::string uuid;
     std::string root_namespace;
+
+    // Language settings
+    std::string language;                               // "C", "C++", or "" (auto-detect)
+    std::string c_standard;                             // "89", "99", "11", "17", "23" (for C projects)
+
     bool ignore_warn_compile_duplicated_filename = false;
     std::string vcxproj_path;                           // Original .vcxproj file path (for reverse conversion)
     std::string buildscript_path;                       // Buildscript file path (for path resolution in custom commands)
@@ -331,6 +336,36 @@ inline std::pair<std::string, std::string> parse_config_key(const std::string& k
         return {key, "Win32"};
     }
     return {key.substr(0, pos), key.substr(pos + 1)};
+}
+
+// Detect project language based on source files
+inline std::string detect_project_language(const Project& proj) {
+    // If explicitly set, use it
+    if (!proj.language.empty()) {
+        return proj.language;
+    }
+
+    // Auto-detect based on file extensions
+    bool has_cpp = false;
+    bool has_c = false;
+
+    for (const auto& src : proj.sources) {
+        std::filesystem::path p(src.path);
+        std::string ext = p.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") {
+            has_cpp = true;
+        } else if (ext == ".c") {
+            has_c = true;
+        }
+    }
+
+    // Decision tree
+    if (has_cpp) return "C++";        // Any C++ files → C++ project
+    if (has_c) return "C";            // Only C files → C project
+    return "C++";                     // Default to C++ for empty projects
 }
 
 } // namespace vcxproj
