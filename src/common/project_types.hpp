@@ -91,6 +91,7 @@ struct ClCompileSettings {
     bool expand_attributed_source = false;              // ExpandAttributedSource
     bool openmp_support = false;                        // OpenMPSupport
     bool treat_warning_as_error = false;                // TreatWarningAsError
+    bool utf8_source = false;                           // Use UTF-8 for source and execution character sets (/utf-8)
 };
 
 // Linker settings

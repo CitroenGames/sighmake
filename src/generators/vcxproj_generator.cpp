@@ -112,18 +112,59 @@ std::string VcxprojGenerator::join_vector(const std::vector<std::string>& vec,
 }
 
 std::string VcxprojGenerator::map_c_standard(const std::string& std) {
+    // Valid MSVC C standards: stdc89, stdc11 only
     if (std == "89" || std == "90") {
         return "stdc89";
-    } else if (std == "99") {
-        return "stdc99";
     } else if (std == "11") {
         return "stdc11";
-    } else if (std == "17") {
-        return "stdc17";
-    } else if (std == "23") {
-        return "stdc23";
     }
-    return "";  // Let compiler decide
+
+    // Handle unsupported standards with warnings
+    if (std == "99") {
+        std::cerr << "Warning: C99 (stdc99) is not fully supported by MSVC. "
+                  << "Falling back to stdc11.\n";
+        return "stdc11";
+    } else if (std == "17" || std == "23") {
+        std::cerr << "Warning: C" << std << " is not supported by MSVC. "
+                  << "Falling back to stdc11.\n";
+        return "stdc11";
+    }
+
+    return "";  // Empty = compiler default
+}
+
+std::string VcxprojGenerator::map_cpp_standard(const std::string& std) {
+    // Handle already-prefixed standards (e.g., "stdcpp17")
+    if (std.find("stdcpp") == 0) {
+        std::string num = std.substr(6);  // Extract number after "stdcpp"
+        return map_cpp_standard(num);  // Recursive call to validate
+    }
+
+    // Map numeric values to valid MSVC C++ standards
+    if (std == "14") {
+        return "stdcpp14";
+    } else if (std == "17") {
+        return "stdcpp17";
+    } else if (std == "20") {
+        return "stdcpp20";
+    } else if (std == "23") {
+        return "stdcpp23";
+    } else if (std == "latest") {
+        return "stdcpplatest";
+    }
+
+    // Handle invalid values - warn and fallback
+    if (std == "11" || std == "03" || std == "98") {
+        std::cerr << "Warning: C++" << std << " is not supported by VS 2022+ (minimum is C++14). "
+                  << "Falling back to stdcpp14.\n";
+        return "stdcpp14";
+    }
+
+    // Unknown/future standards - default to C++17
+    if (!std.empty()) {
+        std::cerr << "Warning: Unknown C++ standard '" << std << "'. Falling back to stdcpp17.\n";
+    }
+    return "stdcpp17";  // Safe default
 }
 
 std::string VcxprojGenerator::get_file_type_name(FileType type) {
@@ -435,8 +476,11 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
         if (!cfg.cl_compile.disable_specific_warnings.empty())
             cl.append_child("DisableSpecificWarnings").text() =
                 join_vector(cfg.cl_compile.disable_specific_warnings, ";").c_str();
-        if (!cfg.cl_compile.language_standard.empty())
-            cl.append_child("LanguageStandard").text() = cfg.cl_compile.language_standard.c_str();
+        if (!cfg.cl_compile.language_standard.empty()) {
+            // Validate and map C++ standard
+            std::string validated_std = map_cpp_standard(cfg.cl_compile.language_standard);
+            cl.append_child("LanguageStandard").text() = validated_std.c_str();
+        }
         // C standard (for C projects)
         if (!project.c_standard.empty() && detect_project_language(project) == "C") {
             std::string c_std_mapped = map_c_standard(project.c_standard);
@@ -450,8 +494,19 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             cl.append_child("EnableEnhancedInstructionSet").text() = cfg.cl_compile.enhanced_instruction_set.c_str();
         if (!cfg.cl_compile.floating_point_model.empty())
             cl.append_child("FloatingPointModel").text() = cfg.cl_compile.floating_point_model.c_str();
-        if (!cfg.cl_compile.additional_options.empty())
-            cl.append_child("AdditionalOptions").text() = cfg.cl_compile.additional_options.c_str();
+
+        // Build AdditionalOptions with UTF-8 flag if needed
+        std::string additional_opts = cfg.cl_compile.additional_options;
+        if (cfg.cl_compile.utf8_source) {
+            if (!additional_opts.empty()) {
+                additional_opts += " /utf-8";
+            } else {
+                additional_opts = "/utf-8";
+            }
+        }
+        if (!additional_opts.empty())
+            cl.append_child("AdditionalOptions").text() = additional_opts.c_str();
+
         if (cfg.cl_compile.function_level_linking)
             cl.append_child("FunctionLevelLinking").text() = "true";
         if (cfg.cl_compile.intrinsic_functions)
@@ -522,75 +577,90 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             cl.append_child("PrecompiledHeaderOutputFile").text() = cfg.cl_compile.pch.output.c_str();
 
         // Link settings
-        auto link = item_def.append_child("Link");
-        if (!cfg.link.sub_system.empty())
-            link.append_child("SubSystem").text() = cfg.link.sub_system.c_str();
-        if (cfg.link.generate_debug_info)
-            link.append_child("GenerateDebugInformation").text() = "true";
+        if (cfg.config_type == "Application" || cfg.config_type == "DynamicLibrary") {
+            auto link = item_def.append_child("Link");
+            if (!cfg.link.sub_system.empty())
+                link.append_child("SubSystem").text() = cfg.link.sub_system.c_str();
+            if (cfg.link.generate_debug_info)
+                link.append_child("GenerateDebugInformation").text() = "true";
 
-        // For DLL projects, ensure import library is generated
-        if (cfg.config_type == "DynamicLibrary") {
-            std::string target_name = cfg.target_name.empty() ? project.name : cfg.target_name;
-            link.append_child("ImportLibrary").text() = ("$(OutDir)" + target_name + ".lib").c_str();
-        }
-
-        if (!cfg.link.additional_dependencies.empty()) {
-            // Add leading semicolon if there are Library elements to inherit from
-            std::string deps_str;
-            if (!project.libraries.empty()) {
-                deps_str = ";";
+            // For DLL projects, ensure import library is generated
+            if (cfg.config_type == "DynamicLibrary") {
+                std::string target_name = cfg.target_name.empty() ? project.name : cfg.target_name;
+                link.append_child("ImportLibrary").text() = ("$(OutDir)" + target_name + ".lib").c_str();
             }
-            deps_str += join_vector(cfg.link.additional_dependencies, ";");
-            link.append_child("AdditionalDependencies").text() = deps_str.c_str();
-        }
-        if (!cfg.link.additional_library_directories.empty()) {
-            // Make library directories relative to the output path
-            std::vector<std::string> relative_libdirs;
-            for (const auto& libdir : cfg.link.additional_library_directories) {
-                relative_libdirs.push_back(make_relative_path(libdir, output_path));
-            }
-            link.append_child("AdditionalLibraryDirectories").text() =
-                join_vector(relative_libdirs, ";").c_str();
-        }
-        if (!cfg.link.ignore_specific_default_libraries.empty())
-            link.append_child("IgnoreSpecificDefaultLibraries").text() =
-                join_vector(cfg.link.ignore_specific_default_libraries, ";").c_str();
-        if (!cfg.link.additional_options.empty())
-            link.append_child("AdditionalOptions").text() = cfg.link.additional_options.c_str();
-        if (cfg.link.enable_comdat_folding)
-            link.append_child("EnableCOMDATFolding").text() = "true";
-        if (cfg.link.optimize_references)
-            link.append_child("OptimizeReferences").text() = "true";
 
-        // New linker settings
-        if (!cfg.link.show_progress.empty())
-            link.append_child("ShowProgress").text() = cfg.link.show_progress.c_str();
-        if (!cfg.link.output_file.empty())
-            link.append_child("OutputFile").text() = cfg.link.output_file.c_str();
-        if (cfg.link.suppress_startup_banner)
-            link.append_child("SuppressStartupBanner").text() = "true";
-        if (!cfg.link.program_database_file.empty())
-            link.append_child("ProgramDatabaseFile").text() = cfg.link.program_database_file.c_str();
-        if (cfg.link.generate_map_file)
-            link.append_child("GenerateMapFile").text() = "true";
-        if (!cfg.link.map_file_name.empty())
-            link.append_child("MapFileName").text() = cfg.link.map_file_name.c_str();
-        if (cfg.link.fixed_base_address)
-            link.append_child("FixedBaseAddress").text() = "true";
-        if (cfg.link.large_address_aware)
-            link.append_child("LargeAddressAware").text() = "true";
-        if (!cfg.link.base_address.empty())
-            link.append_child("BaseAddress").text() = cfg.link.base_address.c_str();
-        if (!cfg.link.target_machine.empty())
-            link.append_child("TargetMachine").text() = cfg.link.target_machine.c_str();
-        if (!cfg.link.error_reporting.empty())
-            link.append_child("LinkErrorReporting").text() = cfg.link.error_reporting.c_str();
-        if (!cfg.link.entry_point_symbol.empty())
-            link.append_child("EntryPointSymbol").text() = cfg.link.entry_point_symbol.c_str();
-        if (!cfg.link.version.empty())
-            link.append_child("Version").text() = cfg.link.version.c_str();
-        // Always write ImageHasSafeExceptionHandlers to avoid linker errors with libs that lack safe exception handlers
-        link.append_child("ImageHasSafeExceptionHandlers").text() = cfg.link.image_has_safe_exception_handlers ? "true" : "false";
+            if (!cfg.link.additional_dependencies.empty()) {
+                // Add leading semicolon if there are Library elements to inherit from
+                std::string deps_str;
+                if (!project.libraries.empty()) {
+                    deps_str = ";";
+                }
+
+                // Make absolute library paths relative to vcxproj location
+                std::vector<std::string> relative_deps;
+                for (const auto& dep : cfg.link.additional_dependencies) {
+                    // Only make relative if it's an absolute file path
+                    if (fs::path(dep).is_absolute()) {
+                        relative_deps.push_back(make_relative_path(dep, output_path));
+                    } else {
+                        // Keep system libraries (e.g., shell32.lib, opengl32.lib) as-is
+                        relative_deps.push_back(dep);
+                    }
+                }
+
+                deps_str += join_vector(relative_deps, ";");
+                link.append_child("AdditionalDependencies").text() = deps_str.c_str();
+            }
+            if (!cfg.link.additional_library_directories.empty()) {
+                // Make library directories relative to the output path
+                std::vector<std::string> relative_libdirs;
+                for (const auto& libdir : cfg.link.additional_library_directories) {
+                    relative_libdirs.push_back(make_relative_path(libdir, output_path));
+                }
+                link.append_child("AdditionalLibraryDirectories").text() =
+                    join_vector(relative_libdirs, ";").c_str();
+            }
+            if (!cfg.link.ignore_specific_default_libraries.empty())
+                link.append_child("IgnoreSpecificDefaultLibraries").text() =
+                    join_vector(cfg.link.ignore_specific_default_libraries, ";").c_str();
+            if (!cfg.link.additional_options.empty())
+                link.append_child("AdditionalOptions").text() = cfg.link.additional_options.c_str();
+            if (cfg.link.enable_comdat_folding)
+                link.append_child("EnableCOMDATFolding").text() = "true";
+            if (cfg.link.optimize_references)
+                link.append_child("OptimizeReferences").text() = "true";
+
+            // New linker settings
+            if (!cfg.link.show_progress.empty())
+                link.append_child("ShowProgress").text() = cfg.link.show_progress.c_str();
+            if (!cfg.link.output_file.empty())
+                link.append_child("OutputFile").text() = cfg.link.output_file.c_str();
+            if (cfg.link.suppress_startup_banner)
+                link.append_child("SuppressStartupBanner").text() = "true";
+            if (!cfg.link.program_database_file.empty())
+                link.append_child("ProgramDatabaseFile").text() = cfg.link.program_database_file.c_str();
+            if (cfg.link.generate_map_file)
+                link.append_child("GenerateMapFile").text() = "true";
+            if (!cfg.link.map_file_name.empty())
+                link.append_child("MapFileName").text() = cfg.link.map_file_name.c_str();
+            if (cfg.link.fixed_base_address)
+                link.append_child("FixedBaseAddress").text() = "true";
+            if (cfg.link.large_address_aware)
+                link.append_child("LargeAddressAware").text() = "true";
+            if (!cfg.link.base_address.empty())
+                link.append_child("BaseAddress").text() = cfg.link.base_address.c_str();
+            if (!cfg.link.target_machine.empty())
+                link.append_child("TargetMachine").text() = cfg.link.target_machine.c_str();
+            if (!cfg.link.error_reporting.empty())
+                link.append_child("LinkErrorReporting").text() = cfg.link.error_reporting.c_str();
+            if (!cfg.link.entry_point_symbol.empty())
+                link.append_child("EntryPointSymbol").text() = cfg.link.entry_point_symbol.c_str();
+            if (!cfg.link.version.empty())
+                link.append_child("Version").text() = cfg.link.version.c_str();
+            // Always write ImageHasSafeExceptionHandlers to avoid linker errors with libs that lack safe exception handlers
+            link.append_child("ImageHasSafeExceptionHandlers").text() = cfg.link.image_has_safe_exception_handlers ? "true" : "false";
+        }
 
         // Lib settings (for static libraries)
         if (cfg.config_type == "StaticLibrary") {
@@ -1026,6 +1096,22 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
 
                     // Add the Project GUID element
                     ref_elem.append_child("Project").text() = ("{" + sol_proj.uuid + "}").c_str();
+
+                    // Check if the referenced project actually produces a library to link.
+                    // If it has no linkable sources (only headers or nothing), disable automatic linking.
+                    // This is crucial for wrapper projects that only propagate public_libs.
+                    bool has_linkable_content = false;
+                    for (const auto& src : sol_proj.sources) {
+                        if (src.type == FileType::ClCompile || 
+                            src.type == FileType::ResourceCompile || 
+                            src.type == FileType::CustomBuild) {
+                            has_linkable_content = true;
+                            break;
+                        }
+                    }
+                    if (!has_linkable_content) {
+                        ref_elem.append_child("LinkLibraryDependencies").text() = "false";
+                    }
                     break;
                 }
             }

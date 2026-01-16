@@ -1266,6 +1266,8 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             config_type = "StaticLibrary";
         } else if (value == "dll" || value == "shared" || value == "dynamiclib" || value == "DynamicLibrary") {
             config_type = "DynamicLibrary";
+        } else if (value == "interface" || value == "header-only" || value == "Utility") {
+            config_type = "Utility";
         } else {
             config_type = value;
         }
@@ -1596,6 +1598,11 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         bool val = (value == "true" || value == "yes" || value == "1");
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.treat_warning_as_error = val;
+        }
+    } else if (key == "utf8" || key == "utf8_source") {
+        bool val = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.utf8_source = val;
         }
     }
     // PCH settings
@@ -2034,6 +2041,8 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.cl_compile.openmp_support = (value == "true" || value == "yes" || value == "1");
     } else if (key == "treat_warning_as_error") {
         cfg.cl_compile.treat_warning_as_error = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "utf8" || key == "utf8_source") {
+        cfg.cl_compile.utf8_source = (value == "true" || value == "yes" || value == "1");
     } else if (key == "exception_handling" || key == "exceptions") {
         std::string eh_value = value;
         if (value == "false" || value == "no" || value == "0") eh_value = "false";
@@ -2306,6 +2315,8 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
         d_cl.expand_attributed_source = t_cl.expand_attributed_source;
     if (!d_cl.treat_warning_as_error && t_cl.treat_warning_as_error)
         d_cl.treat_warning_as_error = t_cl.treat_warning_as_error;
+    if (!d_cl.utf8_source && t_cl.utf8_source)
+        d_cl.utf8_source = t_cl.utf8_source;
 
     // PCH settings
     if (d_cl.pch.mode.empty()) d_cl.pch = t_cl.pch;
@@ -2597,17 +2608,22 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
             }
             if (!dep) continue;
 
-            // Determine what to propagate based on visibility
-            // PUBLIC and INTERFACE: propagate includes/libs/defines to dependent
-            // PRIVATE: only affects the target itself, don't propagate
-            bool should_propagate_properties =
+            // Determine what to do based on visibility
+            // Two independent decisions: local addition vs transitive propagation
+            // should_add_locally: Add to current project's configuration (PUBLIC or PRIVATE)
+            // should_propagate_transitively: Add to processing queue for dependents (PUBLIC or INTERFACE)
+            bool should_add_locally =
+                (visibility == DependencyVisibility::PUBLIC ||
+                 visibility == DependencyVisibility::PRIVATE);
+
+            bool should_propagate_transitively =
                 (visibility == DependencyVisibility::PUBLIC ||
                  visibility == DependencyVisibility::INTERFACE);
 
             // Propagate to all configurations
             for (const auto& config_key : solution.get_config_keys()) {
-                // Only propagate if visibility permits (PUBLIC or INTERFACE)
-                if (should_propagate_properties) {
+                // Add locally if visibility permits (PUBLIC or PRIVATE)
+                if (should_add_locally) {
                     // Propagate public_includes
                     auto& proj_includes = proj.configurations[config_key]
                         .cl_compile.additional_include_directories;

@@ -479,9 +479,9 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             if (auto c_std_node = cl.child("LanguageStandard_C")) {
                 std::string c_std = c_std_node.text().as_string();
                 // Convert MSVC format to sighmake format
-                if (c_std == "stdc89" || c_std == "stdc90") proj->c_standard = "89";
-                else if (c_std == "stdc11") proj->c_standard = "11";
-                else if (c_std == "stdc17") proj->c_standard = "17";
+                if (c_std == "stdc89" || c_std == "stdc90") project.c_standard = "89";
+                else if (c_std == "stdc11") project.c_standard = "11";
+                else if (c_std == "stdc17") project.c_standard = "17";
             }
 
             READ_BOOL("TreatWChar_tAsBuiltInType", treat_wchar_t_as_built_in_type);
@@ -489,6 +489,11 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             READ_BOOL("ExpandAttributedSource", expand_attributed_source);
             READ_BOOL("OpenMPSupport", openmp_support);
             READ_BOOL("TreatWarningAsError", treat_warning_as_error);
+
+            // Check if AdditionalOptions contains /utf-8 flag
+            if (settings.additional_options.find("/utf-8") != std::string::npos) {
+                settings.utf8_source = true;
+            }
 
             #undef READ_TEXT
             #undef READ_BOOL

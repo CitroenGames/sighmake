@@ -389,6 +389,7 @@ pch_output[Release|Win32] = obj/Release/pch.pch
 |---------|-------------|--------------|
 | `warning_level` | Warning level | `Level0`, `Level1`, `Level2`, `Level3`, `Level4` |
 | `multiprocessor` | Multi-processor compilation | `true`, `false` |
+| `utf8` | UTF-8 source/execution encoding | `true`, `false` |
 | `exception_handling` | Exception handling mode | `Sync`, `Async`, `false` |
 | `rtti` | Runtime type information | `true`, `false` |
 | `optimization` | Optimization level | `Disabled`, `MinSize`, `MaxSpeed`, `Full` |
@@ -413,6 +414,54 @@ runtime_library[Debug] = MultiThreadedDebug
 runtime_library[Release] = MultiThreaded
 debug_info[Debug] = EditAndContinue
 debug_info[Release] = ProgramDatabase
+```
+
+### UTF-8 Source Encoding
+
+Enable UTF-8 encoding for source files and execution character sets. This is required by some libraries (e.g., spdlog, fmt) that use Unicode characters.
+
+**Syntax:**
+```ini
+utf8 = true
+```
+
+**What it does:**
+- **MSVC**: Adds `/utf-8` compiler flag
+  - Sets source file encoding to UTF-8
+  - Sets execution character set to UTF-8
+- **GCC/Clang**: Adds `-finput-charset=UTF-8 -fexec-charset=UTF-8`
+  - Ensures source files are read as UTF-8
+  - Sets execution character set to UTF-8
+
+**When to use:**
+- When using libraries that require UTF-8 compilation (spdlog, fmt, etc.)
+- When your source files contain Unicode characters
+- When you see errors like: `error C2338: Unicode support requires compiling with /utf-8`
+
+**Example:**
+```ini
+[project:MyApp]
+type = exe
+sources = src/**/*.cpp
+std = 20
+utf8 = true                    # Enable UTF-8 encoding
+
+# Or enable per-configuration
+utf8[Debug] = true
+utf8[Release] = true
+```
+
+**Full example with spdlog:**
+```ini
+[project:LoggingApp]
+type = exe
+sources = src/**/*.cpp
+includes =
+    include
+    external/spdlog/include
+std = 20
+utf8 = true                    # Required by spdlog
+multiprocessor = true
 ```
 
 ### Linker Settings
@@ -1471,17 +1520,28 @@ Control how dependencies propagate using visibility modifiers. This allows fine-
 
 **Visibility Modifiers:**
 
+Sighmake follows CMake's standard dependency visibility semantics:
+
+| Visibility | Applies to this target | Propagates to dependents |
+|-----------|------------------------|-------------------------|
+| **PRIVATE** | ✓ YES | ✗ NO |
+| **INTERFACE** | ✗ NO | ✓ YES |
+| **PUBLIC** | ✓ YES | ✓ YES |
+
 - **PUBLIC**: Dependency affects both the target and all its dependents (default)
+  - Adds `public_includes`, `public_libs`, `public_defines` to current target
+  - Propagates these properties transitively to all consumers
   - Use for dependencies that are part of your public API
-  - Propagates transitively to all consumers
 
 - **PRIVATE**: Dependency affects only the target, not its dependents
+  - Adds `public_includes`, `public_libs`, `public_defines` to current target
+  - Does NOT propagate to consumers (stops transitive dependency chain)
   - Use for internal implementation details
-  - Does not propagate to consumers
 
 - **INTERFACE**: Dependency affects only dependents, not the target itself
-  - Use for header-only libraries
-  - Propagates to consumers but target doesn't link against it
+  - Does NOT add to current target
+  - Propagates `public_includes`, `public_libs`, `public_defines` to consumers
+  - Use for header-only libraries or when target doesn't link but consumers do
 
 **Syntax:**
 ```ini
@@ -1554,9 +1614,10 @@ std = 20
    - Use case: SDL3 types appear in Engine's API, but Engine doesn't link SDL3 itself
    - **Key insight**: INTERFACE means "my users need this, but I don't link it"
 
-3. **PRIVATE boundary** (hypothetical): `SnakeGame → Engine → (PRIVATE) → InternalProfiler`
-   - Result: SnakeGame does NOT get InternalProfiler
+3. **PRIVATE boundary**: `SnakeGame → Engine → (PRIVATE) → InternalProfiler`
+   - Result: Engine gets InternalProfiler's includes/libs, but SnakeGame does NOT
    - Use case: Profiler is Engine's internal implementation detail
+   - **Key insight**: PRIVATE means "I need this, but my users don't"
 
 **Multi-Project Directory Structure Example:**
 
@@ -1671,10 +1732,11 @@ target_link_libraries(PRIVATE StringUtils)  # Used internally, not exposed
 
 | Problem | Likely Cause | Solution |
 |---------|--------------|----------|
-| "Unresolved external symbol" in game that uses Engine | Engine's dependency is PRIVATE but should be PUBLIC | Change to PUBLIC or INTERFACE |
-| Game compiles but "cannot find SDL.h" | SDL3 not propagating headers | Change Engine→SDL3 from PRIVATE to INTERFACE or PUBLIC |
+| "Unresolved external symbol" in game that uses Engine | Engine's dependency is PRIVATE but should be PUBLIC/INTERFACE | Change to PUBLIC or INTERFACE to propagate to dependents |
+| Engine compiles but "cannot find SDL.h" | SDL3 dependency not adding includes to Engine | Ensure SDL3 has `public_includes` defined |
+| Game compiles but "cannot find SDL.h" from Engine | Engine→SDL3 is PRIVATE (not propagating) | Change Engine→SDL3 from PRIVATE to INTERFACE or PUBLIC |
 | Game links SDL twice (duplicate symbols) | Both Engine and Game link SDL as PUBLIC | Use INTERFACE on Engine's SDL dependency |
-| Build warnings about missing .vcxproj files | Path generation bug (fixed in latest version) | Regenerate projects with updated sighmake |
+| PRIVATE dependency not adding includes (old bug) | Using outdated sighmake version | Update to latest version (PRIVATE now correctly adds includes locally) |
 
 **Backward Compatibility:**
 
@@ -2407,6 +2469,29 @@ std = 20
 
 Use `msvc2019` or newer for full C++20 support.
 
+**C++ Standard Validation:**
+
+Sighmake validates C++ standard values and ensures compatibility with VS 2022+:
+
+| Value | Standard | MSVC Flag | Notes |
+|-------|----------|-----------|-------|
+| `14` | C++14 | `stdcpp14` | ✓ Supported (minimum for VS 2022+) |
+| `17` | C++17 | `stdcpp17` | ✓ Supported |
+| `20` | C++20 | `stdcpp20` | ✓ Supported |
+| `23` | C++23 | `stdcpp23` | ✓ Supported (VS 2022 v17.8+) |
+| `latest` | Latest | `stdcpplatest` | ✓ Supported |
+| `11` | C++11 | N/A | ⚠️ Not supported (falls back to C++14 with warning) |
+| `03`, `98` | C++03/98 | N/A | ⚠️ Not supported (falls back to C++14 with warning) |
+
+**Automatic Fallback:**
+```
+Warning: C++11 is not supported by VS 2022+ (minimum is C++14). Falling back to stdcpp14.
+```
+
+- Invalid standards automatically fall back to the nearest supported version
+- The build continues successfully with the fallback standard
+- To suppress warnings, use a supported standard value (14, 17, 20, 23, or latest)
+
 ### C Language Projects
 
 Sighmake supports pure C projects with C-specific standards and compilation settings. This enables using C libraries like GLAD (OpenGL loader) as dependencies.
@@ -2443,15 +2528,18 @@ headers = include/*.h
 
 #### C Standards Supported
 
-| Value | Standard | MSVC Flag | GCC/Clang Flag |
-|-------|----------|-----------|----------------|
-| `89` | C89/C90 | `/std:c89` | `-std=c89` |
-| `99` | C99 | N/A (default) | `-std=c99` |
-| `11` | C11 | `/std:c11` | `-std=c11` |
-| `17` | C17 | `/std:c17` | `-std=c17` |
-| `23` | C23 | N/A | `-std=c2x` |
+| Value | Standard | MSVC Flag | GCC/Clang Flag | Notes |
+|-------|----------|-----------|----------------|-------|
+| `89` | C89/C90 | `stdc89` | `-std=c89` | ✓ Supported |
+| `99` | C99 | N/A | `-std=c99` | ⚠️ MSVC: Falls back to C11 with warning |
+| `11` | C11 | `stdc11` | `-std=c11` | ✓ Supported |
+| `17` | C17 | N/A | `-std=c17` | ⚠️ MSVC: Falls back to C11 with warning |
+| `23` | C23 | N/A | `-std=c2x` | ⚠️ MSVC: Falls back to C11 with warning |
 
-**Note:** MSVC only supports `/std:c11` and `/std:c17`. For C99, use compiler defaults.
+**MSVC Support:**
+- ✓ Fully supported: C89 (`stdc89`), C11 (`stdc11`)
+- ⚠️ Not supported: C99, C17, C23 (falls back to C11 with warning)
+- Sighmake will automatically fall back to the nearest supported standard and emit a warning
 
 #### Example: GLAD (OpenGL Loader)
 
@@ -2611,12 +2699,18 @@ Result:
 
 **Problem: "C standard not supported"**
 ```
-Warning: MSVC does not support /std:c99
+Warning: C99 (stdc99) is not fully supported by MSVC. Falling back to stdc11.
 ```
 
+**What happens:**
+- Sighmake automatically falls back to the nearest supported C standard (C11)
+- The build continues successfully with the fallback standard
+- You'll see a warning message, but the project will still compile
+
 **Solution:**
-- MSVC only supports C11 and C17 standards
-- For C99 code, rely on MSVC's default C mode (or use `c_standard = 11`)
+- For C99 code on MSVC: The automatic fallback to C11 usually works fine
+- If you need strict C99 behavior: Use GCC/Clang, or explicitly set `c_standard = 11`
+- To suppress the warning: Change `c_standard = 99` to `c_standard = 11` in your buildscript
 
 **Problem: ".c files compiling as C++"**
 
@@ -5410,6 +5504,7 @@ dir include\myheader.h
 |---------|-------------|--------------|---------|
 | `warning_level` | Warning level | `Level0`, `Level1`, `Level2`, `Level3`, `Level4` | `Level3` |
 | `multiprocessor` | Multi-processor compilation | `true`, `false` | `true` |
+| `utf8` | UTF-8 source/execution encoding | `true`, `false` | `false` |
 | `exception_handling` | Exception handling | `Sync`, `Async`, `false` | `Sync` |
 | `rtti` | Runtime type information | `true`, `false` | `true` |
 | `optimization` | Optimization level | `Disabled`, `MinSize`, `MaxSpeed`, `Full` | Config dependent |

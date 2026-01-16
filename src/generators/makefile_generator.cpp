@@ -266,6 +266,11 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
         ss << "-D" << def << " ";
     }
 
+    // UTF-8 source encoding (ensure source files are read as UTF-8)
+    if (config.cl_compile.utf8_source) {
+        ss << "-finput-charset=UTF-8 -fexec-charset=UTF-8 ";
+    }
+
     // Additional options (raw flags)
     if (!config.cl_compile.additional_options.empty()) {
         ss << config.cl_compile.additional_options << " ";

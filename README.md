@@ -8,10 +8,11 @@ A flexible build system generator that converts buildscript files and CMakeLists
 - **CMake support** - Parse CMakeLists.txt files and generate project files
 - **Multiple generators** - Visual Studio projects (.vcxproj/.sln) and Makefiles
 - **Cross-platform** - Windows (MSVC) and Linux (GCC/Clang) support
+- **C and C++ language support** - First-class support for both C and C++ projects with appropriate standards
 - **Configuration-specific settings** - Per-config compiler options, optimization, etc.
 - **Per-file compiler settings** - Customize compilation flags for individual files
 - **Wildcard support** - Use glob patterns for source files (*.cpp, **/*.cpp)
-- **Project dependencies** - Automatic dependency tracking between projects
+- **Project dependencies** - Automatic dependency tracking with PUBLIC/PRIVATE/INTERFACE visibility
 - **File inclusion** - Share common settings across buildscripts
 - **Bidirectional conversion** - Convert Visual Studio solutions to buildscripts
 
@@ -161,10 +162,43 @@ defines = MYDEFINE              # Preprocessor definitions
 std = 17                        # C++ standard (14, 17, 20, 23)
 ```
 
-#### Dependencies and Libraries
+#### C Language Projects
+
+Sighmake supports both C and C++ projects with appropriate compiler settings:
 
 ```ini
-depends = OtherProject         # Project dependencies
+[project:GLAD]
+type = lib
+language = C                   # Declare project as C
+c_standard = 11                # C standard: 89, 11 (99/17/23 fall back with warning on MSVC)
+sources = src/glad.c
+headers = include/**/*.h
+public_includes = include
+```
+
+**Auto-detection:**
+- Projects with only `.c` files are detected as C projects
+- Projects with `.cpp` files are detected as C++ projects
+- Explicitly set `language = C` or `language = C++` to override
+
+**Compiler behavior:**
+- **MSVC**: C projects compile with `/TC` flag, C++ with `/TP`
+- **GCC/Clang**: C projects use `gcc`, C++ projects use `g++`
+
+#### Dependencies and Libraries
+
+Dependencies support CMake-style visibility (PUBLIC, PRIVATE, INTERFACE):
+
+```ini
+# Modern dependency syntax with visibility
+target_link_libraries(
+    SDL3 INTERFACE          # Headers propagate to dependents, not added to this target
+    entt PUBLIC             # Headers + libs added to this target AND propagate to dependents
+    GLAD PRIVATE            # Headers + libs added to this target, but NOT to dependents
+)
+
+# Legacy syntax (defaults to PUBLIC)
+depends = OtherProject      # Project dependencies
 libs = user32.lib, gdi32.lib   # Library dependencies
 libdirs = lib, external/lib    # Library search directories
 ```
@@ -174,6 +208,7 @@ libdirs = lib, external/lib    # Library search directories
 ```ini
 warning_level = Level3         # Level0, Level1, Level2, Level3, Level4
 multiprocessor = true          # Enable multi-processor compilation
+utf8 = true                    # UTF-8 source encoding (required by spdlog, fmt)
 exception_handling = Sync      # Sync, Async, or false
 rtti = true                    # Runtime type information
 optimization = MaxSpeed        # Disabled, MinSize, MaxSpeed, Full
@@ -466,6 +501,44 @@ msbuild project.sln /p:Configuration=Release /p:Platform=x64
 **Generated files not updating:**
 - Regenerate project files after modifying buildscripts
 - Close Visual Studio before regenerating to avoid file locks
+
+## Example Projects
+
+See sighmake in action with real-world projects:
+
+### [SnakeGame](https://github.com/CitroenGames/SnakeGame)
+
+A complete game project demonstrating advanced sighmake features:
+- **Multi-project structure** - Game executable, Engine library, and 3rd-party dependencies
+- **Dependency management** - PUBLIC/PRIVATE/INTERFACE visibility propagation
+- **Modern C++20** - SDL3
+- **Cross-platform** - Builds on Windows and Linux
+
+**Project structure:**
+```
+snakegame/
+├── engine/
+│   ├── 3rdparty/          # Libraries (SDL3 wrappers)
+│   └── src/               # C++ game engine
+└── game/                  # Snake game executable
+```
+
+**Key features demonstrated:**
+- Transitive dependency propagation (SDL3 INTERFACE)
+- Multi-directory buildscript organization
+- Public includes for library API exposure
+
+## Documentation
+
+For comprehensive documentation on all features, see [usage.md](usage.md):
+- Detailed syntax reference
+- Configuration-specific settings
+- Per-file compiler flags
+- Precompiled headers
+- Build events
+- Toolset configuration
+- CMake support
+- And much more
 
 ## License
 
