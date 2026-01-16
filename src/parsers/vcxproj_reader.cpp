@@ -766,7 +766,7 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             // Extract project name from path (remove .vcxproj extension)
             fs::path p(include);
             std::string proj_name = p.stem().string();
-            project.project_references.push_back(proj_name);
+            project.project_references.push_back(ProjectDependency(proj_name));
         }
     }
 
@@ -853,7 +853,7 @@ Solution SlnReader::read_sln(const std::string& filepath) {
             for (const auto& dep_uuid : dependencies[proj.uuid]) {
                 if (uuid_to_name.count(dep_uuid)) {
                     std::string dep_name = uuid_to_name[dep_uuid];
-                    proj.project_references.push_back(dep_name);
+                    proj.project_references.push_back(ProjectDependency(dep_name));
                     std::cout << "    -> " << dep_name << "\n";
                 } else {
                     std::cout << "    -> (unknown UUID: " << dep_uuid << ")\n";
@@ -1214,7 +1214,12 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
     if (!project.project_references.empty()) {
         std::cout << "    Writing dependencies for " << project.project_name << ": "
                   << project.project_references.size() << " deps\n";
-        out << "target_link_libraries(" << join_vector(project.project_references, ", ") << ")\n";
+        // Extract dependency names for join_vector
+        std::vector<std::string> dep_names;
+        for (const auto& dep : project.project_references) {
+            dep_names.push_back(dep.name);
+        }
+        out << "target_link_libraries(" << join_vector(dep_names, ", ") << ")\n";
     }
 
     // Analyze libraries to separate those with exclusions from those without

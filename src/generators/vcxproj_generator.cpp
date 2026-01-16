@@ -956,26 +956,41 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     // Project references
     if (!project.project_references.empty()) {
         auto ref_group = root.append_child("ItemGroup");
-        for (const auto& ref : project.project_references) {
-            auto ref_elem = ref_group.append_child("ProjectReference");
-            // If the reference is just a project name (no path separators),
-            // assume it's in the same directory as this project
-            std::string ref_path;
-            if (ref.find('/') == std::string::npos && ref.find('\\') == std::string::npos) {
-
-                ref_path = ref + GENERATED_VCXPROJ;
-            } else {
-                ref_path = make_relative_path(ref + GENERATED_VCXPROJ, output_path);
+        for (const auto& dep : project.project_references) {
+            // Skip INTERFACE dependencies - they don't get linked, only their includes propagate
+            if (dep.visibility == DependencyVisibility::INTERFACE) {
+                continue;
             }
-            ref_elem.append_attribute("Include") = ref_path.c_str();
 
-            // Find the referenced project in the solution to get its GUID
+            auto ref_elem = ref_group.append_child("ProjectReference");
+
+            // Find the referenced project in the solution to get its GUID and actual path
+            std::string ref_path;
+            bool found = false;
             for (const auto& sol_proj : solution.projects) {
-                if (sol_proj.name == ref) {
+                if (sol_proj.name == dep.name) {
+                    found = true;
+
+                    // Calculate correct relative path using buildscript_path
+                    if (!sol_proj.buildscript_path.empty()) {
+                        fs::path dep_vcxproj_path = fs::path(sol_proj.buildscript_path) / (sol_proj.name + GENERATED_VCXPROJ);
+                        ref_path = make_relative_path(dep_vcxproj_path.string(), output_path);
+                    } else {
+                        ref_path = dep.name + GENERATED_VCXPROJ;
+                    }
+
+                    ref_elem.append_attribute("Include") = ref_path.c_str();
+
                     // Add the Project GUID element
                     ref_elem.append_child("Project").text() = ("{" + sol_proj.uuid + "}").c_str();
                     break;
                 }
+            }
+
+            // Fallback if project not found in solution (shouldn't happen)
+            if (!found) {
+                ref_path = dep.name + GENERATED_VCXPROJ;
+                ref_elem.append_attribute("Include") = ref_path.c_str();
             }
         }
     }
@@ -1066,10 +1081,15 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
         // Write ProjectSection(ProjectDependencies) if the project has dependencies
         if (!proj.project_references.empty()) {
             file << "\tProjectSection(ProjectDependencies) = postProject\n";
-            for (const auto& dep_name : proj.project_references) {
+            for (const auto& dep : proj.project_references) {
+                // Skip INTERFACE dependencies - they don't get linked
+                if (dep.visibility == DependencyVisibility::INTERFACE) {
+                    continue;
+                }
+
                 // Look up the UUID for the dependency
-                if (name_to_uuid.count(dep_name)) {
-                    std::string dep_uuid = name_to_uuid[dep_name];
+                if (name_to_uuid.count(dep.name)) {
+                    std::string dep_uuid = name_to_uuid[dep.name];
                     file << "\t\t{" << dep_uuid << "} = {" << dep_uuid << "}\n";
                 }
             }
@@ -1169,11 +1189,16 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
         project.append_attribute("Id") = proj.uuid.c_str();
 
         // Add build dependencies
-        for (const auto& dep_name : proj.project_references) {
+        for (const auto& dep : proj.project_references) {
+            // Skip INTERFACE dependencies - they don't get linked
+            if (dep.visibility == DependencyVisibility::INTERFACE) {
+                continue;
+            }
+
             // Find the referenced project path
             std::string dep_path;
             for (const auto& dep_proj : solution.projects) {
-                if (dep_proj.name == dep_name) {
+                if (dep_proj.name == dep.name) {
 #if PROJ_SEPERATOR
                     if (!dep_proj.buildscript_path.empty()) {
                         fs::path dep_proj_path = fs::path(dep_proj.buildscript_path) / (dep_proj.name + GENERATED_VCXPROJ);

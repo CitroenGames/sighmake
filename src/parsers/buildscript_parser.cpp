@@ -645,6 +645,85 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
         return;
     }
 
+    // If we're accumulating a target_link_libraries() call, continue accumulating
+    if (state.in_target_link_libraries) {
+        state.target_link_libraries_accumulator += " " + trimmed;
+        // Check if this line closes the function call by counting parentheses in the full accumulator
+        int paren_count = 0;
+        bool in_string = false;
+        for (size_t i = 0; i < state.target_link_libraries_accumulator.size(); ++i) {
+            char c = state.target_link_libraries_accumulator[i];
+            if (c == '"' && (i == 0 || state.target_link_libraries_accumulator[i-1] != '\\')) {
+                in_string = !in_string;
+            } else if (!in_string) {
+                if (c == '(') paren_count++;
+                else if (c == ')') paren_count--;
+            }
+        }
+
+        if (paren_count == 0) {
+            // Function call complete, parse it
+            // Re-run the target_link_libraries parsing logic
+            std::string content = state.target_link_libraries_accumulator;
+            size_t start_paren = content.find('(');
+            size_t end_paren = content.rfind(')');
+            if (start_paren != std::string::npos && end_paren != std::string::npos && end_paren > start_paren) {
+                std::string params = content.substr(start_paren + 1, end_paren - start_paren - 1);
+
+                // Split by whitespace (CMake-style) or commas (buildscript-style)
+                std::vector<std::string> tokens;
+                std::istringstream iss(params);
+                std::string token;
+                while (iss >> token) {
+                    // Also handle comma-separated (remove trailing commas)
+                    while (!token.empty() && token.back() == ',') {
+                        token.pop_back();
+                    }
+                    if (!token.empty()) {
+                        tokens.push_back(token);
+                    }
+                }
+
+                // State machine: track current visibility keyword (default PUBLIC for backward compat)
+                DependencyVisibility current_visibility = DependencyVisibility::PUBLIC;
+
+                for (const auto& token : tokens) {
+                    std::string trimmed_token = trim(token);
+                    if (trimmed_token.empty()) continue;
+
+                    // Check if it's a visibility keyword
+                    if (trimmed_token == "PUBLIC") {
+                        current_visibility = DependencyVisibility::PUBLIC;
+                    } else if (trimmed_token == "PRIVATE") {
+                        current_visibility = DependencyVisibility::PRIVATE;
+                    } else if (trimmed_token == "INTERFACE") {
+                        current_visibility = DependencyVisibility::INTERFACE;
+                    } else {
+                        // It's a dependency name - add with current visibility
+                        ProjectDependency dep(trimmed_token, current_visibility);
+
+                        // Check for duplicates (last one wins)
+                        auto it = std::find_if(
+                            state.current_project->project_references.begin(),
+                            state.current_project->project_references.end(),
+                            [&](const ProjectDependency& d) { return d.name == dep.name; }
+                        );
+
+                        if (it == state.current_project->project_references.end()) {
+                            state.current_project->project_references.push_back(dep);
+                        } else {
+                            it->visibility = current_visibility;  // Update visibility
+                        }
+                    }
+                }
+            }
+
+            state.target_link_libraries_accumulator.clear();
+            state.in_target_link_libraries = false;
+        }
+        return;
+    }
+
     // Skip empty lines and comments
     if (trimmed.empty() || trimmed[0] == '#' || trimmed[0] == ';') {
         return;
@@ -785,18 +864,78 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
             return;
         }
 
-        // Extract content between parentheses
-        size_t start_paren = trimmed.find('(');
-        size_t end_paren = trimmed.rfind(')');
-        if (start_paren != std::string::npos && end_paren != std::string::npos && end_paren > start_paren) {
-            std::string content = trimmed.substr(start_paren + 1, end_paren - start_paren - 1);
-            auto deps = split(content, ',');
-            for (const auto& dep : deps) {
-                std::string dep_name = trim(dep);
-                if (!dep_name.empty()) {
-                    state.current_project->project_references.push_back(dep_name);
+        // Check if the function call is complete on this line by counting parentheses
+        int paren_count = 0;
+        bool in_string = false;
+        for (size_t i = 0; i < trimmed.size(); ++i) {
+            char c = trimmed[i];
+            if (c == '"' && (i == 0 || trimmed[i-1] != '\\')) {
+                in_string = !in_string;
+            } else if (!in_string) {
+                if (c == '(') paren_count++;
+                else if (c == ')') paren_count--;
+            }
+        }
+
+        if (paren_count == 0) {
+            // Single-line function call (all parens matched)
+            // Extract content between parentheses
+            size_t start_paren = trimmed.find('(');
+            size_t end_paren = trimmed.rfind(')');
+            if (start_paren != std::string::npos && end_paren != std::string::npos && end_paren > start_paren) {
+                std::string content = trimmed.substr(start_paren + 1, end_paren - start_paren - 1);
+
+                // Split by whitespace (CMake-style) or commas (buildscript-style)
+                std::vector<std::string> tokens;
+                std::istringstream iss(content);
+                std::string token;
+                while (iss >> token) {
+                    // Also handle comma-separated (remove trailing commas)
+                    while (!token.empty() && token.back() == ',') {
+                        token.pop_back();
+                    }
+                    if (!token.empty()) {
+                        tokens.push_back(token);
+                    }
+                }
+
+                // State machine: track current visibility keyword (default PUBLIC for backward compat)
+                DependencyVisibility current_visibility = DependencyVisibility::PUBLIC;
+
+                for (const auto& token : tokens) {
+                    std::string trimmed_token = trim(token);
+                    if (trimmed_token.empty()) continue;
+
+                    // Check if it's a visibility keyword
+                    if (trimmed_token == "PUBLIC") {
+                        current_visibility = DependencyVisibility::PUBLIC;
+                    } else if (trimmed_token == "PRIVATE") {
+                        current_visibility = DependencyVisibility::PRIVATE;
+                    } else if (trimmed_token == "INTERFACE") {
+                        current_visibility = DependencyVisibility::INTERFACE;
+                    } else {
+                        // It's a dependency name - add with current visibility
+                        ProjectDependency dep(trimmed_token, current_visibility);
+
+                        // Check for duplicates (last one wins)
+                        auto it = std::find_if(
+                            state.current_project->project_references.begin(),
+                            state.current_project->project_references.end(),
+                            [&](const ProjectDependency& d) { return d.name == dep.name; }
+                        );
+
+                        if (it == state.current_project->project_references.end()) {
+                            state.current_project->project_references.push_back(dep);
+                        } else {
+                            it->visibility = current_visibility;  // Update visibility
+                        }
+                    }
                 }
             }
+        } else {
+            // Multi-line function call, start accumulating
+            state.in_target_link_libraries = true;
+            state.target_link_libraries_accumulator = trimmed;
         }
         return;
     }
@@ -1715,7 +1854,13 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
     // Project references
     else if (key == "depends" || key == "dependencies" || key == "project_references") {
         auto deps = split(value, ',');
-        proj.project_references.insert(proj.project_references.end(), deps.begin(), deps.end());
+        // Convert string dependencies to ProjectDependency objects (default visibility: PUBLIC)
+        for (const auto& dep_name : deps) {
+            std::string trimmed_name = trim(dep_name);
+            if (!trimmed_name.empty()) {
+                proj.project_references.push_back(ProjectDependency(trimmed_name));
+            }
+        }
     }
 }
 
@@ -2413,12 +2558,19 @@ bool BuildscriptParser::evaluate_condition(const std::string& condition) {
 void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
     // For each project, propagate public_includes, public_libs, and public_defines
     // from all projects it depends on via target_link_libraries (project_references)
+    // Respects CMake-style visibility: PUBLIC, PRIVATE, INTERFACE
     for (auto& proj : solution.projects) {
-        std::vector<std::string> to_process = proj.project_references;
+        // Work queue: (dependency_name, effective_visibility)
+        std::vector<std::pair<std::string, DependencyVisibility>> to_process;
         std::set<std::string> processed;
 
+        // Initialize with direct dependencies
+        for (const auto& dep : proj.project_references) {
+            to_process.push_back({dep.name, dep.visibility});
+        }
+
         while (!to_process.empty()) {
-            std::string dep_name = to_process.back();
+            auto [dep_name, visibility] = to_process.back();
             to_process.pop_back();
 
             if (processed.count(dep_name)) continue;
@@ -2434,43 +2586,75 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
             }
             if (!dep) continue;
 
-            // Propagate public_includes, public_libs, and public_defines to all configurations
+            // Determine what to propagate based on visibility
+            // PUBLIC and INTERFACE: propagate includes/libs/defines to dependent
+            // PRIVATE: only affects the target itself, don't propagate
+            bool should_propagate_properties =
+                (visibility == DependencyVisibility::PUBLIC ||
+                 visibility == DependencyVisibility::INTERFACE);
+
+            // Propagate to all configurations
             for (const auto& config_key : solution.get_config_keys()) {
-                // Propagate public_includes
-                auto& proj_includes = proj.configurations[config_key]
-                    .cl_compile.additional_include_directories;
-                for (const auto& inc : dep->public_includes) {
-                    if (std::find(proj_includes.begin(), proj_includes.end(), inc)
-                        == proj_includes.end()) {
-                        proj_includes.push_back(inc);
+                // Only propagate if visibility permits (PUBLIC or INTERFACE)
+                if (should_propagate_properties) {
+                    // Propagate public_includes
+                    auto& proj_includes = proj.configurations[config_key]
+                        .cl_compile.additional_include_directories;
+                    for (const auto& inc : dep->public_includes) {
+                        if (std::find(proj_includes.begin(), proj_includes.end(), inc)
+                            == proj_includes.end()) {
+                            proj_includes.push_back(inc);
+                        }
                     }
-                }
 
-                // Propagate public_libs
-                auto& proj_libs = proj.configurations[config_key]
-                    .link.additional_dependencies;
-                for (const auto& lib : dep->public_libs) {
-                    if (std::find(proj_libs.begin(), proj_libs.end(), lib)
-                        == proj_libs.end()) {
-                        proj_libs.push_back(lib);
+                    // Propagate public_libs
+                    auto& proj_libs = proj.configurations[config_key]
+                        .link.additional_dependencies;
+                    for (const auto& lib : dep->public_libs) {
+                        if (std::find(proj_libs.begin(), proj_libs.end(), lib)
+                            == proj_libs.end()) {
+                            proj_libs.push_back(lib);
+                        }
                     }
-                }
 
-                // Propagate public_defines
-                auto& proj_defines = proj.configurations[config_key]
-                    .cl_compile.preprocessor_definitions;
-                for (const auto& def : dep->public_defines) {
-                    if (std::find(proj_defines.begin(), proj_defines.end(), def)
-                        == proj_defines.end()) {
-                        proj_defines.push_back(def);
+                    // Propagate public_defines
+                    auto& proj_defines = proj.configurations[config_key]
+                        .cl_compile.preprocessor_definitions;
+                    for (const auto& def : dep->public_defines) {
+                        if (std::find(proj_defines.begin(), proj_defines.end(), def)
+                            == proj_defines.end()) {
+                            proj_defines.push_back(def);
+                        }
                     }
                 }
             }
 
             // Handle transitive dependencies (dependencies of dependencies)
-            for (const auto& trans : dep->project_references) {
-                if (!processed.count(trans)) {
-                    to_process.push_back(trans);
+            for (const auto& trans_dep : dep->project_references) {
+                if (!processed.count(trans_dep.name)) {
+                    // Determine effective visibility for transitive dependency
+                    DependencyVisibility effective_vis;
+
+                    if (trans_dep.visibility == DependencyVisibility::PRIVATE) {
+                        // PRIVATE doesn't propagate - skip it
+                        continue;
+                    } else if (trans_dep.visibility == DependencyVisibility::PUBLIC) {
+                        // PUBLIC propagates based on current visibility
+                        if (visibility == DependencyVisibility::PRIVATE) {
+                            // PRIVATE boundary stops propagation
+                            continue;
+                        }
+                        effective_vis = visibility;  // Inherit current visibility
+                    } else {  // INTERFACE
+                        // INTERFACE always propagates as INTERFACE (unless blocked by PRIVATE)
+                        if (visibility == DependencyVisibility::PRIVATE) {
+                            // PRIVATE boundary stops propagation
+                            continue;
+                        }
+                        effective_vis = DependencyVisibility::INTERFACE;
+                    }
+
+                    to_process.push_back({trans_dep.name, effective_vis});
                 }
             }
         }

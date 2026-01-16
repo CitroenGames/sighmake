@@ -117,10 +117,13 @@ Solution CMakeParser::parse_string(const std::string& content, const std::string
 
                 if (dep_proj) {
                     // Move to project_references
-                    auto ref_it = std::find(proj.project_references.begin(),
-                                           proj.project_references.end(), dep_name);
+                    auto ref_it = std::find_if(proj.project_references.begin(),
+                                               proj.project_references.end(),
+                                               [&](const ProjectDependency& d) {
+                                                   return d.name == dep_name;
+                                               });
                     if (ref_it == proj.project_references.end()) {
-                        proj.project_references.push_back(dep_name);
+                        proj.project_references.push_back(ProjectDependency(dep_name));
                     }
 
                     // Remove from additional_dependencies
@@ -763,11 +766,23 @@ void CMakeParser::handle_target_link_libraries(const std::vector<std::string>& a
     Project* proj = find_project(target_name, state);
     if (!proj) return;
 
+    // State machine: track current visibility (default PUBLIC for backward compat)
+    DependencyVisibility current_visibility = DependencyVisibility::PUBLIC;
+
     for (size_t i = 1; i < args.size(); ++i) {
         const std::string& arg = args[i];
 
-        // Skip CMake visibility keywords
-        if (arg == "PUBLIC" || arg == "PRIVATE" || arg == "INTERFACE") continue;
+        // Check for visibility keywords (DON'T skip, track them!)
+        if (arg == "PUBLIC") {
+            current_visibility = DependencyVisibility::PUBLIC;
+            continue;
+        } else if (arg == "PRIVATE") {
+            current_visibility = DependencyVisibility::PRIVATE;
+            continue;
+        } else if (arg == "INTERFACE") {
+            current_visibility = DependencyVisibility::INTERFACE;
+            continue;
+        }
 
         // If there's a generator expression, evaluate it per-config
         if (is_generator_expression(arg)) {
@@ -794,10 +809,16 @@ void CMakeParser::handle_target_link_libraries(const std::vector<std::string>& a
                 // Check if it's an internal project reference
                 Project* dep_proj = find_project(sanitized_name, state);
                 if (dep_proj) {
-                    auto it = std::find(proj->project_references.begin(),
-                                       proj->project_references.end(), sanitized_name);
+                    // Add to project_references with visibility
+                    auto it = std::find_if(proj->project_references.begin(),
+                                           proj->project_references.end(),
+                                           [&](const ProjectDependency& d) {
+                                               return d.name == sanitized_name;
+                                           });
                     if (it == proj->project_references.end()) {
-                        proj->project_references.push_back(sanitized_name);
+                        proj->project_references.push_back(ProjectDependency(sanitized_name, current_visibility));
+                    } else {
+                        it->visibility = current_visibility;  // Update visibility
                     }
                     continue;
                 }
@@ -824,11 +845,16 @@ void CMakeParser::handle_target_link_libraries(const std::vector<std::string>& a
         // 1. Check if it's an internal project reference
         Project* dep_proj = find_project(sanitized_name, state);
         if (dep_proj) {
-            // Internal project - add to project_references (once, not per-config)
-            auto it = std::find(proj->project_references.begin(),
-                               proj->project_references.end(), sanitized_name);
+            // Internal project - add to project_references with visibility
+            auto it = std::find_if(proj->project_references.begin(),
+                                   proj->project_references.end(),
+                                   [&](const ProjectDependency& d) {
+                                       return d.name == sanitized_name;
+                                   });
             if (it == proj->project_references.end()) {
-                proj->project_references.push_back(sanitized_name);
+                proj->project_references.push_back(ProjectDependency(sanitized_name, current_visibility));
+            } else {
+                it->visibility = current_visibility;  // Update visibility
             }
             continue;
         }
@@ -1821,8 +1847,13 @@ void CMakeParser::propagate_include_directories(Solution& solution) {
     // For each project, propagate include directories from its dependencies
     for (auto& proj : solution.projects) {
         // Now propagate from dependencies (recursively)
-        std::vector<std::string> to_process = proj.project_references;
+        std::vector<std::string> to_process;
         std::set<std::string> processed_deps; // Track which dependencies we've visited
+
+        // Initialize with direct dependency names
+        for (const auto& dep : proj.project_references) {
+            to_process.push_back(dep.name);
+        }
 
         while (!to_process.empty()) {
             std::string dep_name = to_process.back();
@@ -1868,8 +1899,8 @@ void CMakeParser::propagate_include_directories(Solution& solution) {
 
             // Add transitive dependencies (dependencies of dependencies)
             for (const auto& transitive_dep : dep_proj->project_references) {
-                if (processed_deps.count(transitive_dep) == 0) {
-                    to_process.push_back(transitive_dep);
+                if (processed_deps.count(transitive_dep.name) == 0) {
+                    to_process.push_back(transitive_dep.name);
                 }
             }
         }

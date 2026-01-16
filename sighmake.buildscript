@@ -43,34 +43,8 @@ multiprocessor = true
 exception_handling = Sync
 rtti = true
 
-# Configuration-specific compiler settings
-optimization[Debug|Win32] = Disabled
-optimization[Debug|x64] = Disabled
-optimization[Release|Win32] = MaxSpeed
-optimization[Release|x64] = MaxSpeed
-
-runtime_library[Debug|Win32] = MultiThreadedDebug
-runtime_library[Debug|x64] = MultiThreadedDebug
-runtime_library[Release|Win32] = MultiThreaded
-runtime_library[Release|x64] = MultiThreaded
-
-debug_info[Debug|Win32] = EditAndContinue
-debug_info[Debug|x64] = ProgramDatabase
-debug_info[Release|Win32] = ProgramDatabase
-debug_info[Release|x64] = ProgramDatabase
-
 # Linker settings
 subsystem = Console
-generate_debug_info[Debug|Win32] = true
-generate_debug_info[Debug|x64] = true
-generate_debug_info[Release|Win32] = true
-generate_debug_info[Release|x64] = true
-
-# Enable incremental linking for Debug builds
-link_incremental[Debug|Win32] = true
-link_incremental[Debug|x64] = true
-link_incremental[Release|Win32] = false
-link_incremental[Release|x64] = false
 
 # Precompiled header settings
 pch = Use

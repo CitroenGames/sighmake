@@ -656,6 +656,82 @@ whole_program_optimization = true  # Extra optimization for production
 - Override order: Derived config settings → Template settings → System defaults
 - Circular template references (e.g., `Test : Template:Test`) are detected and produce an error
 
+### Conditional Compilation Blocks
+
+sighmake supports conditional compilation blocks using `if(Platform)` syntax. This provides an alternative to the bracket notation for platform-specific settings.
+
+**Syntax:**
+```ini
+if(Platform)
+{
+    setting = value
+    another_setting = value
+}
+```
+
+**Supported conditions:**
+- `if(Windows)` - Settings apply to all Windows platforms (Win32, x64)
+- `if(Linux)` - Settings apply to Linux platforms
+- `if(Win32)` - Settings apply only to Win32 platform
+- `if(x64)` - Settings apply only to x64 platform
+
+**Example:**
+```ini
+[project:MyApp]
+type = exe
+sources = src/**/*.cpp
+includes = include
+std = 20
+
+# Common settings
+subsystem = Console
+
+# Windows-specific settings
+if(Windows)
+{
+    subsystem = Windows
+    defines = WIN32_LEAN_AND_MEAN
+    libs = user32.lib, gdi32.lib
+}
+
+# Linux-specific settings
+if(Linux)
+{
+    defines = __LINUX__
+    libs = pthread, dl
+}
+```
+
+**Comparison with bracket notation:**
+
+These two styles are equivalent:
+
+**Conditional blocks:**
+```ini
+if(Windows)
+{
+    defines = PLATFORM_WINDOWS
+    libs = user32.lib
+}
+```
+
+**Bracket notation:**
+```ini
+defines[Win32] = PLATFORM_WINDOWS
+defines[x64] = PLATFORM_WINDOWS
+libs[Win32] = user32.lib
+libs[x64] = user32.lib
+```
+
+**When to use conditional blocks:**
+- Use conditional blocks when you have multiple settings that apply to the same platform
+- Use bracket notation for single settings or when you need fine-grained control per configuration
+
+**Important Notes:**
+- Conditional blocks can be nested
+- Settings inside blocks override settings defined outside
+- Cannot use configuration names in conditions (use `setting[Configuration]` syntax instead)
+
 ---
 
 ## 5. Per-File Settings
@@ -1001,6 +1077,36 @@ libs = math.lib
 libdirs = ../MathLib/lib/Release
 ```
 
+### Library Public Interface
+
+Libraries can expose their include directories and library files to dependent projects using `public_includes` and `public_libs`.
+
+**Syntax:**
+```ini
+[project:LibraryProject]
+type = lib
+public_includes = include, external/include
+public_libs = lib/x64/prebuilt.lib
+```
+
+**Settings:**
+
+| Setting | Description | Example |
+|---------|-------------|---------|
+| `public_includes` | Include directories exposed to dependent projects | `public_includes = include` |
+| `public_libs` | Pre-built library files to link | `public_libs = lib/x64/SDL3.lib` |
+
+**Example with pre-built library:**
+```ini
+[project:SDL3]
+type = lib
+headers = include/**/*.h
+public_includes = include
+public_libs = lib/x64/SDL3.lib
+```
+
+This is useful for wrapping third-party libraries that provide pre-built binaries. Projects that depend on SDL3 will automatically get the include directories and libraries.
+
 ### Dynamic Library (dll)
 
 Produces a dynamic library (.dll on Windows, .so on Linux) that is loaded at runtime.
@@ -1307,6 +1413,327 @@ outdir = bin/Release   # Same directory as MyDLL.dll
 3. **Specify `libdirs` carefully**: Point to where .lib files are located
 4. **Use relative paths**: Makes projects portable
 5. **Configuration-specific paths**: Use different paths for Debug/Release
+
+### Alternative Syntax: target_link_libraries()
+
+You can use the `target_link_libraries()` function syntax as an alternative to the `depends` setting.
+
+**Syntax:**
+```ini
+target_link_libraries(ProjectName)
+```
+
+**Example:**
+```ini
+[solution]
+name = MyApplication
+
+[project:CoreLib]
+type = lib
+sources = core/*.cpp
+headers = core/*.h
+public_includes = core
+
+[project:MyApp]
+type = exe
+sources = app/*.cpp
+target_link_libraries(CoreLib)
+```
+
+**What `target_link_libraries()` does:**
+- Automatically adds the project to `depends` (sets build order)
+- Links the library's output (.lib file)
+- Adds the library's `public_includes` to the include path
+- Adds the library's `public_libs` to the linker
+
+This is particularly useful when working with third-party libraries that define `public_includes` and `public_libs`, as it automatically handles all the dependency setup.
+
+**Example with third-party library:**
+```ini
+[project:SDL3]
+type = lib
+headers = include/**/*.h
+public_includes = include
+public_libs = lib/x64/SDL3.lib
+
+[project:MyGame]
+type = exe
+sources = src/**/*.cpp
+target_link_libraries(SDL3)
+# Automatically gets:
+# - include paths from SDL3's public_includes
+# - library files from SDL3's public_libs
+```
+
+### Dependency Visibility (CMake-style)
+
+Control how dependencies propagate using visibility modifiers. This allows fine-grained control over transitive dependency propagation, similar to modern CMake.
+
+**Visibility Modifiers:**
+
+- **PUBLIC**: Dependency affects both the target and all its dependents (default)
+  - Use for dependencies that are part of your public API
+  - Propagates transitively to all consumers
+
+- **PRIVATE**: Dependency affects only the target, not its dependents
+  - Use for internal implementation details
+  - Does not propagate to consumers
+
+- **INTERFACE**: Dependency affects only dependents, not the target itself
+  - Use for header-only libraries
+  - Propagates to consumers but target doesn't link against it
+
+**Syntax:**
+```ini
+# Multi-line syntax (CMake-style, whitespace-separated)
+target_link_libraries(ProjectName
+    PUBLIC dep1 dep2
+    PRIVATE dep3
+    INTERFACE dep4
+)
+
+# Or single-line (comma-separated or whitespace-separated)
+target_link_libraries(ProjectName, PUBLIC dep1, dep2, PRIVATE dep3, INTERFACE dep4)
+```
+
+**Real-World Example (from SnakeGame project):**
+```ini
+# SDL3 - Header-only wrapper that provides SDL headers and .lib
+[project:SDL3]
+type = lib
+headers = include/**/*.h
+public_includes = include
+public_libs = lib/x64/SDL3.lib
+
+# entt - Header-only ECS library
+[project:entt]
+type = lib
+headers = entt.hpp
+public_includes = src
+
+# Engine - Game engine library
+[project:Engine]
+type = lib
+sources = src/**/*.cpp
+headers = src/**/*.h
+public_includes = src
+target_link_libraries(
+    INTERFACE SDL3  # SDL3 headers exposed to Engine users, but Engine doesn't link it
+    PUBLIC entt     # entt headers/functionality exposed to Engine users
+)
+std = 20
+
+# SnakeGame - Actual game executable
+[project:SnakeGame]
+type = exe
+sources = src/**/*.cpp
+headers = src/**/*.h
+target_link_libraries(Engine)
+std = 20
+
+# SnakeGame automatically gets:
+# - Engine.lib (links directly)
+# - entt headers (PUBLIC through Engine)
+# - SDL3 headers (INTERFACE through Engine)
+# - SDL3.lib (via SDL3's public_libs through INTERFACE propagation)
+```
+
+**Why this works:**
+- Engine uses SDL3 headers but doesn't need to link SDL3.lib directly (INTERFACE)
+- Engine uses entt headers in its public API, so users need it too (PUBLIC)
+- SnakeGame gets everything it needs without explicitly declaring SDL3 or entt
+
+**How Transitive Propagation Works:**
+
+1. **PUBLIC chain**: `SnakeGame → Engine → (PUBLIC) → entt`
+   - Result: SnakeGame gets entt headers and can use ECS components
+   - Use case: entt is part of Engine's public API (components/systems visible to game)
+
+2. **INTERFACE propagation**: `SnakeGame → Engine → (INTERFACE) → SDL3`
+   - Result: SnakeGame gets SDL3 headers and SDL3.lib (via public_libs)
+   - Use case: SDL3 types appear in Engine's API, but Engine doesn't link SDL3 itself
+   - **Key insight**: INTERFACE means "my users need this, but I don't link it"
+
+3. **PRIVATE boundary** (hypothetical): `SnakeGame → Engine → (PRIVATE) → InternalProfiler`
+   - Result: SnakeGame does NOT get InternalProfiler
+   - Use case: Profiler is Engine's internal implementation detail
+
+**Multi-Project Directory Structure Example:**
+
+Project structure:
+```
+myproject/
+├── game/
+│   ├── game.buildscript
+│   └── src/
+├── engine/
+│   ├── engine.buildscript
+│   ├── src/
+│   └── 3rdparty/
+│       ├── 3rdparty.buildscript  # Aggregates all 3rd party libs
+│       ├── entt/
+│       │   └── entt.buildscript
+│       └── SDL3/
+│           └── sdl3.buildscript
+```
+
+**3rdparty/3rdparty.buildscript** (aggregator):
+```ini
+include = entt/entt.buildscript
+include = SDL3/sdl3.buildscript
+```
+
+**3rdparty/SDL3/sdl3.buildscript**:
+```ini
+[project:SDL3]
+type = lib
+headers = include/**/*.h
+public_includes = include
+public_libs = lib/x64/SDL3.lib
+```
+
+**3rdparty/entt/entt.buildscript**:
+```ini
+[project:entt]
+type = lib
+headers = entt.hpp
+public_includes = src
+```
+
+**engine/engine.buildscript**:
+```ini
+include = 3rdparty/3rdparty.buildscript
+
+[project:Engine]
+type = lib
+sources = src/**/*.cpp
+headers = src/**/*.h
+public_includes = src
+target_link_libraries(
+    INTERFACE SDL3  # SDL types in Engine's public API
+    PUBLIC entt     # ECS components/systems exposed to users
+)
+std = 20
+```
+
+**game/game.buildscript**:
+```ini
+[project:Game]
+type = exe
+sources = src/**/*.cpp
+target_link_libraries(Engine)
+std = 20
+```
+
+**Result:**
+- Game links: Engine.lib
+- Game gets includes: engine/src, 3rdparty/entt/src, 3rdparty/SDL3/include
+- Game gets libs: SDL3.lib (via SDL3's public_libs)
+- All transitive dependencies resolved automatically!
+
+**Common Patterns:**
+
+1. **SDL/Graphics Library Pattern** (INTERFACE):
+```ini
+[project:SDL3]
+type = lib
+headers = include/**/*.h
+public_includes = include
+public_libs = lib/x64/SDL3.lib  # External .lib provided
+
+[project:Engine]
+target_link_libraries(INTERFACE SDL3)  # Headers propagate, .lib propagates, but Engine doesn't link
+```
+
+2. **Header-Only ECS/Math Libraries** (PUBLIC):
+```ini
+[project:entt]
+type = lib
+headers = entt.hpp
+public_includes = src
+
+[project:Engine]
+target_link_libraries(PUBLIC entt)  # Headers + functionality propagate to Engine users
+```
+
+3. **Internal Utilities** (PRIVATE):
+```ini
+[project:StringUtils]
+type = lib
+sources = src/*.cpp
+public_includes = include
+
+[project:Engine]
+target_link_libraries(PRIVATE StringUtils)  # Used internally, not exposed
+```
+
+**Troubleshooting:**
+
+| Problem | Likely Cause | Solution |
+|---------|--------------|----------|
+| "Unresolved external symbol" in game that uses Engine | Engine's dependency is PRIVATE but should be PUBLIC | Change to PUBLIC or INTERFACE |
+| Game compiles but "cannot find SDL.h" | SDL3 not propagating headers | Change Engine→SDL3 from PRIVATE to INTERFACE or PUBLIC |
+| Game links SDL twice (duplicate symbols) | Both Engine and Game link SDL as PUBLIC | Use INTERFACE on Engine's SDL dependency |
+| Build warnings about missing .vcxproj files | Path generation bug (fixed in latest version) | Regenerate projects with updated sighmake |
+
+**Backward Compatibility:**
+
+All dependencies without explicit visibility default to PUBLIC, maintaining existing behavior:
+
+```ini
+# Old syntax - still works (all dependencies are PUBLIC)
+target_link_libraries(Engine, SDL, Utils)
+
+# Equivalent to:
+target_link_libraries(Engine PUBLIC SDL, Utils)
+```
+
+**When to Use Each Visibility:**
+
+| Visibility | Use When | Example |
+|------------|----------|---------|
+| **PRIVATE** | Dependency used only in .cpp files (implementation) | Logger, profiler, internal utilities |
+| **PUBLIC** | Dependency types appear in your public headers AND you link it | ECS library (entt), math library with .cpp files |
+| **INTERFACE** | Dependency types appear in your public headers BUT you don't link it | Header-only libs, SDL wrapper that provides .lib separately |
+
+**Decision Tree:**
+
+1. **Does the dependency appear in your public headers?**
+   - NO → Use **PRIVATE**
+   - YES → Go to step 2
+
+2. **Does your library need to link against it?**
+   - YES → Use **PUBLIC**
+   - NO → Use **INTERFACE** (header-only or externally linked)
+
+**Real-World Examples:**
+
+```ini
+# Engine library with mixed dependencies
+[project:Engine]
+type = lib
+target_link_libraries(
+    # Header-only ECS - appears in Engine.h, but no .lib to link
+    PUBLIC entt
+
+    # SDL3 wrapper - SDL_Renderer* in Engine.h, but .lib linked separately
+    INTERFACE SDL3
+
+    # Logger - only used in Engine.cpp, not exposed
+    PRIVATE spdlog
+
+    # Profiler - only in debug builds, internal use
+    PRIVATE tracy
+)
+```
+
+**Best Practices:**
+
+1. **Default to PRIVATE** - Start restrictive, expose only when needed
+2. **PUBLIC sparingly** - Creates tight coupling between your users and dependencies
+3. **INTERFACE for third-party wrappers** - Especially when you provide public_libs separately
+4. **Test your visibility** - Build a project that depends on yours; if it fails to compile/link, you may need PUBLIC
+```
 
 ---
 
@@ -2311,6 +2738,7 @@ project/
 
 ### Platform-Specific Defines
 
+**Using bracket notation:**
 ```ini
 [project:MyApp]
 type = exe
@@ -2322,6 +2750,22 @@ defines = MY_APP
 # Platform-specific defines
 defines[Win32] = WIN32, _WINDOWS
 defines[x64] = WIN64, _WIN64
+```
+
+**Using conditional blocks (alternative):**
+```ini
+[project:MyApp]
+type = exe
+sources = src/**/*.cpp
+
+# Common defines
+defines = MY_APP
+
+# Windows-specific defines
+if(Windows)
+{
+    defines = WIN32, _WINDOWS
+}
 ```
 
 **In code:**
@@ -4335,6 +4779,78 @@ For Linux, use same buildscript with makefile generator:
 ```bash
 ./sighmake crossplatform.buildscript -g makefile
 ```
+
+### Application with Third-Party Library
+
+This example demonstrates using `target_link_libraries()`, `public_includes`, `public_libs`, and conditional blocks - a modern approach to managing dependencies.
+
+**Project structure:**
+```
+MyProject/
+├── MyProject.buildscript
+├── src/
+│   └── main.cpp
+└── 3rdparty/
+    ├── 3rdparty.buildscript
+    └── SDL3-3.4.0/
+        ├── sdl3.buildscript
+        ├── include/
+        │   └── SDL3/
+        └── lib/x64/
+            └── SDL3.lib
+```
+
+**MyProject.buildscript:**
+```ini
+[solution]
+name = MyProject
+
+# Include third-party dependencies
+include = 3rdparty/3rdparty.buildscript
+
+[project:MyApp]
+type = exe
+sources = src/**/*.cpp
+headers = src/**/*.h
+includes = src
+std = 20
+
+# Use conditional block for platform-specific settings
+if(Windows)
+{
+    subsystem = Windows
+}
+
+# Link to SDL3 - automatically gets includes and libs
+target_link_libraries(SDL3)
+```
+
+**3rdparty/3rdparty.buildscript:**
+```ini
+# Include all third-party libraries
+include = SDL3-3.4.0/sdl3.buildscript
+```
+
+**3rdparty/SDL3-3.4.0/sdl3.buildscript:**
+```ini
+[project:SDL3]
+type = lib
+headers = include/**/*.h
+
+# Expose include directory to dependent projects
+public_includes = include
+
+# Expose pre-built library to dependent projects
+public_libs = lib/x64/SDL3.lib
+```
+
+**Benefits of this approach:**
+- **Simple dependency management**: Just use `target_link_libraries(SDL3)` instead of manually specifying includes and libs
+- **Automatic include paths**: SDL3's `public_includes` are automatically added
+- **Automatic library linking**: SDL3's `public_libs` are automatically linked
+- **Clean separation**: Third-party libraries are isolated in their own buildscripts
+- **Easy to add more libraries**: Just create a new buildscript and include it
+- **Conditional compilation**: Use `if(Windows)` blocks for platform-specific settings
 
 ---
 

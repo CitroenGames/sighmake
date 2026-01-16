@@ -197,6 +197,41 @@ struct Configuration {
     bool is_template = false;   // Whether this is used as a template by other configs
 };
 
+// Dependency visibility for transitive propagation (CMake-style)
+enum class DependencyVisibility {
+    PUBLIC,      // Affects target and all dependents (transitive)
+    PRIVATE,     // Affects only the target (non-transitive)
+    INTERFACE    // Affects dependents only, not the target itself
+};
+
+// Represents a dependency on another project with visibility information
+struct ProjectDependency {
+    std::string name;                          // Name of the dependent project
+    DependencyVisibility visibility = DependencyVisibility::PUBLIC;  // Default for backward compat
+
+    // Constructors for convenience
+    ProjectDependency() = default;
+    ProjectDependency(const std::string& n, DependencyVisibility v = DependencyVisibility::PUBLIC)
+        : name(n), visibility(v) {}
+};
+
+// Helper to parse visibility keyword to enum
+inline DependencyVisibility parse_visibility(const std::string& keyword) {
+    if (keyword == "PRIVATE") return DependencyVisibility::PRIVATE;
+    if (keyword == "INTERFACE") return DependencyVisibility::INTERFACE;
+    return DependencyVisibility::PUBLIC;  // Default: PUBLIC
+}
+
+// Helper to convert visibility enum to string (for debugging/output)
+inline std::string visibility_to_string(DependencyVisibility vis) {
+    switch (vis) {
+        case DependencyVisibility::PRIVATE: return "PRIVATE";
+        case DependencyVisibility::INTERFACE: return "INTERFACE";
+        case DependencyVisibility::PUBLIC: return "PUBLIC";
+        default: return "PUBLIC";
+    }
+}
+
 // Project
 struct Project {
     std::string name;
@@ -209,7 +244,7 @@ struct Project {
 
     std::vector<SourceFile> sources;
     std::vector<LibraryFile> libraries;
-    std::vector<std::string> project_references;        // Names of dependent projects
+    std::vector<ProjectDependency> project_references;  // Structured dependencies with visibility
 
     std::map<std::string, Configuration> configurations; // Key is "Config|Platform"
 
