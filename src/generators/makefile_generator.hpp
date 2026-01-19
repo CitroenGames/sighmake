@@ -25,6 +25,9 @@ public:
     bool generate_makefile(const Project& project, const Solution& solution,
                           const std::string& config_key, const std::string& output_path);
 
+    // Generate master Makefile to build all projects
+    bool generate_master_makefile(const Solution& solution, const std::string& output_dir);
+
 private:
     // Helper functions for mapping settings to flags
     std::string map_optimization(const std::string& opt);
