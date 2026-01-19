@@ -30,6 +30,20 @@ static std::string normalize_path(const std::string& path) {
     }
 }
 
+// Helper function to normalize paths for comparison purposes
+// Converts to forward slashes and lowercase (on Windows) for consistent matching
+static std::string normalize_path_for_compare(const std::string& path) {
+    std::string result = path;
+    // Convert backslashes to forward slashes
+    std::replace(result.begin(), result.end(), '\\', '/');
+    // Convert to lowercase on Windows for case-insensitive comparison
+#ifdef _WIN32
+    std::transform(result.begin(), result.end(), result.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+#endif
+    return result;
+}
+
 std::string BuildscriptParser::trim(const std::string& str) {
     size_t first = str.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return "";
@@ -1326,39 +1340,126 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
     }
     // Source files
     else if (key == "sources" || key == "src" || key == "files") {
+        // Two-pass approach:
+        // Pass 1: Collect explicit entries (non-wildcard) with their conditions
+        // Pass 2: Process wildcards, skipping files that have explicit entries
+        // Pass 3: Add explicit entries where condition is met
+
+        struct ExplicitEntry {
+            std::string path;
+            bool include;  // Result of condition evaluation
+        };
+        std::map<std::string, ExplicitEntry> explicit_entries;  // normalized_path -> entry
+        std::vector<std::string> wildcard_patterns;
+
+        // Pass 1: Separate explicit entries from wildcards
         for (const auto& src : split(value, ',')) {
             auto [path, include] = parse_filename_with_condition(src);
-            if (!include) continue;
 
-            auto expanded = expand_wildcards(path, state.base_path);
-            if (expanded.empty()) {
-                // If no expansion, add as-is
-                find_or_create_source(path, state);
-            } else {
-                for (const auto& expanded_path : expanded) {
-                    find_or_create_source(expanded_path, state);
+            bool is_wildcard = (path.find('*') != std::string::npos);
+
+            if (is_wildcard) {
+                // Only store wildcard if condition is met
+                if (include) {
+                    wildcard_patterns.push_back(path);
                 }
+            } else {
+                // Store explicit entry with its condition result
+                std::string norm = normalize_path_for_compare(path);
+                explicit_entries[norm] = {path, include};
+            }
+        }
+
+        // Pass 2: Expand wildcards, but skip files that have explicit entries
+        for (const auto& pattern : wildcard_patterns) {
+            auto expanded = expand_wildcards(pattern, state.base_path);
+            for (const auto& expanded_path : expanded) {
+                std::string norm = normalize_path_for_compare(expanded_path);
+                // Skip if this file has an explicit entry (let explicit entry handle it)
+                if (explicit_entries.find(norm) != explicit_entries.end()) {
+                    continue;
+                }
+                find_or_create_source(expanded_path, state);
+            }
+        }
+
+        // Pass 3: Add explicit entries where condition is met
+        for (const auto& [norm, entry] : explicit_entries) {
+            if (entry.include) {
+                find_or_create_source(entry.path, state);
             }
         }
     } else if (key == "headers" || key == "includes_files") {
+        // Two-pass approach for headers (same as sources)
+        struct ExplicitEntry {
+            std::string path;
+            bool include;
+        };
+        std::map<std::string, ExplicitEntry> explicit_entries;
+        std::vector<std::string> wildcard_patterns;
+
         for (const auto& src : split(value, ',')) {
             auto [path, include] = parse_filename_with_condition(src);
-            if (!include) continue;
+            bool is_wildcard = (path.find('*') != std::string::npos);
 
-            auto expanded = expand_wildcards(path, state.base_path);
+            if (is_wildcard) {
+                if (include) wildcard_patterns.push_back(path);
+            } else {
+                std::string norm = normalize_path_for_compare(path);
+                explicit_entries[norm] = {path, include};
+            }
+        }
+
+        for (const auto& pattern : wildcard_patterns) {
+            auto expanded = expand_wildcards(pattern, state.base_path);
             for (const auto& expanded_path : expanded) {
+                std::string norm = normalize_path_for_compare(expanded_path);
+                if (explicit_entries.find(norm) != explicit_entries.end()) continue;
                 auto* file = find_or_create_source(expanded_path, state);
                 if (file) file->type = FileType::ClInclude;
             }
         }
+
+        for (const auto& [norm, entry] : explicit_entries) {
+            if (entry.include) {
+                auto* file = find_or_create_source(entry.path, state);
+                if (file) file->type = FileType::ClInclude;
+            }
+        }
     } else if (key == "resources" || key == "resource_files") {
+        // Two-pass approach for resources (same as sources)
+        struct ExplicitEntry {
+            std::string path;
+            bool include;
+        };
+        std::map<std::string, ExplicitEntry> explicit_entries;
+        std::vector<std::string> wildcard_patterns;
+
         for (const auto& src : split(value, ',')) {
             auto [path, include] = parse_filename_with_condition(src);
-            if (!include) continue;
+            bool is_wildcard = (path.find('*') != std::string::npos);
 
-            auto expanded = expand_wildcards(path, state.base_path);
+            if (is_wildcard) {
+                if (include) wildcard_patterns.push_back(path);
+            } else {
+                std::string norm = normalize_path_for_compare(path);
+                explicit_entries[norm] = {path, include};
+            }
+        }
+
+        for (const auto& pattern : wildcard_patterns) {
+            auto expanded = expand_wildcards(pattern, state.base_path);
             for (const auto& expanded_path : expanded) {
+                std::string norm = normalize_path_for_compare(expanded_path);
+                if (explicit_entries.find(norm) != explicit_entries.end()) continue;
                 auto* file = find_or_create_source(expanded_path, state);
+                if (file) file->type = FileType::ResourceCompile;
+            }
+        }
+
+        for (const auto& [norm, entry] : explicit_entries) {
+            if (entry.include) {
+                auto* file = find_or_create_source(entry.path, state);
                 if (file) file->type = FileType::ResourceCompile;
             }
         }
