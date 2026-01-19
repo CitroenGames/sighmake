@@ -713,8 +713,11 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
                     } else if (trimmed_token == "INTERFACE") {
                         current_visibility = DependencyVisibility::INTERFACE;
                     } else {
+                        // Expand variables like ${Vulkan_LIBRARIES}
+                        std::string expanded = expand_variables(trimmed_token, state);
+
                         // It's a dependency name - add with current visibility
-                        ProjectDependency dep(trimmed_token, current_visibility);
+                        ProjectDependency dep(expanded, current_visibility);
 
                         // Check for duplicates (last one wins)
                         auto it = std::find_if(
@@ -928,8 +931,11 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
                     } else if (trimmed_token == "INTERFACE") {
                         current_visibility = DependencyVisibility::INTERFACE;
                     } else {
+                        // Expand variables like ${Vulkan_LIBRARIES}
+                        std::string expanded = expand_variables(trimmed_token, state);
+
                         // It's a dependency name - add with current visibility
-                        ProjectDependency dep(trimmed_token, current_visibility);
+                        ProjectDependency dep(expanded, current_visibility);
 
                         // Check for duplicates (last one wins)
                         auto it = std::find_if(
@@ -951,6 +957,12 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
             state.in_target_link_libraries = true;
             state.target_link_libraries_accumulator = trimmed;
         }
+        return;
+    }
+
+    // Check for find_package() function call
+    if (trimmed.find("find_package(") == 0) {
+        parse_find_package(trimmed, state);
         return;
     }
 
@@ -2643,6 +2655,139 @@ void BuildscriptParser::parse_uses_pch(const std::string& line, ParseState& stat
     }
 }
 
+std::string BuildscriptParser::expand_variables(const std::string& str, ParseState& state) {
+    std::string result = str;
+    size_t pos = 0;
+
+    while ((pos = result.find("${", pos)) != std::string::npos) {
+        size_t end = result.find("}", pos);
+        if (end == std::string::npos) break;
+
+        std::string var_name = result.substr(pos + 2, end - pos - 2);
+        auto it = state.variables.find(var_name);
+        if (it != state.variables.end()) {
+            result.replace(pos, end - pos + 1, it->second);
+            // Don't advance pos - the replacement might contain more variables
+        } else {
+            pos = end + 1;
+        }
+    }
+
+    return result;
+}
+
+void BuildscriptParser::parse_find_package(const std::string& line, ParseState& state) {
+    // Extract content between find_package( and )
+    size_t start_paren = line.find('(');
+    size_t end_paren = line.rfind(')');
+    if (start_paren == std::string::npos || end_paren == std::string::npos) {
+        std::cerr << "Warning: Malformed find_package() at line " << state.line_number << "\n";
+        return;
+    }
+
+    std::string content = line.substr(start_paren + 1, end_paren - start_paren - 1);
+
+    // Parse package name and options
+    std::vector<std::string> tokens;
+    std::istringstream iss(content);
+    std::string token;
+    while (iss >> token) {
+        tokens.push_back(token);
+    }
+
+    if (tokens.empty()) {
+        std::cerr << "Warning: find_package() requires package name at line " << state.line_number << "\n";
+        return;
+    }
+
+    std::string package_name = tokens[0];
+    bool required = false;
+
+    for (size_t i = 1; i < tokens.size(); ++i) {
+        if (tokens[i] == "REQUIRED") {
+            required = true;
+        }
+    }
+
+    bool found = false;
+
+    if (package_name == "Vulkan") {
+        // Check VULKAN_SDK environment variable first
+        const char* vulkan_sdk = std::getenv("VULKAN_SDK");
+
+#ifdef _WIN32
+        if (vulkan_sdk) {
+            state.variables["Vulkan_INCLUDE_DIRS"] = std::string(vulkan_sdk) + "/Include";
+            state.variables["Vulkan_LIBRARY_DIRS"] = std::string(vulkan_sdk) + "/Lib";
+            state.variables["Vulkan_LIBRARIES"] = "vulkan-1";
+            found = true;
+        } else {
+            // Try VK_SDK_PATH as fallback
+            const char* vk_sdk = std::getenv("VK_SDK_PATH");
+            if (vk_sdk) {
+                state.variables["Vulkan_INCLUDE_DIRS"] = std::string(vk_sdk) + "/Include";
+                state.variables["Vulkan_LIBRARY_DIRS"] = std::string(vk_sdk) + "/Lib";
+                state.variables["Vulkan_LIBRARIES"] = "vulkan-1";
+                found = true;
+            }
+        }
+#else
+        // Linux/macOS
+        if (vulkan_sdk) {
+            state.variables["Vulkan_INCLUDE_DIRS"] = std::string(vulkan_sdk) + "/include";
+            state.variables["Vulkan_LIBRARY_DIRS"] = std::string(vulkan_sdk) + "/lib";
+            state.variables["Vulkan_LIBRARIES"] = "vulkan";
+            found = true;
+        } else {
+            // Check system paths - Vulkan headers are typically in /usr/include/vulkan
+            // The library is typically just 'vulkan' (links to libvulkan.so)
+            state.variables["Vulkan_INCLUDE_DIRS"] = "/usr/include";
+            state.variables["Vulkan_LIBRARY_DIRS"] = "/usr/lib";
+            state.variables["Vulkan_LIBRARIES"] = "vulkan";
+            found = true;
+        }
+#endif
+
+        if (found) {
+            state.variables["Vulkan_FOUND"] = "TRUE";
+            std::cout << "[find_package] Found Vulkan\n";
+        }
+    } else if (package_name == "OpenGL") {
+#ifdef _WIN32
+        state.variables["OpenGL_INCLUDE_DIRS"] = "";
+        state.variables["OpenGL_LIBRARIES"] = "opengl32";
+        found = true;
+#else
+        state.variables["OpenGL_INCLUDE_DIRS"] = "/usr/include";
+        state.variables["OpenGL_LIBRARIES"] = "GL";
+        found = true;
+#endif
+        if (found) {
+            state.variables["OpenGL_FOUND"] = "TRUE";
+            std::cout << "[find_package] Found OpenGL\n";
+        }
+    } else {
+        // Generic handling - try environment variable {Package}_DIR
+        std::string env_var = package_name + "_DIR";
+        const char* env_path = std::getenv(env_var.c_str());
+
+        if (env_path) {
+            state.variables[package_name + "_INCLUDE_DIRS"] = std::string(env_path) + "/include";
+            state.variables[package_name + "_LIBRARY_DIRS"] = std::string(env_path) + "/lib";
+            state.variables[package_name + "_LIBRARIES"] = package_name;
+            state.variables[package_name + "_FOUND"] = "TRUE";
+            found = true;
+            std::cout << "[find_package] Found " << package_name << " at " << env_path << "\n";
+        } else {
+            std::cout << "[find_package] Package " << package_name << " not found (set " << env_var << " environment variable)\n";
+        }
+    }
+
+    if (!found && required) {
+        std::cerr << "Error: Required package " << package_name << " not found\n";
+    }
+}
+
 bool BuildscriptParser::evaluate_condition(const std::string& condition) {
     std::string cond = trim(condition);
 
@@ -2665,7 +2810,7 @@ bool BuildscriptParser::evaluate_condition(const std::string& condition) {
     if (cond == "windows" || cond == "win32") return is_windows;
     if (cond == "linux") return is_linux;
     if (cond == "osx" || cond == "macos" || cond == "darwin") return is_osx;
-    
+
     // Check for negation
     if (cond.size() > 1 && cond[0] == '!') {
          std::string sub = cond.substr(1);

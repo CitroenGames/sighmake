@@ -43,6 +43,9 @@ private:
         // Auto-population tracking
         bool user_defined_config_sections = false;  // Track if user defined any [config:...] sections
 
+        // Variables from find_package() - stores package variables like Vulkan_LIBRARIES
+        std::map<std::string, std::string> variables;
+
         // Pending if condition (when { is on next line)
         bool pending_if_condition = false;  // True if we saw if() without { on same line
         bool pending_if_result = false;     // Result of evaluate_condition() for pending if
@@ -98,6 +101,12 @@ private:
 
     // Parse uses_pch() function call
     void parse_uses_pch(const std::string& line, ParseState& state);
+
+    // Parse find_package() function call
+    void parse_find_package(const std::string& line, ParseState& state);
+
+    // Expand variables like ${Vulkan_LIBRARIES} in a string
+    std::string expand_variables(const std::string& str, ParseState& state);
 
     // Helper to split string by delimiter
     static std::vector<std::string> split(const std::string& str, char delim);
