@@ -2766,6 +2766,36 @@ void BuildscriptParser::parse_find_package(const std::string& line, ParseState& 
             state.variables["OpenGL_FOUND"] = "TRUE";
             std::cout << "[find_package] Found OpenGL\n";
         }
+    } else if (package_name == "SDL2") {
+        // Check SDL2_DIR environment variable first
+        const char* sdl2_dir = std::getenv("SDL2_DIR");
+
+#ifdef _WIN32
+        if (sdl2_dir) {
+            state.variables["SDL2_INCLUDE_DIRS"] = std::string(sdl2_dir) + "/include";
+            state.variables["SDL2_LIBRARY_DIRS"] = std::string(sdl2_dir) + "/lib/x64";
+            state.variables["SDL2_LIBRARIES"] = "SDL2;SDL2main";
+            found = true;
+        }
+#else
+        // Linux - use pkg-config style paths or system paths
+        if (sdl2_dir) {
+            state.variables["SDL2_INCLUDE_DIRS"] = std::string(sdl2_dir) + "/include/SDL2";
+            state.variables["SDL2_LIBRARY_DIRS"] = std::string(sdl2_dir) + "/lib";
+            state.variables["SDL2_LIBRARIES"] = "SDL2";
+            found = true;
+        } else {
+            // System paths - SDL2 headers are typically in /usr/include/SDL2
+            state.variables["SDL2_INCLUDE_DIRS"] = "/usr/include/SDL2";
+            state.variables["SDL2_LIBRARY_DIRS"] = "/usr/lib";
+            state.variables["SDL2_LIBRARIES"] = "SDL2";
+            found = true;
+        }
+#endif
+        if (found) {
+            state.variables["SDL2_FOUND"] = "TRUE";
+            std::cout << "[find_package] Found SDL2\n";
+        }
     } else {
         // Generic handling - try environment variable {Package}_DIR
         std::string env_var = package_name + "_DIR";
