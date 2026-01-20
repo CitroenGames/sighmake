@@ -236,6 +236,39 @@ std::pair<std::string, bool> BuildscriptParser::parse_filename_with_condition(co
     return {path, include};
 }
 
+// Extended version that also returns the condition string (for override tracking)
+std::tuple<std::string, std::string, bool>
+BuildscriptParser::parse_filename_with_condition_extended(const std::string& entry) {
+    std::string trimmed = trim(entry);
+    if (trimmed.empty()) return {"", "", false};
+
+    bool include = true;
+    std::string path = trimmed;
+    std::string condition;
+
+    // Check for condition [condition] at the end
+    if (trimmed.back() == ']') {
+        size_t open_bracket = trimmed.find_last_of('[');
+        if (open_bracket != std::string::npos) {
+            condition = trimmed.substr(open_bracket + 1, trimmed.size() - open_bracket - 2);
+            path = trim(trimmed.substr(0, open_bracket));
+            include = evaluate_condition(condition);
+        }
+    }
+
+    // Remove quotes if present
+    if (path.size() >= 2 && path.front() == '"' && path.back() == '"') {
+        path = path.substr(1, path.size() - 2);
+    }
+
+    return {path, condition, include};
+}
+
+// Helper to check if a path contains wildcard characters
+static bool is_wildcard_path(const std::string& path) {
+    return path.find('*') != std::string::npos;
+}
+
 std::vector<std::string> BuildscriptParser::expand_wildcards(const std::string& pattern,
                                                               const std::string& base_path) {
     std::vector<std::string> result;
@@ -1333,40 +1366,155 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             proj.configurations[config_key].int_dir = resolved_dir;
         }
     }
-    // Source files
+    // Source files - with platform-conditional override support
     else if (key == "sources" || key == "src" || key == "files") {
-        for (const auto& src : split(value, ',')) {
-            auto [path, include] = parse_filename_with_condition(src);
-            if (!include) continue;
+        auto entries = split(value, ',');
 
-            auto expanded = expand_wildcards(path, state.base_path);
-            if (expanded.empty()) {
-                // If no expansion, add as-is
-                find_or_create_source(path, state);
-            } else {
-                for (const auto& expanded_path : expanded) {
-                    find_or_create_source(expanded_path, state);
+        // Pass 1: Collect explicit files with conditions (non-wildcards with conditions)
+        // Map: absolute_path -> condition_matched (true if should include)
+        std::map<std::string, bool> explicit_overrides;
+
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+
+            // Only track non-wildcard entries that have a condition
+            if (!is_wildcard_path(path) && !condition.empty()) {
+                std::string abs_path = resolve_path(path, state.base_path);
+                explicit_overrides[abs_path] = include;
+
+                // If condition matches, add the file now
+                if (include) {
+                    find_or_create_source(path, state);
                 }
             }
         }
+
+        // Pass 2: Process all entries, respecting overrides
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+
+            // Non-wildcard with condition was already handled in pass 1
+            if (!is_wildcard_path(path) && !condition.empty()) {
+                continue;
+            }
+
+            // Non-wildcard without condition: add unconditionally
+            if (!is_wildcard_path(path)) {
+                find_or_create_source(path, state);
+                continue;
+            }
+
+            // Wildcard entry: expand and filter
+            if (!include) continue;  // Wildcard with condition that doesn't match
+
+            auto expanded = expand_wildcards(path, state.base_path);
+            for (const auto& expanded_path : expanded) {
+                std::string abs_path = resolve_path(expanded_path, state.base_path);
+
+                // Check if this file has an explicit override
+                auto it = explicit_overrides.find(abs_path);
+                if (it != explicit_overrides.end()) {
+                    // File has explicit condition - skip from wildcard
+                    // (it was either added in pass 1 if matched, or excluded if not)
+                    continue;
+                }
+
+                // No override, add from wildcard
+                find_or_create_source(expanded_path, state);
+            }
+        }
     } else if (key == "headers" || key == "includes_files") {
-        for (const auto& src : split(value, ',')) {
-            auto [path, include] = parse_filename_with_condition(src);
+        auto entries = split(value, ',');
+
+        // Pass 1: Collect explicit files with conditions
+        std::map<std::string, bool> explicit_overrides;
+
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+
+            if (!is_wildcard_path(path) && !condition.empty()) {
+                std::string abs_path = resolve_path(path, state.base_path);
+                explicit_overrides[abs_path] = include;
+
+                if (include) {
+                    auto* file = find_or_create_source(path, state);
+                    if (file) file->type = FileType::ClInclude;
+                }
+            }
+        }
+
+        // Pass 2: Process all entries
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+
+            if (!is_wildcard_path(path) && !condition.empty()) continue;
+
+            if (!is_wildcard_path(path)) {
+                auto* file = find_or_create_source(path, state);
+                if (file) file->type = FileType::ClInclude;
+                continue;
+            }
+
             if (!include) continue;
 
             auto expanded = expand_wildcards(path, state.base_path);
             for (const auto& expanded_path : expanded) {
+                std::string abs_path = resolve_path(expanded_path, state.base_path);
+
+                auto it = explicit_overrides.find(abs_path);
+                if (it != explicit_overrides.end()) continue;
+
                 auto* file = find_or_create_source(expanded_path, state);
                 if (file) file->type = FileType::ClInclude;
             }
         }
     } else if (key == "resources" || key == "resource_files") {
-        for (const auto& src : split(value, ',')) {
-            auto [path, include] = parse_filename_with_condition(src);
+        auto entries = split(value, ',');
+
+        // Pass 1: Collect explicit files with conditions
+        std::map<std::string, bool> explicit_overrides;
+
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+
+            if (!is_wildcard_path(path) && !condition.empty()) {
+                std::string abs_path = resolve_path(path, state.base_path);
+                explicit_overrides[abs_path] = include;
+
+                if (include) {
+                    auto* file = find_or_create_source(path, state);
+                    if (file) file->type = FileType::ResourceCompile;
+                }
+            }
+        }
+
+        // Pass 2: Process all entries
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+
+            if (!is_wildcard_path(path) && !condition.empty()) continue;
+
+            if (!is_wildcard_path(path)) {
+                auto* file = find_or_create_source(path, state);
+                if (file) file->type = FileType::ResourceCompile;
+                continue;
+            }
+
             if (!include) continue;
 
             auto expanded = expand_wildcards(path, state.base_path);
             for (const auto& expanded_path : expanded) {
+                std::string abs_path = resolve_path(expanded_path, state.base_path);
+
+                auto it = explicit_overrides.find(abs_path);
+                if (it != explicit_overrides.end()) continue;
+
                 auto* file = find_or_create_source(expanded_path, state);
                 if (file) file->type = FileType::ResourceCompile;
             }
@@ -2937,6 +3085,14 @@ PackageFindResult BuildscriptParser::find_vulkan() {
 #elif defined(__linux__)
     // Linux: Try pkg-config first, then fallback to standard paths
     result = try_pkg_config("vulkan");
+
+    if (result.found && result.include_dirs.empty()) {
+        // pkg-config found Vulkan but no -I flags (system include path)
+        // Set default include path for vulkan/vulkan.h
+        if (fs::exists("/usr/include/vulkan/vulkan.h")) {
+            result.include_dirs = "/usr/include";
+        }
+    }
 
     if (!result.found) {
         // Fallback: Check standard paths

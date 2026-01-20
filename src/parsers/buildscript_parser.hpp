@@ -151,6 +151,10 @@ private:
     // Returns pair of {clean_path, should_include}
     std::pair<std::string, bool> parse_filename_with_condition(const std::string& entry);
 
+    // Extended helper that also returns the condition string (for override tracking)
+    // Returns tuple of {clean_path, condition_string, should_include}
+    std::tuple<std::string, std::string, bool> parse_filename_with_condition_extended(const std::string& entry);
+
     // Helper to resolve a path relative to base_path and return absolute path
     static std::string resolve_path(const std::string& path, const std::string& base_path);
 };

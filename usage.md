@@ -3209,6 +3209,100 @@ project/
 └── project.buildscript
 ```
 
+### Platform-Specific Source Files (Inline Conditions)
+
+You can conditionally include or exclude source files based on the target platform using inline conditions.
+
+**Syntax:**
+```ini
+sources = {
+    src/**/*.cpp
+    src/platform/win_impl.cpp [windows]
+    src/platform/linux_impl.cpp [linux]
+}
+```
+
+**Supported conditions:**
+- `[windows]` or `[win32]` - Include only on Windows
+- `[linux]` - Include only on Linux
+- `[osx]`, `[macos]`, or `[darwin]` - Include only on macOS
+- `[!windows]` - Include on everything except Windows
+- `[!linux]` - Include on everything except Linux
+- `[!osx]` - Include on everything except macOS
+
+**Override behavior:**
+When a file matches both a wildcard pattern AND has an explicit entry with a condition, the explicit condition takes precedence. This allows you to:
+
+1. Include most files via wildcard
+2. Restrict specific files to certain platforms
+
+**Example - Windows-only D3D11 files:**
+```ini
+[project:Renderer]
+sources = {
+    src/**/*.cpp
+    src/Graphics/D3D11RenderAPI.cpp [windows]
+    src/Graphics/D3D11Mesh.cpp [windows]
+}
+```
+
+In this example:
+- `src/**/*.cpp` matches all .cpp files including the D3D11 files
+- BUT `D3D11RenderAPI.cpp` and `D3D11Mesh.cpp` have explicit `[windows]` conditions
+- On Windows: All files are included (D3D11 files match the condition)
+- On Linux: D3D11 files are excluded (condition not met), other files are included
+
+**Example - Cross-platform with platform-specific implementations:**
+```ini
+[project:AudioSystem]
+sources = {
+    src/**/*.cpp
+    src/audio/wasapi_audio.cpp [windows]
+    src/audio/alsa_audio.cpp [linux]
+    src/audio/coreaudio_audio.cpp [osx]
+}
+```
+
+**Multi-line brace syntax:**
+For better readability, use the brace block syntax to list sources across multiple lines:
+```ini
+sources = {
+    src/core/*.cpp
+    src/utils/*.cpp
+    src/platform/common.cpp
+    src/platform/win32_impl.cpp [windows]
+    src/platform/posix_impl.cpp [!windows]
+}
+```
+
+This is equivalent to the comma-separated single-line format:
+```ini
+sources = src/core/*.cpp, src/utils/*.cpp, src/platform/common.cpp, src/platform/win32_impl.cpp [windows], src/platform/posix_impl.cpp [!windows]
+```
+
+**Behavior per platform:**
+
+| File | Condition | Windows | Linux | macOS |
+|------|-----------|---------|-------|-------|
+| `common.cpp` | (none) | Included | Included | Included |
+| `win32_impl.cpp` | `[windows]` | Included | Excluded | Excluded |
+| `posix_impl.cpp` | `[!windows]` | Excluded | Included | Included |
+| `linux_only.cpp` | `[linux]` | Excluded | Included | Excluded |
+| `mac_only.cpp` | `[osx]` | Excluded | Excluded | Included |
+
+**Note:** Inline conditions also work with `headers` and `resources`:
+```ini
+headers = {
+    include/**/*.h
+    include/win32_api.h [windows]
+}
+
+resources = {
+    res/*.rc
+    res/windows_app.rc [windows]
+}
+```
+
 ### Platform-Specific Defines
 
 **Using bracket notation:**

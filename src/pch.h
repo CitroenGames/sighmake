@@ -21,6 +21,7 @@
 // Additional commonly used headers
 #include <memory>
 #include <optional>
+#include <tuple>
 #include <functional>
 #include <array>
 #include <random>
