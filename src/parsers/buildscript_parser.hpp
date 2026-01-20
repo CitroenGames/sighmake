@@ -4,6 +4,16 @@
 
 namespace vcxproj {
 
+// Result from package finding operations
+struct PackageFindResult {
+    bool found = false;
+    std::string include_dirs;   // Semicolon-separated list
+    std::string libraries;      // Semicolon-separated list
+    std::string library_dirs;   // Semicolon-separated list
+    std::string version;        // Package version if detectable
+    std::string error_message;  // Error message if not found
+};
+
 // Parser for buildscript files
 class BuildscriptParser {
 public:
@@ -43,8 +53,9 @@ private:
         // Auto-population tracking
         bool user_defined_config_sections = false;  // Track if user defined any [config:...] sections
 
-        // Variables from find_package() - stores package variables like Vulkan_LIBRARIES
+        // Variables storage for find_package() results
         std::map<std::string, std::string> variables;
+        std::set<std::string> found_packages;
 
         // Pending if condition (when { is on next line)
         bool pending_if_condition = false;  // True if we saw if() without { on same line
@@ -105,8 +116,21 @@ private:
     // Parse find_package() function call
     void parse_find_package(const std::string& line, ParseState& state);
 
-    // Expand variables like ${Vulkan_LIBRARIES} in a string
-    std::string expand_variables(const std::string& str, ParseState& state);
+    // Resolve ${VARIABLE} references in a string
+    std::string resolve_variables(const std::string& str, const ParseState& state);
+
+    // Package finders
+    PackageFindResult find_vulkan();
+    PackageFindResult find_opengl();
+    PackageFindResult find_sdl2();
+    PackageFindResult find_sdl3();
+    PackageFindResult find_directx11();
+    PackageFindResult find_directx12();
+
+#ifdef __linux__
+    // Linux-specific pkg-config helper
+    PackageFindResult try_pkg_config(const std::string& package_name);
+#endif
 
     // Helper to split string by delimiter
     static std::vector<std::string> split(const std::string& str, char delim);

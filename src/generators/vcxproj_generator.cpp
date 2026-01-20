@@ -66,6 +66,18 @@ static std::string make_relative_path(const std::string& file_path, const std::s
         // Get the directory containing the base file
         base = base.parent_path();
 
+        // Check for different drives (Windows-specific)
+        // If paths are on different drives, we cannot create a relative path
+        // Return the absolute path instead
+        if (file.root_name() != base.root_name()) {
+            std::string result = file.string();
+            // Preserve trailing slash if original had one
+            if (has_trailing_slash && !result.empty() && result.back() != '\\') {
+                result += '\\';
+            }
+            return result;
+        }
+
         // Calculate relative path
         fs::path relative = fs::relative(file, base);
 

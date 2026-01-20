@@ -30,20 +30,6 @@ static std::string normalize_path(const std::string& path) {
     }
 }
 
-// Helper function to normalize paths for comparison purposes
-// Converts to forward slashes and lowercase (on Windows) for consistent matching
-static std::string normalize_path_for_compare(const std::string& path) {
-    std::string result = path;
-    // Convert backslashes to forward slashes
-    std::replace(result.begin(), result.end(), '\\', '/');
-    // Convert to lowercase on Windows for case-insensitive comparison
-#ifdef _WIN32
-    std::transform(result.begin(), result.end(), result.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-#endif
-    return result;
-}
-
 std::string BuildscriptParser::trim(const std::string& str) {
     size_t first = str.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return "";
@@ -713,11 +699,8 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
                     } else if (trimmed_token == "INTERFACE") {
                         current_visibility = DependencyVisibility::INTERFACE;
                     } else {
-                        // Expand variables like ${Vulkan_LIBRARIES}
-                        std::string expanded = expand_variables(trimmed_token, state);
-
                         // It's a dependency name - add with current visibility
-                        ProjectDependency dep(expanded, current_visibility);
+                        ProjectDependency dep(trimmed_token, current_visibility);
 
                         // Check for duplicates (last one wins)
                         auto it = std::find_if(
@@ -931,11 +914,8 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
                     } else if (trimmed_token == "INTERFACE") {
                         current_visibility = DependencyVisibility::INTERFACE;
                     } else {
-                        // Expand variables like ${Vulkan_LIBRARIES}
-                        std::string expanded = expand_variables(trimmed_token, state);
-
                         // It's a dependency name - add with current visibility
-                        ProjectDependency dep(expanded, current_visibility);
+                        ProjectDependency dep(trimmed_token, current_visibility);
 
                         // Check for duplicates (last one wins)
                         auto it = std::find_if(
@@ -957,12 +937,6 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
             state.in_target_link_libraries = true;
             state.target_link_libraries_accumulator = trimmed;
         }
-        return;
-    }
-
-    // Check for find_package() function call
-    if (trimmed.find("find_package(") == 0) {
-        parse_find_package(trimmed, state);
         return;
     }
 
@@ -989,6 +963,12 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
             state.in_uses_pch = true;
             state.uses_pch_accumulator = trimmed;
         }
+        return;
+    }
+
+    // Check for find_package() function call
+    if (trimmed.find("find_package(") == 0) {
+        parse_find_package(trimmed, state);
         return;
     }
 
@@ -1108,8 +1088,11 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
     return false;
 }
 
-void BuildscriptParser::parse_key_value(const std::string& key, const std::string& value, 
+void BuildscriptParser::parse_key_value(const std::string& key, const std::string& value,
                                          ParseState& state) {
+    // Resolve ${VARIABLE} references in the value
+    std::string resolved_value = resolve_variables(value, state);
+
     // Check for per-file settings: file.cpp:setting = value
     // Or: file.cpp:setting[Debug|Win32] = value
     size_t colon_pos = key.find(':');
@@ -1128,10 +1111,10 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
             setting = trim(rest.substr(0, bracket_start));
         }
         
-        parse_file_setting(file_path, setting, config_key, value, state);
+        parse_file_setting(file_path, setting, config_key, resolved_value, state);
         return;
     }
-    
+
     // Check for config-specific setting: setting[Debug|Win32] = value
     size_t bracket_start = key.find('[');
     size_t bracket_end = key.find(']');
@@ -1142,40 +1125,40 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
         // If we're in a file_properties() block, apply to all files in the group
         if (state.in_file_properties && !state.file_properties_files.empty()) {
             for (SourceFile* file : state.file_properties_files) {
-                parse_file_setting(file->path, setting, config_key, value, state);
+                parse_file_setting(file->path, setting, config_key, resolved_value, state);
             }
         }
         // If we're in a set_file_properties() block, apply to that file
         else if (state.in_set_file_properties && state.set_file_properties_file != nullptr) {
-            parse_file_setting(state.set_file_properties_file->path, setting, config_key, value, state);
+            parse_file_setting(state.set_file_properties_file->path, setting, config_key, resolved_value, state);
         }
         // If we're in a file context, treat as per-file setting
         else if (state.current_file != nullptr) {
-            parse_file_setting(state.current_file->path, setting, config_key, value, state);
+            parse_file_setting(state.current_file->path, setting, config_key, resolved_value, state);
         } else {
-            parse_config_setting(setting, value, config_key, state);
+            parse_config_setting(setting, resolved_value, config_key, state);
         }
         return;
     }
 
     // Regular key=value
     if (state.current_project == nullptr) {
-        parse_solution_setting(key, value, state);
+        parse_solution_setting(key, resolved_value, state);
     } else if (state.in_file_properties && !state.file_properties_files.empty()) {
         // If we're in a file_properties() block, apply to all files in the group
         for (SourceFile* file : state.file_properties_files) {
-            parse_file_setting(file->path, key, ALL_CONFIGS, value, state);
+            parse_file_setting(file->path, key, ALL_CONFIGS, resolved_value, state);
         }
     } else if (state.in_set_file_properties && state.set_file_properties_file != nullptr) {
         // If we're in a set_file_properties() block, apply to that file
-        parse_file_setting(state.set_file_properties_file->path, key, ALL_CONFIGS, value, state);
+        parse_file_setting(state.set_file_properties_file->path, key, ALL_CONFIGS, resolved_value, state);
     } else if (state.current_file != nullptr) {
-        parse_file_setting(state.current_file->path, key, ALL_CONFIGS, value, state);
+        parse_file_setting(state.current_file->path, key, ALL_CONFIGS, resolved_value, state);
     } else if (!state.current_config.empty()) {
         // We're in a [config:...] section
-        parse_config_setting(key, value, state.current_config, state);
+        parse_config_setting(key, resolved_value, state.current_config, state);
     } else {
-        parse_project_setting(key, value, state);
+        parse_project_setting(key, resolved_value, state);
     }
 }
 
@@ -1352,126 +1335,39 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
     }
     // Source files
     else if (key == "sources" || key == "src" || key == "files") {
-        // Two-pass approach:
-        // Pass 1: Collect explicit entries (non-wildcard) with their conditions
-        // Pass 2: Process wildcards, skipping files that have explicit entries
-        // Pass 3: Add explicit entries where condition is met
-
-        struct ExplicitEntry {
-            std::string path;
-            bool include;  // Result of condition evaluation
-        };
-        std::map<std::string, ExplicitEntry> explicit_entries;  // normalized_path -> entry
-        std::vector<std::string> wildcard_patterns;
-
-        // Pass 1: Separate explicit entries from wildcards
         for (const auto& src : split(value, ',')) {
             auto [path, include] = parse_filename_with_condition(src);
+            if (!include) continue;
 
-            bool is_wildcard = (path.find('*') != std::string::npos);
-
-            if (is_wildcard) {
-                // Only store wildcard if condition is met
-                if (include) {
-                    wildcard_patterns.push_back(path);
-                }
+            auto expanded = expand_wildcards(path, state.base_path);
+            if (expanded.empty()) {
+                // If no expansion, add as-is
+                find_or_create_source(path, state);
             } else {
-                // Store explicit entry with its condition result
-                std::string norm = normalize_path_for_compare(path);
-                explicit_entries[norm] = {path, include};
-            }
-        }
-
-        // Pass 2: Expand wildcards, but skip files that have explicit entries
-        for (const auto& pattern : wildcard_patterns) {
-            auto expanded = expand_wildcards(pattern, state.base_path);
-            for (const auto& expanded_path : expanded) {
-                std::string norm = normalize_path_for_compare(expanded_path);
-                // Skip if this file has an explicit entry (let explicit entry handle it)
-                if (explicit_entries.find(norm) != explicit_entries.end()) {
-                    continue;
+                for (const auto& expanded_path : expanded) {
+                    find_or_create_source(expanded_path, state);
                 }
-                find_or_create_source(expanded_path, state);
-            }
-        }
-
-        // Pass 3: Add explicit entries where condition is met
-        for (const auto& [norm, entry] : explicit_entries) {
-            if (entry.include) {
-                find_or_create_source(entry.path, state);
             }
         }
     } else if (key == "headers" || key == "includes_files") {
-        // Two-pass approach for headers (same as sources)
-        struct ExplicitEntry {
-            std::string path;
-            bool include;
-        };
-        std::map<std::string, ExplicitEntry> explicit_entries;
-        std::vector<std::string> wildcard_patterns;
-
         for (const auto& src : split(value, ',')) {
             auto [path, include] = parse_filename_with_condition(src);
-            bool is_wildcard = (path.find('*') != std::string::npos);
+            if (!include) continue;
 
-            if (is_wildcard) {
-                if (include) wildcard_patterns.push_back(path);
-            } else {
-                std::string norm = normalize_path_for_compare(path);
-                explicit_entries[norm] = {path, include};
-            }
-        }
-
-        for (const auto& pattern : wildcard_patterns) {
-            auto expanded = expand_wildcards(pattern, state.base_path);
+            auto expanded = expand_wildcards(path, state.base_path);
             for (const auto& expanded_path : expanded) {
-                std::string norm = normalize_path_for_compare(expanded_path);
-                if (explicit_entries.find(norm) != explicit_entries.end()) continue;
                 auto* file = find_or_create_source(expanded_path, state);
-                if (file) file->type = FileType::ClInclude;
-            }
-        }
-
-        for (const auto& [norm, entry] : explicit_entries) {
-            if (entry.include) {
-                auto* file = find_or_create_source(entry.path, state);
                 if (file) file->type = FileType::ClInclude;
             }
         }
     } else if (key == "resources" || key == "resource_files") {
-        // Two-pass approach for resources (same as sources)
-        struct ExplicitEntry {
-            std::string path;
-            bool include;
-        };
-        std::map<std::string, ExplicitEntry> explicit_entries;
-        std::vector<std::string> wildcard_patterns;
-
         for (const auto& src : split(value, ',')) {
             auto [path, include] = parse_filename_with_condition(src);
-            bool is_wildcard = (path.find('*') != std::string::npos);
+            if (!include) continue;
 
-            if (is_wildcard) {
-                if (include) wildcard_patterns.push_back(path);
-            } else {
-                std::string norm = normalize_path_for_compare(path);
-                explicit_entries[norm] = {path, include};
-            }
-        }
-
-        for (const auto& pattern : wildcard_patterns) {
-            auto expanded = expand_wildcards(pattern, state.base_path);
+            auto expanded = expand_wildcards(path, state.base_path);
             for (const auto& expanded_path : expanded) {
-                std::string norm = normalize_path_for_compare(expanded_path);
-                if (explicit_entries.find(norm) != explicit_entries.end()) continue;
                 auto* file = find_or_create_source(expanded_path, state);
-                if (file) file->type = FileType::ResourceCompile;
-            }
-        }
-
-        for (const auto& [norm, entry] : explicit_entries) {
-            if (entry.include) {
-                auto* file = find_or_create_source(entry.path, state);
                 if (file) file->type = FileType::ResourceCompile;
             }
         }
@@ -2655,169 +2551,6 @@ void BuildscriptParser::parse_uses_pch(const std::string& line, ParseState& stat
     }
 }
 
-std::string BuildscriptParser::expand_variables(const std::string& str, ParseState& state) {
-    std::string result = str;
-    size_t pos = 0;
-
-    while ((pos = result.find("${", pos)) != std::string::npos) {
-        size_t end = result.find("}", pos);
-        if (end == std::string::npos) break;
-
-        std::string var_name = result.substr(pos + 2, end - pos - 2);
-        auto it = state.variables.find(var_name);
-        if (it != state.variables.end()) {
-            result.replace(pos, end - pos + 1, it->second);
-            // Don't advance pos - the replacement might contain more variables
-        } else {
-            pos = end + 1;
-        }
-    }
-
-    return result;
-}
-
-void BuildscriptParser::parse_find_package(const std::string& line, ParseState& state) {
-    // Extract content between find_package( and )
-    size_t start_paren = line.find('(');
-    size_t end_paren = line.rfind(')');
-    if (start_paren == std::string::npos || end_paren == std::string::npos) {
-        std::cerr << "Warning: Malformed find_package() at line " << state.line_number << "\n";
-        return;
-    }
-
-    std::string content = line.substr(start_paren + 1, end_paren - start_paren - 1);
-
-    // Parse package name and options
-    std::vector<std::string> tokens;
-    std::istringstream iss(content);
-    std::string token;
-    while (iss >> token) {
-        tokens.push_back(token);
-    }
-
-    if (tokens.empty()) {
-        std::cerr << "Warning: find_package() requires package name at line " << state.line_number << "\n";
-        return;
-    }
-
-    std::string package_name = tokens[0];
-    bool required = false;
-
-    for (size_t i = 1; i < tokens.size(); ++i) {
-        if (tokens[i] == "REQUIRED") {
-            required = true;
-        }
-    }
-
-    bool found = false;
-
-    if (package_name == "Vulkan") {
-        // Check VULKAN_SDK environment variable first
-        const char* vulkan_sdk = std::getenv("VULKAN_SDK");
-
-#ifdef _WIN32
-        if (vulkan_sdk) {
-            state.variables["Vulkan_INCLUDE_DIRS"] = std::string(vulkan_sdk) + "/Include";
-            state.variables["Vulkan_LIBRARY_DIRS"] = std::string(vulkan_sdk) + "/Lib";
-            state.variables["Vulkan_LIBRARIES"] = "vulkan-1";
-            found = true;
-        } else {
-            // Try VK_SDK_PATH as fallback
-            const char* vk_sdk = std::getenv("VK_SDK_PATH");
-            if (vk_sdk) {
-                state.variables["Vulkan_INCLUDE_DIRS"] = std::string(vk_sdk) + "/Include";
-                state.variables["Vulkan_LIBRARY_DIRS"] = std::string(vk_sdk) + "/Lib";
-                state.variables["Vulkan_LIBRARIES"] = "vulkan-1";
-                found = true;
-            }
-        }
-#else
-        // Linux/macOS
-        if (vulkan_sdk) {
-            state.variables["Vulkan_INCLUDE_DIRS"] = std::string(vulkan_sdk) + "/include";
-            state.variables["Vulkan_LIBRARY_DIRS"] = std::string(vulkan_sdk) + "/lib";
-            state.variables["Vulkan_LIBRARIES"] = "vulkan";
-            found = true;
-        } else {
-            // Check system paths - Vulkan headers are typically in /usr/include/vulkan
-            // The library is typically just 'vulkan' (links to libvulkan.so)
-            state.variables["Vulkan_INCLUDE_DIRS"] = "/usr/include";
-            state.variables["Vulkan_LIBRARY_DIRS"] = "/usr/lib";
-            state.variables["Vulkan_LIBRARIES"] = "vulkan";
-            found = true;
-        }
-#endif
-
-        if (found) {
-            state.variables["Vulkan_FOUND"] = "TRUE";
-            std::cout << "[find_package] Found Vulkan\n";
-        }
-    } else if (package_name == "OpenGL") {
-#ifdef _WIN32
-        state.variables["OpenGL_INCLUDE_DIRS"] = "";
-        state.variables["OpenGL_LIBRARIES"] = "opengl32";
-        found = true;
-#else
-        state.variables["OpenGL_INCLUDE_DIRS"] = "/usr/include";
-        state.variables["OpenGL_LIBRARIES"] = "GL";
-        found = true;
-#endif
-        if (found) {
-            state.variables["OpenGL_FOUND"] = "TRUE";
-            std::cout << "[find_package] Found OpenGL\n";
-        }
-    } else if (package_name == "SDL2") {
-        // Check SDL2_DIR environment variable first
-        const char* sdl2_dir = std::getenv("SDL2_DIR");
-
-#ifdef _WIN32
-        if (sdl2_dir) {
-            state.variables["SDL2_INCLUDE_DIRS"] = std::string(sdl2_dir) + "/include";
-            state.variables["SDL2_LIBRARY_DIRS"] = std::string(sdl2_dir) + "/lib/x64";
-            state.variables["SDL2_LIBRARIES"] = "SDL2;SDL2main";
-            found = true;
-        }
-#else
-        // Linux - use pkg-config style paths or system paths
-        if (sdl2_dir) {
-            state.variables["SDL2_INCLUDE_DIRS"] = std::string(sdl2_dir) + "/include/SDL2";
-            state.variables["SDL2_LIBRARY_DIRS"] = std::string(sdl2_dir) + "/lib";
-            state.variables["SDL2_LIBRARIES"] = "SDL2";
-            found = true;
-        } else {
-            // System paths - SDL2 headers are typically in /usr/include/SDL2
-            state.variables["SDL2_INCLUDE_DIRS"] = "/usr/include/SDL2";
-            state.variables["SDL2_LIBRARY_DIRS"] = "/usr/lib";
-            state.variables["SDL2_LIBRARIES"] = "SDL2";
-            found = true;
-        }
-#endif
-        if (found) {
-            state.variables["SDL2_FOUND"] = "TRUE";
-            std::cout << "[find_package] Found SDL2\n";
-        }
-    } else {
-        // Generic handling - try environment variable {Package}_DIR
-        std::string env_var = package_name + "_DIR";
-        const char* env_path = std::getenv(env_var.c_str());
-
-        if (env_path) {
-            state.variables[package_name + "_INCLUDE_DIRS"] = std::string(env_path) + "/include";
-            state.variables[package_name + "_LIBRARY_DIRS"] = std::string(env_path) + "/lib";
-            state.variables[package_name + "_LIBRARIES"] = package_name;
-            state.variables[package_name + "_FOUND"] = "TRUE";
-            found = true;
-            std::cout << "[find_package] Found " << package_name << " at " << env_path << "\n";
-        } else {
-            std::cout << "[find_package] Package " << package_name << " not found (set " << env_var << " environment variable)\n";
-        }
-    }
-
-    if (!found && required) {
-        std::cerr << "Error: Required package " << package_name << " not found\n";
-    }
-}
-
 bool BuildscriptParser::evaluate_condition(const std::string& condition) {
     std::string cond = trim(condition);
 
@@ -2840,7 +2573,7 @@ bool BuildscriptParser::evaluate_condition(const std::string& condition) {
     if (cond == "windows" || cond == "win32") return is_windows;
     if (cond == "linux") return is_linux;
     if (cond == "osx" || cond == "macos" || cond == "darwin") return is_osx;
-
+    
     // Check for negation
     if (cond.size() > 1 && cond[0] == '!') {
          std::string sub = cond.substr(1);
@@ -2944,17 +2677,19 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
                     } else if (trans_dep.visibility == DependencyVisibility::PUBLIC) {
                         // PUBLIC propagates based on current visibility
                         if (visibility == DependencyVisibility::PRIVATE) {
-                            // PRIVATE boundary stops propagation
-                            continue;
+                            // PRIVATE boundary: add to current project but don't propagate further
+                            effective_vis = DependencyVisibility::PRIVATE;
+                        } else {
+                            effective_vis = visibility;  // Inherit current visibility
                         }
-                        effective_vis = visibility;  // Inherit current visibility
                     } else {  // INTERFACE
                         // INTERFACE always propagates as INTERFACE (unless blocked by PRIVATE)
                         if (visibility == DependencyVisibility::PRIVATE) {
-                            // PRIVATE boundary stops propagation
-                            continue;
+                            // PRIVATE boundary: add to current project but don't propagate further
+                            effective_vis = DependencyVisibility::PRIVATE;
+                        } else {
+                            effective_vis = DependencyVisibility::INTERFACE;
                         }
-                        effective_vis = DependencyVisibility::INTERFACE;
                     }
 
                     to_process.push_back({trans_dep.name, effective_vis});
@@ -2962,6 +2697,484 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
             }
         }
     }
+}
+
+// Resolve ${VARIABLE} references in a string
+std::string BuildscriptParser::resolve_variables(const std::string& str, const ParseState& state) {
+    std::string result = str;
+    size_t pos = 0;
+
+    while ((pos = result.find("${", pos)) != std::string::npos) {
+        size_t end = result.find('}', pos);
+        if (end == std::string::npos) break;  // Unclosed variable
+
+        std::string var_name = result.substr(pos + 2, end - (pos + 2));
+
+        std::string var_value;
+        auto it = state.variables.find(var_name);
+        if (it != state.variables.end()) {
+            var_value = it->second;
+        }
+        // If variable not found, replace with empty string
+
+        result.replace(pos, end - pos + 1, var_value);
+        pos += var_value.length();
+    }
+
+    return result;
+}
+
+// Parse find_package() function call
+void BuildscriptParser::parse_find_package(const std::string& line, ParseState& state) {
+    // Extract content between parentheses
+    size_t start_paren = line.find('(');
+    size_t end_paren = line.rfind(')');
+    if (start_paren == std::string::npos || end_paren == std::string::npos) {
+        std::cerr << "Warning: Malformed find_package() at line " << state.line_number << "\n";
+        return;
+    }
+
+    std::string content = line.substr(start_paren + 1, end_paren - start_paren - 1);
+    auto tokens = split(content, ' ');
+
+    // Also split by comma for flexibility
+    if (tokens.size() == 1 && tokens[0].find(',') != std::string::npos) {
+        tokens = split(content, ',');
+    }
+
+    if (tokens.empty()) {
+        std::cerr << "Warning: find_package() requires at least a package name at line "
+                  << state.line_number << "\n";
+        return;
+    }
+
+    std::string package_name = trim(tokens[0]);
+    bool required = false;
+
+    // Check for REQUIRED keyword
+    for (size_t i = 1; i < tokens.size(); ++i) {
+        if (trim(tokens[i]) == "REQUIRED") {
+            required = true;
+        }
+    }
+
+    // Normalize package name for comparison
+    std::string package_lower = package_name;
+    std::transform(package_lower.begin(), package_lower.end(), package_lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    // Call appropriate package finder
+    PackageFindResult result;
+
+    if (package_lower == "vulkan") {
+        result = find_vulkan();
+    } else if (package_lower == "opengl") {
+        result = find_opengl();
+    } else if (package_lower == "sdl2") {
+        result = find_sdl2();
+    } else if (package_lower == "sdl3") {
+        result = find_sdl3();
+    } else if (package_lower == "directx11") {
+        result = find_directx11();
+    } else if (package_lower == "directx12") {
+        result = find_directx12();
+    } else {
+        std::cerr << "Warning: Unknown package '" << package_name << "' at line "
+                  << state.line_number << "\n";
+        result.found = false;
+        result.error_message = "Unknown package: " + package_name;
+    }
+
+    if (result.found) {
+        // Set variables
+        state.variables[package_name + "_FOUND"] = "TRUE";
+        state.variables[package_name + "_INCLUDE_DIRS"] = result.include_dirs;
+        state.variables[package_name + "_LIBRARIES"] = result.libraries;
+        if (!result.library_dirs.empty()) {
+            state.variables[package_name + "_LIBRARY_DIRS"] = result.library_dirs;
+        }
+        if (!result.version.empty()) {
+            state.variables[package_name + "_VERSION"] = result.version;
+        }
+        state.found_packages.insert(package_name);
+
+        std::cout << "[find_package] Found " << package_name;
+        if (!result.version.empty()) {
+            std::cout << " version " << result.version;
+        }
+        std::cout << "\n";
+        std::cout << "  Include dirs: " << result.include_dirs << "\n";
+        std::cout << "  Libraries: " << result.libraries << "\n";
+        if (!result.library_dirs.empty()) {
+            std::cout << "  Library dirs: " << result.library_dirs << "\n";
+        }
+    } else {
+        state.variables[package_name + "_FOUND"] = "FALSE";
+
+        if (required) {
+            throw std::runtime_error("Required package '" + package_name +
+                                     "' not found: " + result.error_message);
+        } else {
+            std::cerr << "[find_package] Package " << package_name << " not found: "
+                      << result.error_message << "\n";
+        }
+    }
+}
+
+#ifdef __linux__
+// Linux-specific pkg-config helper
+PackageFindResult BuildscriptParser::try_pkg_config(const std::string& package_name) {
+    PackageFindResult result;
+
+    // Check if pkg-config can find the package
+    std::string check_cmd = "pkg-config --exists " + package_name + " 2>/dev/null";
+    int ret = std::system(check_cmd.c_str());
+
+    if (ret != 0) {
+        result.error_message = "pkg-config cannot find " + package_name;
+        return result;
+    }
+
+    // Get cflags (includes)
+    std::string cflags_cmd = "pkg-config --cflags " + package_name + " 2>/dev/null";
+    FILE* pipe = popen(cflags_cmd.c_str(), "r");
+    if (pipe) {
+        char buffer[1024];
+        std::string cflags;
+        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+            cflags += buffer;
+        }
+        pclose(pipe);
+
+        // Parse -I flags
+        std::istringstream iss(cflags);
+        std::string token;
+        std::vector<std::string> includes;
+        while (iss >> token) {
+            if (token.substr(0, 2) == "-I") {
+                includes.push_back(token.substr(2));
+            }
+        }
+        for (size_t i = 0; i < includes.size(); ++i) {
+            if (i > 0) result.include_dirs += ";";
+            result.include_dirs += includes[i];
+        }
+    }
+
+    // Get libs
+    std::string libs_cmd = "pkg-config --libs " + package_name + " 2>/dev/null";
+    pipe = popen(libs_cmd.c_str(), "r");
+    if (pipe) {
+        char buffer[1024];
+        std::string libs;
+        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+            libs += buffer;
+        }
+        pclose(pipe);
+
+        // Parse -l and -L flags
+        std::istringstream iss(libs);
+        std::string token;
+        std::vector<std::string> lib_names;
+        std::vector<std::string> lib_dirs;
+        while (iss >> token) {
+            if (token.substr(0, 2) == "-l") {
+                lib_names.push_back(token.substr(2));
+            } else if (token.substr(0, 2) == "-L") {
+                lib_dirs.push_back(token.substr(2));
+            }
+        }
+        for (size_t i = 0; i < lib_names.size(); ++i) {
+            if (i > 0) result.libraries += ";";
+            result.libraries += lib_names[i];
+        }
+        for (size_t i = 0; i < lib_dirs.size(); ++i) {
+            if (i > 0) result.library_dirs += ";";
+            result.library_dirs += lib_dirs[i];
+        }
+    }
+
+    // Get version
+    std::string version_cmd = "pkg-config --modversion " + package_name + " 2>/dev/null";
+    pipe = popen(version_cmd.c_str(), "r");
+    if (pipe) {
+        char buffer[128];
+        if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+            result.version = trim(buffer);
+        }
+        pclose(pipe);
+    }
+
+    result.found = true;
+    return result;
+}
+#endif
+
+// Package finder: Vulkan
+PackageFindResult BuildscriptParser::find_vulkan() {
+    PackageFindResult result;
+
+#if defined(_WIN32)
+    // Windows: Check VULKAN_SDK environment variable
+    const char* vulkan_sdk = std::getenv("VULKAN_SDK");
+    if (vulkan_sdk) {
+        fs::path sdk_path(vulkan_sdk);
+        fs::path include_path = sdk_path / "Include";
+        fs::path lib_path = sdk_path / "Lib";
+
+        if (fs::exists(include_path) && fs::exists(lib_path)) {
+            result.found = true;
+            result.include_dirs = include_path.string();
+            result.library_dirs = lib_path.string();
+            result.libraries = "vulkan-1.lib";
+        } else {
+            result.error_message = "VULKAN_SDK found but Include/Lib directories missing";
+        }
+    } else {
+        result.error_message = "VULKAN_SDK environment variable not set";
+    }
+
+#elif defined(__linux__)
+    // Linux: Try pkg-config first, then fallback to standard paths
+    result = try_pkg_config("vulkan");
+
+    if (!result.found) {
+        // Fallback: Check standard paths
+        if (fs::exists("/usr/include/vulkan/vulkan.h")) {
+            result.found = true;
+            result.include_dirs = "/usr/include";
+            result.libraries = "vulkan";
+        } else {
+            result.error_message = "Vulkan SDK not found. Install libvulkan-dev or set VULKAN_SDK.";
+        }
+    }
+#else
+    result.error_message = "Platform not supported for Vulkan detection";
+#endif
+
+    return result;
+}
+
+// Package finder: OpenGL
+PackageFindResult BuildscriptParser::find_opengl() {
+    PackageFindResult result;
+
+#if defined(_WIN32)
+    // Windows: OpenGL is always available via Windows SDK
+    result.found = true;
+    result.include_dirs = "";  // System include path
+    result.libraries = "opengl32.lib";
+
+#elif defined(__linux__)
+    // Linux: Try pkg-config first
+    result = try_pkg_config("gl");
+
+    if (!result.found) {
+        // Fallback: Check standard paths
+        if (fs::exists("/usr/include/GL/gl.h")) {
+            result.found = true;
+            result.include_dirs = "/usr/include";
+            result.libraries = "GL";
+        } else {
+            result.error_message = "OpenGL development headers not found. Install libgl1-mesa-dev.";
+        }
+    }
+#else
+    result.error_message = "Platform not supported for OpenGL detection";
+#endif
+
+    return result;
+}
+
+// Package finder: SDL2
+PackageFindResult BuildscriptParser::find_sdl2() {
+    PackageFindResult result;
+
+#if defined(_WIN32)
+    // Windows: Check SDL2_DIR environment variable
+    const char* sdl2_dir = std::getenv("SDL2_DIR");
+    if (!sdl2_dir) {
+        sdl2_dir = std::getenv("SDL2");
+    }
+
+    if (sdl2_dir) {
+        fs::path sdk_path(sdl2_dir);
+        fs::path include_path = sdk_path / "include";
+        fs::path lib_path = sdk_path / "lib" / "x64";
+
+        // Try alternate paths
+        if (!fs::exists(lib_path)) {
+            lib_path = sdk_path / "lib";
+        }
+
+        if (fs::exists(include_path / "SDL.h") ||
+            fs::exists(include_path / "SDL2" / "SDL.h")) {
+            result.found = true;
+            result.include_dirs = include_path.string();
+            result.library_dirs = lib_path.string();
+            result.libraries = "SDL2.lib;SDL2main.lib";
+        } else {
+            result.error_message = "SDL2_DIR found but SDL.h not in expected location";
+        }
+    } else {
+        // Try common installation paths
+        std::vector<std::string> search_paths = {
+            "C:/SDL2",
+            "C:/Libraries/SDL2",
+            "C:/Program Files/SDL2",
+            "C:/Program Files (x86)/SDL2"
+        };
+
+        for (const auto& path : search_paths) {
+            fs::path sdk_path(path);
+            if (fs::exists(sdk_path / "include" / "SDL.h") ||
+                fs::exists(sdk_path / "include" / "SDL2" / "SDL.h")) {
+                result.found = true;
+                result.include_dirs = (sdk_path / "include").string();
+                fs::path lib_path = sdk_path / "lib" / "x64";
+                if (!fs::exists(lib_path)) {
+                    lib_path = sdk_path / "lib";
+                }
+                result.library_dirs = lib_path.string();
+                result.libraries = "SDL2.lib;SDL2main.lib";
+                break;
+            }
+        }
+
+        if (!result.found) {
+            result.error_message = "SDL2_DIR not set and SDL2 not found in common paths";
+        }
+    }
+
+#elif defined(__linux__)
+    // Linux: Use pkg-config
+    result = try_pkg_config("sdl2");
+
+    if (!result.found) {
+        // Fallback
+        if (fs::exists("/usr/include/SDL2/SDL.h")) {
+            result.found = true;
+            result.include_dirs = "/usr/include/SDL2";
+            result.libraries = "SDL2";
+        } else {
+            result.error_message = "SDL2 not found. Install libsdl2-dev.";
+        }
+    }
+#else
+    result.error_message = "Platform not supported for SDL2 detection";
+#endif
+
+    return result;
+}
+
+// Package finder: SDL3
+PackageFindResult BuildscriptParser::find_sdl3() {
+    PackageFindResult result;
+
+#if defined(_WIN32)
+    // Windows: Check SDL3_DIR environment variable
+    const char* sdl3_dir = std::getenv("SDL3_DIR");
+    if (!sdl3_dir) {
+        sdl3_dir = std::getenv("SDL3");
+    }
+
+    if (sdl3_dir) {
+        fs::path sdk_path(sdl3_dir);
+        fs::path include_path = sdk_path / "include";
+        fs::path lib_path = sdk_path / "lib" / "x64";
+
+        if (!fs::exists(lib_path)) {
+            lib_path = sdk_path / "lib";
+        }
+
+        if (fs::exists(include_path / "SDL3" / "SDL.h")) {
+            result.found = true;
+            result.include_dirs = include_path.string();
+            result.library_dirs = lib_path.string();
+            result.libraries = "SDL3.lib";
+        } else {
+            result.error_message = "SDL3_DIR found but SDL.h not in expected location";
+        }
+    } else {
+        // Try common installation paths
+        std::vector<std::string> search_paths = {
+            "C:/SDL3",
+            "C:/Libraries/SDL3",
+            "C:/Program Files/SDL3",
+            "C:/Program Files (x86)/SDL3"
+        };
+
+        for (const auto& path : search_paths) {
+            fs::path sdk_path(path);
+            if (fs::exists(sdk_path / "include" / "SDL3" / "SDL.h")) {
+                result.found = true;
+                result.include_dirs = (sdk_path / "include").string();
+                fs::path lib_path = sdk_path / "lib" / "x64";
+                if (!fs::exists(lib_path)) {
+                    lib_path = sdk_path / "lib";
+                }
+                result.library_dirs = lib_path.string();
+                result.libraries = "SDL3.lib";
+                break;
+            }
+        }
+
+        if (!result.found) {
+            result.error_message = "SDL3_DIR not set and SDL3 not found in common paths";
+        }
+    }
+
+#elif defined(__linux__)
+    // Linux: Use pkg-config
+    result = try_pkg_config("sdl3");
+
+    if (!result.found) {
+        // Fallback
+        if (fs::exists("/usr/include/SDL3/SDL.h")) {
+            result.found = true;
+            result.include_dirs = "/usr/include/SDL3";
+            result.libraries = "SDL3";
+        } else {
+            result.error_message = "SDL3 not found. Install libsdl3-dev.";
+        }
+    }
+#else
+    result.error_message = "Platform not supported for SDL3 detection";
+#endif
+
+    return result;
+}
+
+// Package finder: DirectX11
+PackageFindResult BuildscriptParser::find_directx11() {
+    PackageFindResult result;
+
+#if defined(_WIN32)
+    // Windows: DirectX 11 is available via Windows SDK
+    result.found = true;
+    result.include_dirs = "";  // System include path
+    result.libraries = "d3d11.lib;dxgi.lib;d3dcompiler.lib";
+#else
+    result.error_message = "DirectX 11 is only available on Windows";
+#endif
+
+    return result;
+}
+
+// Package finder: DirectX12
+PackageFindResult BuildscriptParser::find_directx12() {
+    PackageFindResult result;
+
+#if defined(_WIN32)
+    // Windows: DirectX 12 is available via Windows 10+ SDK
+    result.found = true;
+    result.include_dirs = "";  // System include path
+    result.libraries = "d3d12.lib;dxgi.lib;d3dcompiler.lib";
+#else
+    result.error_message = "DirectX 12 is only available on Windows";
+#endif
+
+    return result;
 }
 
 } // namespace vcxproj

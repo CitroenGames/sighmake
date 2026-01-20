@@ -352,77 +352,6 @@ includes = include, external/include, C:/Libraries/boost
 defines = MY_DEFINE, DEBUG_ENABLED, VERSION=1.0
 ```
 
-### Platform-Specific Source Files
-
-You can conditionally include or exclude source files based on the target platform using inline conditions.
-
-**Syntax:**
-```ini
-sources = {
-    src/**/*.cpp
-    src/platform/win_impl.cpp [windows]
-    src/platform/linux_impl.cpp [linux]
-}
-```
-
-**Supported conditions:**
-- `[windows]` or `[win32]` - Include only on Windows
-- `[linux]` - Include only on Linux
-- `[osx]`, `[macos]`, or `[darwin]` - Include only on macOS
-- `[!windows]` - Include on everything except Windows
-- `[!linux]` - Include on everything except Linux
-- `[!osx]` - Include on everything except macOS
-
-**Override behavior:**
-When a file matches both a wildcard pattern AND has an explicit entry with a condition, the explicit condition takes precedence. This allows you to:
-
-1. Include most files via wildcard
-2. Restrict specific files to certain platforms
-
-**Example - Windows-only D3D11 files:**
-```ini
-[project:Renderer]
-sources = {
-    src/**/*.cpp
-    src/Graphics/D3D11RenderAPI.cpp [windows]
-    src/Graphics/D3D11Mesh.cpp [windows]
-}
-```
-
-In this example:
-- `src/**/*.cpp` matches all .cpp files including the D3D11 files
-- BUT `D3D11RenderAPI.cpp` and `D3D11Mesh.cpp` have explicit `[windows]` conditions
-- On Windows: All files are included (D3D11 files match the condition)
-- On Linux: D3D11 files are excluded (condition not met), other files are included
-
-**Example - Cross-platform with platform-specific implementations:**
-```ini
-[project:AudioSystem]
-sources = {
-    src/**/*.cpp
-    src/audio/wasapi_audio.cpp [windows]
-    src/audio/alsa_audio.cpp [linux]
-    src/audio/coreaudio_audio.cpp [osx]
-}
-```
-
-**Multi-line brace syntax:**
-For better readability, use the brace block syntax to list sources across multiple lines:
-```ini
-sources = {
-    src/core/*.cpp
-    src/utils/*.cpp
-    src/platform/common.cpp
-    src/platform/win32_impl.cpp [windows]
-    src/platform/posix_impl.cpp [!windows]
-}
-```
-
-This is equivalent to the comma-separated single-line format:
-```ini
-sources = src/core/*.cpp, src/utils/*.cpp, src/platform/common.cpp, src/platform/win32_impl.cpp [windows], src/platform/posix_impl.cpp [!windows]
-```
-
 ### Output Directories
 
 | Setting | Description | Example |
@@ -1866,6 +1795,148 @@ target_link_libraries(
 2. **PUBLIC sparingly** - Creates tight coupling between your users and dependencies
 3. **INTERFACE for third-party wrappers** - Especially when you provide public_libs separately
 4. **Test your visibility** - Build a project that depends on yours; if it fails to compile/link, you may need PUBLIC
+```
+
+### Finding External Packages: find_package()
+
+Use `find_package()` to locate external SDKs and libraries on your system. This function searches for packages and sets variables that you can use in your build settings.
+
+**Syntax:**
+```ini
+find_package(PackageName)
+find_package(PackageName REQUIRED)
+```
+
+**Supported Packages:**
+
+| Package | Windows | Linux |
+|---------|---------|-------|
+| `Vulkan` | Uses `VULKAN_SDK` environment variable | Uses pkg-config or standard paths |
+| `OpenGL` | Always available (Windows SDK) | Uses pkg-config or standard paths |
+| `SDL2` | Uses `SDL2_DIR` or `SDL2` environment variable | Uses pkg-config or standard paths |
+| `SDL3` | Uses `SDL3_DIR` or `SDL3` environment variable | Uses pkg-config or standard paths |
+
+**Variables Set:**
+
+When a package is found, the following variables are set:
+
+| Variable | Description |
+|----------|-------------|
+| `{Package}_FOUND` | `TRUE` if found, `FALSE` otherwise |
+| `{Package}_INCLUDE_DIRS` | Include directories for the package |
+| `{Package}_LIBRARIES` | Libraries to link against |
+| `{Package}_LIBRARY_DIRS` | Library search directories (if applicable) |
+| `{Package}_VERSION` | Package version (if detectable) |
+
+**Basic Example:**
+```ini
+[project:VulkanApp]
+type = exe
+
+find_package(Vulkan REQUIRED)
+find_package(SDL2)
+
+sources = src/*.cpp
+includes = include, ${Vulkan_INCLUDE_DIRS}, ${SDL2_INCLUDE_DIRS}
+libs = ${Vulkan_LIBRARIES}, ${SDL2_LIBRARIES}
+libdirs = ${Vulkan_LIBRARY_DIRS}, ${SDL2_LIBRARY_DIRS}
+```
+
+**REQUIRED Keyword:**
+
+Adding `REQUIRED` makes the package mandatory. If not found, parsing will fail with an error:
+
+```ini
+# Will error if Vulkan SDK is not installed
+find_package(Vulkan REQUIRED)
+
+# Will warn but continue if SDL2 is not found
+find_package(SDL2)
+```
+
+**Platform-Specific Setup:**
+
+**Windows:**
+Set environment variables pointing to SDK installations:
+```batch
+# Vulkan SDK (usually set by installer)
+set VULKAN_SDK=C:\VulkanSDK\1.3.xxx
+
+# SDL2 (manual setup)
+set SDL2_DIR=C:\Libraries\SDL2-2.x.x
+
+# SDL3 (manual setup)
+set SDL3_DIR=C:\Libraries\SDL3
+```
+
+**Linux:**
+Install development packages:
+```bash
+# Vulkan
+sudo apt install libvulkan-dev
+
+# SDL2
+sudo apt install libsdl2-dev
+
+# SDL3
+sudo apt install libsdl3-dev
+
+# OpenGL
+sudo apt install libgl1-mesa-dev
+```
+
+**Complete Example with Multiple Packages:**
+```ini
+[solution]
+name = GameEngine
+configurations = Debug, Release
+platforms = x64
+
+[project:Engine]
+type = lib
+
+# Find required packages
+find_package(Vulkan REQUIRED)
+find_package(SDL2 REQUIRED)
+
+sources = src/**/*.cpp
+headers = include/**/*.h
+
+# Use package variables
+includes = include, ${Vulkan_INCLUDE_DIRS}, ${SDL2_INCLUDE_DIRS}
+
+# Platform-specific libraries
+if(windows) {
+    libs = ${Vulkan_LIBRARIES}, ${SDL2_LIBRARIES}
+    libdirs = ${Vulkan_LIBRARY_DIRS}, ${SDL2_LIBRARY_DIRS}
+}
+
+if(linux) {
+    libs = vulkan, SDL2
+}
+
+public_includes = include
+public_libs = ${Vulkan_LIBRARIES}, ${SDL2_LIBRARIES}
+
+[project:Game]
+type = exe
+sources = game/*.cpp
+target_link_libraries(Engine)
+subsystem = Windows
+```
+
+**Output Example:**
+
+When parsing a buildscript with find_package, you'll see:
+```
+[find_package] Found Vulkan version 1.3.275
+  Include dirs: C:\VulkanSDK\1.3.275.0\Include
+  Libraries: vulkan-1.lib
+  Library dirs: C:\VulkanSDK\1.3.275.0\Lib
+[find_package] Found SDL2
+  Include dirs: C:\Libraries\SDL2-2.30.0\include
+  Libraries: SDL2.lib;SDL2main.lib
+  Library dirs: C:\Libraries\SDL2-2.30.0\lib\x64
 ```
 
 ---
