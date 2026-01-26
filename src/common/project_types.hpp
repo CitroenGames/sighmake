@@ -339,6 +339,26 @@ inline std::pair<std::string, std::string> parse_config_key(const std::string& k
     return {key.substr(0, pos), key.substr(pos + 1)};
 }
 
+// Helper to convert string to lowercase
+inline std::string to_lower(const std::string& str) {
+    std::string result = str;
+    std::transform(result.begin(), result.end(), result.begin(),
+                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return result;
+}
+
+// Check if platform is a Windows platform (for vcxproj generator)
+inline bool is_windows_platform(const std::string& platform) {
+    std::string p = to_lower(platform);
+    return p == "win32" || p == "x64" || p == "x86" || p == "arm" || p == "arm64";
+}
+
+// Check if platform is a Linux platform (for makefile generator)
+inline bool is_linux_platform(const std::string& platform) {
+    std::string p = to_lower(platform);
+    return p == "linux";
+}
+
 // Detect project language based on source files
 inline std::string detect_project_language(const Project& proj) {
     // If explicitly set, use it

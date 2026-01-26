@@ -302,8 +302,27 @@ platforms = Win32, x64
 - Custom names are supported
 
 **Common platform names:**
-- `Win32` - 32-bit x86
-- `x64` - 64-bit x86-64
+- `Win32` - 32-bit x86 (vcxproj only)
+- `x64` - 64-bit x86-64 (vcxproj only)
+- `ARM` - ARM 32-bit (vcxproj only)
+- `ARM64` - ARM 64-bit (vcxproj only)
+- `Linux` - Linux platform (makefile only)
+
+**Platform filtering by generator:**
+Platforms are automatically filtered by generator type:
+- **vcxproj generator**: Only includes Win32, x64, ARM, ARM64 platforms (skips Linux)
+- **makefile generator**: Only includes Linux platform (skips Windows platforms)
+
+This allows a single buildscript to define both Windows and Linux configurations:
+```ini
+platforms = x64, Linux
+
+[config:Debug|x64]
+defines = _DEBUG, _WIN32
+
+[config:Debug|Linux]
+defines = _DEBUG, __linux__
+```
 
 ### Project Section
 

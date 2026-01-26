@@ -669,6 +669,9 @@ bool MakefileGenerator::generate(Solution& solution, const std::string& output_d
                 config_name = config_key;
             }
 
+            // Skip Windows configs for makefile generator
+            if (is_windows_platform(platform)) continue;
+
             // Generate Makefile path
             std::string makefile_name = project.name + "." + config_name;
             fs::path makefile_path = build_dir / makefile_name;
@@ -700,7 +703,7 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
         return false;
     }
 
-    // Collect unique config names (without platform)
+    // Collect unique config names (without platform), skipping Windows platforms
     std::set<std::string> configs;
     for (const auto& project : solution.projects) {
         for (const auto& [config_key, config] : project.configurations) {
@@ -708,6 +711,10 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
             std::string config_name = (pipe_pos != std::string::npos)
                 ? config_key.substr(0, pipe_pos)
                 : config_key;
+            std::string platform = (pipe_pos != std::string::npos)
+                ? config_key.substr(pipe_pos + 1)
+                : "";
+            if (is_windows_platform(platform)) continue;  // Skip Windows configs
             configs.insert(config_name);
         }
     }
