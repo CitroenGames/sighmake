@@ -1815,6 +1815,10 @@ find_package(PackageName REQUIRED)
 | `OpenGL` | Always available (Windows SDK) | Uses pkg-config or standard paths |
 | `SDL2` | Uses `SDL2_DIR` or `SDL2` environment variable | Uses pkg-config or standard paths |
 | `SDL3` | Uses `SDL3_DIR` or `SDL3` environment variable | Uses pkg-config or standard paths |
+| `DirectX9` or `DX9` | Uses `DXSDK_DIR` (DirectX SDK June 2010) | Not available |
+| `DirectX10` or `DX10` | Uses `DXSDK_DIR` (DirectX SDK June 2010) | Not available |
+| `DirectX11` | Always available (Windows SDK) | Not available |
+| `DirectX12` | Always available (Windows 10+ SDK) | Not available |
 
 **Variables Set:**
 
@@ -1825,7 +1829,9 @@ When a package is found, the following variables are set:
 | `{Package}_FOUND` | `TRUE` if found, `FALSE` otherwise |
 | `{Package}_INCLUDE_DIRS` | Include directories for the package |
 | `{Package}_LIBRARIES` | Libraries to link against |
-| `{Package}_LIBRARY_DIRS` | Library search directories (if applicable) |
+| `{Package}_LIBRARY_DIRS` | Library search directories (default x86 for DX9/DX10) |
+| `{Package}_LIBRARY_DIRS_X86` | x86 library directories (DirectX9/DirectX10 only) |
+| `{Package}_LIBRARY_DIRS_X64` | x64 library directories (DirectX9/DirectX10 only) |
 | `{Package}_VERSION` | Package version (if detectable) |
 
 **Basic Example:**
@@ -1867,7 +1873,15 @@ set SDL2_DIR=C:\Libraries\SDL2-2.x.x
 
 # SDL3 (manual setup)
 set SDL3_DIR=C:\Libraries\SDL3
+
+# DirectX SDK June 2010 (set by DXSDK_Jun10.exe installer)
+# Required for DirectX 9 and DirectX 10
+set DXSDK_DIR=C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)
 ```
+
+**DirectX Notes:**
+- **DirectX 9/10**: Require the legacy DirectX SDK (June 2010). Download and install `DXSDK_Jun10.exe` from Microsoft. The installer sets `DXSDK_DIR` automatically.
+- **DirectX 11/12**: Included in the Windows SDK, no additional setup required.
 
 **Linux:**
 Install development packages:
@@ -1922,6 +1936,43 @@ public_libs = ${Vulkan_LIBRARIES}, ${SDL2_LIBRARIES}
 type = exe
 sources = game/*.cpp
 target_link_libraries(Engine)
+subsystem = Windows
+```
+
+**DirectX Example (x86 target, e.g., Source Engine):**
+```ini
+[solution]
+name = SourceMod
+configurations = Debug, Release
+platforms = Win32
+
+[project:SourceMod]
+type = dll
+
+find_package(DirectX9 REQUIRED)
+
+sources = src/*.cpp
+includes = include, ${DirectX9_INCLUDE_DIRS}
+libs = ${DirectX9_LIBRARIES}
+libdirs = ${DirectX9_LIBRARY_DIRS_X86}
+```
+
+**DirectX Example (x64 target):**
+```ini
+[solution]
+name = DX9Game
+configurations = Debug, Release
+platforms = x64
+
+[project:DX9Game]
+type = exe
+
+find_package(DirectX9 REQUIRED)
+
+sources = src/*.cpp
+includes = include, ${DirectX9_INCLUDE_DIRS}
+libs = ${DirectX9_LIBRARIES}
+libdirs = ${DirectX9_LIBRARY_DIRS_X64}
 subsystem = Windows
 ```
 

@@ -2926,6 +2926,10 @@ void BuildscriptParser::parse_find_package(const std::string& line, ParseState& 
         result = find_directx11();
     } else if (package_lower == "directx12") {
         result = find_directx12();
+    } else if (package_lower == "directx9" || package_lower == "dx9") {
+        result = find_directx9();
+    } else if (package_lower == "directx10" || package_lower == "dx10") {
+        result = find_directx10();
     } else {
         std::cerr << "Warning: Unknown package '" << package_name << "' at line "
                   << state.line_number << "\n";
@@ -2940,6 +2944,11 @@ void BuildscriptParser::parse_find_package(const std::string& line, ParseState& 
         state.variables[package_name + "_LIBRARIES"] = result.libraries;
         if (!result.library_dirs.empty()) {
             state.variables[package_name + "_LIBRARY_DIRS"] = result.library_dirs;
+            // Also set as _LIBRARY_DIRS_X86 for packages that provide both architectures
+            state.variables[package_name + "_LIBRARY_DIRS_X86"] = result.library_dirs;
+        }
+        if (!result.library_dirs_x64.empty()) {
+            state.variables[package_name + "_LIBRARY_DIRS_X64"] = result.library_dirs_x64;
         }
         if (!result.version.empty()) {
             state.variables[package_name + "_VERSION"] = result.version;
@@ -2954,7 +2963,10 @@ void BuildscriptParser::parse_find_package(const std::string& line, ParseState& 
         std::cout << "  Include dirs: " << result.include_dirs << "\n";
         std::cout << "  Libraries: " << result.libraries << "\n";
         if (!result.library_dirs.empty()) {
-            std::cout << "  Library dirs: " << result.library_dirs << "\n";
+            std::cout << "  Library dirs (x86): " << result.library_dirs << "\n";
+        }
+        if (!result.library_dirs_x64.empty()) {
+            std::cout << "  Library dirs (x64): " << result.library_dirs_x64 << "\n";
         }
     } else {
         state.variables[package_name + "_FOUND"] = "FALSE";
@@ -3328,6 +3340,142 @@ PackageFindResult BuildscriptParser::find_directx12() {
     result.libraries = "d3d12.lib;dxgi.lib;d3dcompiler.lib";
 #else
     result.error_message = "DirectX 12 is only available on Windows";
+#endif
+
+    return result;
+}
+
+// Package finder: DirectX 9 (Legacy DirectX SDK June 2010)
+PackageFindResult BuildscriptParser::find_directx9() {
+    PackageFindResult result;
+
+#if defined(_WIN32)
+    // First, check DXSDK_DIR environment variable (set by DirectX SDK installer)
+    const char* dxsdk_dir = std::getenv("DXSDK_DIR");
+
+    fs::path sdk_path;
+    bool found_sdk = false;
+
+    if (dxsdk_dir) {
+        sdk_path = fs::path(dxsdk_dir);
+        if (fs::exists(sdk_path / "Include" / "d3d9.h")) {
+            found_sdk = true;
+        }
+    }
+
+    // Fall back to common installation paths if env var not set or invalid
+    if (!found_sdk) {
+        std::vector<std::string> search_paths = {
+            "C:/Program Files (x86)/Microsoft DirectX SDK (June 2010)",
+            "C:/Program Files/Microsoft DirectX SDK (June 2010)",
+            "C:/DXSDK",
+            "D:/Program Files (x86)/Microsoft DirectX SDK (June 2010)"
+        };
+
+        for (const auto& path : search_paths) {
+            fs::path candidate(path);
+            if (fs::exists(candidate / "Include" / "d3d9.h")) {
+                sdk_path = candidate;
+                found_sdk = true;
+                break;
+            }
+        }
+    }
+
+    if (found_sdk) {
+        fs::path include_path = sdk_path / "Include";
+        fs::path lib_path_x86 = sdk_path / "Lib" / "x86";
+        fs::path lib_path_x64 = sdk_path / "Lib" / "x64";
+
+        if (fs::exists(include_path) && (fs::exists(lib_path_x86) || fs::exists(lib_path_x64))) {
+            result.found = true;
+            result.include_dirs = include_path.string();
+            // Default to x86 for legacy/Source Engine compatibility
+            if (fs::exists(lib_path_x86)) {
+                result.library_dirs = lib_path_x86.string();
+            }
+            if (fs::exists(lib_path_x64)) {
+                result.library_dirs_x64 = lib_path_x64.string();
+            }
+            result.libraries = "d3d9.lib;d3dx9.lib;dinput8.lib;dxguid.lib";
+            result.version = "June 2010";
+        } else {
+            result.error_message = "DirectX SDK found but Include/Lib directories missing";
+        }
+    } else {
+        result.error_message = "DirectX SDK (June 2010) not found. "
+                              "Install from DXSDK_Jun10.exe or set DXSDK_DIR environment variable.";
+    }
+#else
+    result.error_message = "DirectX 9 is only available on Windows";
+#endif
+
+    return result;
+}
+
+// Package finder: DirectX 10 (Legacy DirectX SDK June 2010)
+PackageFindResult BuildscriptParser::find_directx10() {
+    PackageFindResult result;
+
+#if defined(_WIN32)
+    // First, check DXSDK_DIR environment variable (set by DirectX SDK installer)
+    const char* dxsdk_dir = std::getenv("DXSDK_DIR");
+
+    fs::path sdk_path;
+    bool found_sdk = false;
+
+    if (dxsdk_dir) {
+        sdk_path = fs::path(dxsdk_dir);
+        if (fs::exists(sdk_path / "Include" / "d3d10.h")) {
+            found_sdk = true;
+        }
+    }
+
+    // Fall back to common installation paths if env var not set or invalid
+    if (!found_sdk) {
+        std::vector<std::string> search_paths = {
+            "C:/Program Files (x86)/Microsoft DirectX SDK (June 2010)",
+            "C:/Program Files/Microsoft DirectX SDK (June 2010)",
+            "C:/DXSDK",
+            "D:/Program Files (x86)/Microsoft DirectX SDK (June 2010)"
+        };
+
+        for (const auto& path : search_paths) {
+            fs::path candidate(path);
+            if (fs::exists(candidate / "Include" / "d3d10.h")) {
+                sdk_path = candidate;
+                found_sdk = true;
+                break;
+            }
+        }
+    }
+
+    if (found_sdk) {
+        fs::path include_path = sdk_path / "Include";
+        fs::path lib_path_x86 = sdk_path / "Lib" / "x86";
+        fs::path lib_path_x64 = sdk_path / "Lib" / "x64";
+
+        if (fs::exists(include_path) && (fs::exists(lib_path_x86) || fs::exists(lib_path_x64))) {
+            result.found = true;
+            result.include_dirs = include_path.string();
+            // Default to x86 for legacy/Source Engine compatibility
+            if (fs::exists(lib_path_x86)) {
+                result.library_dirs = lib_path_x86.string();
+            }
+            if (fs::exists(lib_path_x64)) {
+                result.library_dirs_x64 = lib_path_x64.string();
+            }
+            result.libraries = "d3d10.lib;d3dx10.lib;dxgi.lib";
+            result.version = "June 2010";
+        } else {
+            result.error_message = "DirectX SDK found but Include/Lib directories missing";
+        }
+    } else {
+        result.error_message = "DirectX SDK (June 2010) not found. "
+                              "Install from DXSDK_Jun10.exe or set DXSDK_DIR environment variable.";
+    }
+#else
+    result.error_message = "DirectX 10 is only available on Windows";
 #endif
 
     return result;

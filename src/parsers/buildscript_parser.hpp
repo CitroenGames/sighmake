@@ -7,11 +7,12 @@ namespace vcxproj {
 // Result from package finding operations
 struct PackageFindResult {
     bool found = false;
-    std::string include_dirs;   // Semicolon-separated list
-    std::string libraries;      // Semicolon-separated list
-    std::string library_dirs;   // Semicolon-separated list
-    std::string version;        // Package version if detectable
-    std::string error_message;  // Error message if not found
+    std::string include_dirs;      // Semicolon-separated list
+    std::string libraries;         // Semicolon-separated list
+    std::string library_dirs;      // Semicolon-separated list (default/x86)
+    std::string library_dirs_x64;  // x64 library path (optional, for DX9/DX10)
+    std::string version;           // Package version if detectable
+    std::string error_message;     // Error message if not found
 };
 
 // Parser for buildscript files
@@ -126,6 +127,8 @@ private:
     PackageFindResult find_sdl3();
     PackageFindResult find_directx11();
     PackageFindResult find_directx12();
+    PackageFindResult find_directx9();
+    PackageFindResult find_directx10();
 
 #ifdef __linux__
     // Linux-specific pkg-config helper
