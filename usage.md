@@ -784,11 +784,32 @@ if(Windows)
 ```
 
 **Bracket notation:**
+
+Bracket notation supports four formats:
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| `[Config\|Platform]` | `defines[Debug\|Win32]` | Applies to specific configuration and platform |
+| `[Platform]` | `defines[Win32]` | Applies to all configurations for that platform |
+| `[Config]` | `defines[Debug]` | Applies to specific configuration (all platforms) |
+| `[*]` | `pch[*]` | Applies to all configurations and all platforms |
+
 ```ini
+# Wildcard: applies to ALL configurations and ALL platforms
+pch[*] = Use
+
+# Platform-only: applies to Debug|Linux AND Release|Linux
+defines[Linux] = __linux__, PLATFORM_LINUX
+libs[Linux] = pthread, dl
+
+# Platform-only: applies to Debug|Win32 AND Release|Win32 AND Debug|x64 AND Release|x64
 defines[Win32] = PLATFORM_WINDOWS
 defines[x64] = PLATFORM_WINDOWS
 libs[Win32] = user32.lib
 libs[x64] = user32.lib
+
+# Full config|platform: applies only to Debug|Win32
+defines[Debug|Win32] = _DEBUG, WIN32_DEBUG
 ```
 
 **When to use conditional blocks:**
@@ -798,7 +819,8 @@ libs[x64] = user32.lib
 **Important Notes:**
 - Conditional blocks can be nested
 - Settings inside blocks override settings defined outside
-- Cannot use configuration names in conditions (use `setting[Configuration]` syntax instead)
+- Platform-only bracket syntax (`[Linux]`, `[Win32]`) expands to all configurations for that platform
+- Wildcard bracket syntax (`[*]`) expands to all configuration and platform combinations
 
 ---
 
@@ -811,6 +833,7 @@ You can apply settings to individual source files using per-file syntax.
 ```ini
 filename.cpp:setting = value
 filename.cpp:setting[Configuration|Platform] = value
+filename.cpp:setting[*] = value   # Applies to all configurations/platforms
 ```
 
 ### Use Cases

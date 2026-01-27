@@ -1149,27 +1149,68 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
     }
 
     // Check for config-specific setting: setting[Debug|Win32] = value
+    // Also supports platform-only: setting[Linux] = value (applies to all configs for that platform)
     size_t bracket_start = key.find('[');
     size_t bracket_end = key.find(']');
     if (bracket_start != std::string::npos && bracket_end != std::string::npos) {
         std::string config_key = key.substr(bracket_start + 1, bracket_end - bracket_start - 1);
         std::string setting = trim(key.substr(0, bracket_start));
 
-        // If we're in a file_properties() block, apply to all files in the group
-        if (state.in_file_properties && !state.file_properties_files.empty()) {
-            for (SourceFile* file : state.file_properties_files) {
-                parse_file_setting(file->path, setting, config_key, resolved_value, state);
+        // Build list of config keys to apply setting to
+        std::vector<std::string> config_keys_to_apply;
+
+        // Check for full wildcard first (applies to all configs)
+        if (config_key == ALL_CONFIGS) {
+            // [*] syntax - expand to all config|platform combinations
+            if (state.solution) {
+                for (const auto& config : state.solution->configurations) {
+                    for (const auto& platform : state.solution->platforms) {
+                        config_keys_to_apply.push_back(config + "|" + platform);
+                    }
+                }
             }
-        }
-        // If we're in a set_file_properties() block, apply to that file
-        else if (state.in_set_file_properties && state.set_file_properties_file != nullptr) {
-            parse_file_setting(state.set_file_properties_file->path, setting, config_key, resolved_value, state);
-        }
-        // If we're in a file context, treat as per-file setting
-        else if (state.current_file != nullptr) {
-            parse_file_setting(state.current_file->path, setting, config_key, resolved_value, state);
+            // Fallback if no configurations defined yet
+            if (config_keys_to_apply.empty()) {
+                config_keys_to_apply.push_back("Debug|Win32");
+                config_keys_to_apply.push_back("Release|Win32");
+            }
+        } else if (config_key.find('|') == std::string::npos) {
+            // Platform-only syntax (e.g., [Linux], [Win32])
+            // Expand to all configurations for this platform
+            std::string platform = config_key;
+            if (state.solution) {
+                for (const auto& config : state.solution->configurations) {
+                    config_keys_to_apply.push_back(config + "|" + platform);
+                }
+            }
+            // Fallback if no configurations defined yet
+            if (config_keys_to_apply.empty()) {
+                config_keys_to_apply.push_back("Debug|" + platform);
+                config_keys_to_apply.push_back("Release|" + platform);
+            }
         } else {
-            parse_config_setting(setting, resolved_value, config_key, state);
+            // Full config|platform syntax (e.g., [Debug|Win32])
+            config_keys_to_apply.push_back(config_key);
+        }
+
+        // Apply setting to all matching config keys
+        for (const auto& cfg_key : config_keys_to_apply) {
+            // If we're in a file_properties() block, apply to all files in the group
+            if (state.in_file_properties && !state.file_properties_files.empty()) {
+                for (SourceFile* file : state.file_properties_files) {
+                    parse_file_setting(file->path, setting, cfg_key, resolved_value, state);
+                }
+            }
+            // If we're in a set_file_properties() block, apply to that file
+            else if (state.in_set_file_properties && state.set_file_properties_file != nullptr) {
+                parse_file_setting(state.set_file_properties_file->path, setting, cfg_key, resolved_value, state);
+            }
+            // If we're in a file context, treat as per-file setting
+            else if (state.current_file != nullptr) {
+                parse_file_setting(state.current_file->path, setting, cfg_key, resolved_value, state);
+            } else {
+                parse_config_setting(setting, resolved_value, cfg_key, state);
+            }
         }
         return;
     }
