@@ -1409,6 +1409,22 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
     // 2. SECOND: Set default toolsets and validate
     auto& toolset_registry = ToolsetRegistry::instance();
     std::string registry_default = toolset_registry.get_default();
+
+    // Validate CLI default against detected VS
+    if (!registry_default.empty()) {
+        int default_year = toolset_registry.get_toolset_year(registry_default);
+        if (default_year > vs_info->year) {
+            std::cerr << "Warning: CLI default toolset " << registry_default
+                      << " (Visual Studio " << default_year << ")"
+                      << " is newer than detected Visual Studio " << vs_info->year
+                      << " (toolset " << vs_info->platform_toolset << ").\n";
+            std::cerr << "         Falling back to detected toolset "
+                      << vs_info->platform_toolset << ".\n";
+            registry_default = vs_info->platform_toolset;
+            toolset_registry.set_default(registry_default);
+        }
+    }
+
     bool already_logged = false;
 
     for (auto& proj : solution.projects) {
