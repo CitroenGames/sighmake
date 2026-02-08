@@ -5397,6 +5397,48 @@ outdir[Release] = bin/Release
 outdir[Profile] = bin/Profile
 ```
 
+### Maximum Performance Build
+
+When migrating from a hand-tuned Visual Studio project, you may want to replicate aggressive MSVC optimization flags. Here's how each one maps to sighmake buildscript settings:
+
+| MSVC Flag | Purpose | Buildscript Equivalent |
+|-----------|---------|----------------------|
+| `/fp:fast` | Fast floating point (relaxed IEEE conformance) | `floating_point = Fast` |
+| `/GL` + `/LTCG` | Whole program optimization / link-time code generation | `whole_program_optimization = true` |
+| `/Oi` | Enable intrinsic functions | `intrinsic_functions = true` (Release default) |
+| `/Ob2` | Inline any suitable function | `inline_expansion = AnySuitable` |
+| `/Ob3` | Aggressive inlining (VS 2019 16.x+) | `cflags = /Ob3` (no direct buildscript equivalent) |
+
+**Full example — maximum performance Release configuration:**
+```ini
+[solution]
+name = MyApp
+configurations = Debug, Release
+platforms = x64
+
+[project:MyApp]
+type = exe
+sources = src/**/*.cpp
+headers = src/**/*.h
+includes = src
+std = 17
+
+# Release already enables: MaxSpeed (/O2), intrinsic_functions (/Oi),
+# function_level_linking (/Gy), enable_comdat_folding (/OPT:ICF),
+# and optimize_references (/OPT:REF) by default.
+
+# Additional performance settings for Release:
+floating_point[Release] = Fast
+whole_program_optimization[Release] = true
+inline_expansion[Release] = AnySuitable
+favor_size_or_speed[Release] = Speed
+
+# For /Ob3 (aggressive inlining, VS 2019 16.x+), use cflags:
+cflags[Release] = /Ob3
+```
+
+> **Note:** `intrinsic_functions` and `function_level_linking` are already enabled in the auto-populated Release configuration, so you don't need to set them explicitly unless you've defined a custom `[config:Release]` section.
+
 ### CMake Migration
 
 **Step 1:** Existing CMakeLists.txt
@@ -5839,6 +5881,13 @@ dir include\myheader.h
 | `optimization` | Optimization level | `Disabled`, `MinSize`, `MaxSpeed`, `Full` | Config dependent |
 | `runtime_library` | Runtime library | See Runtime Library table | Config dependent |
 | `debug_info` | Debug info format | `None`, `ProgramDatabase`, `EditAndContinue` | Config dependent |
+| `floating_point` | Floating point model | `Precise`, `Fast`, `Strict` | `Precise` |
+| `inline_expansion` | Inline function expansion | `Default`, `Disabled`, `OnlyExplicitInline`, `AnySuitable` | Compiler default |
+| `intrinsic_functions` | Enable intrinsic functions | `true`, `false` | Release: `true` |
+| `whole_program_optimization` | Whole program optimization (`/GL` + `/LTCG`) | `true`, `false` | `false` |
+| `favor_size_or_speed` | Favor size or speed | `Neither`, `Speed`, `Size` | `Neither` |
+| `cflags` | Additional compiler flags | Raw flags string | None |
+| `ldflags` | Additional linker flags | Raw flags string | None |
 
 #### Runtime Library Values
 
