@@ -371,6 +371,32 @@ includes = include, external/include, C:/Libraries/boost
 defines = MY_DEFINE, DEBUG_ENABLED, VERSION=1.0
 ```
 
+**Platform-specific defines with values:**
+
+Use bracket notation to set different defines per platform. Defines can be simple flags (`WIN32`) or key-value pairs (`_DLL_EXT=.dll`). Values are comma-separated.
+
+```ini
+# Defines applied to all configurations on Win32
+defines[Win32] = WIN32, _WIN32, _WINDOWS, COMPILER_MSVC, COMPILER_MSVC32, _DLL_EXT=.dll, _DLL_PREFIX=, _EXTERNAL_DLL_EXT=.dll, _USRDLL
+
+# Defines applied to all configurations on x64
+defines[x64] = WIN32, _WIN32, _WIN64, _WINDOWS, COMPILER_MSVC, COMPILER_MSVC64, PLATFORM_64BITS, _DLL_EXT=.dll, _DLL_PREFIX=, _EXTERNAL_DLL_EXT=.dll, _USRDLL
+```
+
+You can also combine project-wide defines with platform-specific ones. Project-wide defines are added first, then platform-specific defines are appended:
+
+```ini
+# These apply to ALL configurations and platforms
+defines = _CRT_SECURE_NO_WARNINGS, ENGINE_VERSION=2
+
+# These are added on top of the project-wide defines, per platform
+defines[Win32] = WIN32, _WIN32, _WINDOWS, COMPILER_MSVC32
+defines[x64] = WIN32, _WIN32, _WIN64, _WINDOWS, COMPILER_MSVC64, PLATFORM_64BITS
+defines[Linux] = __linux__, PLATFORM_LINUX, _DLL_EXT=.so, _DLL_PREFIX=lib
+```
+
+> **Note:** `_DEBUG` is automatically added for Debug configurations and `NDEBUG` for Release configurations — you don't need to specify them manually.
+
 ### Output Directories
 
 | Setting | Description | Example |
