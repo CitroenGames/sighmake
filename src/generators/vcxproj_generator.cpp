@@ -1247,6 +1247,14 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
         file << "EndProject\n";
     }
 
+    // Solution folders
+    for (const auto& folder : solution.folders) {
+        file << "Project(\"{2150E333-8FDC-42A3-9474-1A3956D46DE8}\") = \""
+             << folder.name << "\", \"" << folder.name << "\", \"{"
+             << folder.uuid << "}\"\n";
+        file << "EndProject\n";
+    }
+
     // Global section
     file << "Global\n";
 
@@ -1281,6 +1289,23 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
     file << "\t\tHideSolutionNode = FALSE\n";
     file << "\tEndGlobalSection\n";
 
+    // Nested projects (solution folder membership)
+    if (!solution.folders.empty()) {
+        std::map<std::string, std::string> folder_uuid_map;
+        for (const auto& f : solution.folders)
+            folder_uuid_map[f.name] = f.uuid;
+
+        file << "\tGlobalSection(NestedProjects) = preSolution\n";
+        for (const auto& proj : solution.projects) {
+            if (!proj.solution_folder.empty()) {
+                auto it = folder_uuid_map.find(proj.solution_folder);
+                if (it != folder_uuid_map.end())
+                    file << "\t\t{" << proj.uuid << "} = {" << it->second << "}\n";
+            }
+        }
+        file << "\tEndGlobalSection\n";
+    }
+
     file << "EndGlobal\n";
     file.close();
     return true;
@@ -1313,8 +1338,8 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
         plat_elem.append_attribute("Name") = platform.c_str();
     }
 
-    // Projects
-    for (const auto& proj : solution.projects) {
+    // Helper: emit a Project element under a given parent node
+    auto emit_project = [&](pugi::xml_node parent, const Project& proj) {
         // Compute relative path to vcxproj
         std::string vcxproj_path;
 #if PROJ_SEPERATOR
@@ -1334,19 +1359,17 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
         vcxproj_path = proj.name + GENERATED_VCXPROJ;
 #endif
 
-        auto project = root.append_child("Project");
+        auto project = parent.append_child("Project");
         project.append_attribute("Path") = vcxproj_path.c_str();
         project.append_attribute("Type") = "8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942"; // C++ GUID
         project.append_attribute("Id") = proj.uuid.c_str();
 
         // Add build dependencies
         for (const auto& dep : proj.project_references) {
-            // Skip INTERFACE dependencies - they don't get linked
             if (dep.visibility == DependencyVisibility::INTERFACE) {
                 continue;
             }
 
-            // Find the referenced project path
             std::string dep_path;
             for (const auto& dep_proj : solution.projects) {
                 if (dep_proj.name == dep.name) {
@@ -1375,6 +1398,26 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
                 dep_elem.append_attribute("Project") = dep_path.c_str();
             }
         }
+    };
+
+    // Solution folders with their child projects
+    std::map<std::string, pugi::xml_node> folder_nodes;
+    for (const auto& folder : solution.folders) {
+        auto folder_node = root.append_child("Folder");
+        folder_node.append_attribute("Name") = ("/" + folder.name + "/").c_str();
+        folder_nodes[folder.name] = folder_node;
+    }
+
+    // Projects
+    for (const auto& proj : solution.projects) {
+        if (!proj.solution_folder.empty()) {
+            auto it = folder_nodes.find(proj.solution_folder);
+            if (it != folder_nodes.end()) {
+                emit_project(it->second, proj);
+                continue;
+            }
+        }
+        emit_project(root, proj);
     }
 
     // Save to file with tab indentation

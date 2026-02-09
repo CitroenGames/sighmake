@@ -4070,6 +4070,99 @@ intdir[Release] = obj/Engine/Release
 5. **Consistent naming**: Use clear project names
 6. **Document dependencies**: Add comments explaining relationships
 
+### Solution Folders
+
+For large solutions, you can group projects into Visual Studio solution folders using `folder()` blocks. Projects inside a folder block (or included from within one) appear under that folder in Solution Explorer.
+
+**Basic usage:**
+
+```ini
+[solution]
+name = GameEngine
+
+folder("Engine") {
+    include = engine/core.buildscript
+    include = engine/renderer.buildscript
+    include = engine/audio.buildscript
+}
+
+folder("Tools") {
+    include = tools/editor.buildscript
+    include = tools/asset_pipeline.buildscript
+}
+
+# Projects outside any folder appear at the root level
+include = launcher/launcher.buildscript
+```
+
+**Inline projects:**
+
+You can also define projects directly inside a folder block:
+
+```ini
+folder("Libraries") {
+    [project:MathLib]
+    type = lib
+    sources = math/*.cpp
+
+    [project:Utils]
+    type = lib
+    sources = utils/*.cpp
+}
+
+[project:App]
+type = exe
+sources = app/*.cpp
+depends = MathLib, Utils
+```
+
+**Brace placement:**
+
+The opening brace can be on the same line or the next line:
+
+```ini
+# Same line
+folder("Engine") {
+    include = engine/engine.buildscript
+}
+
+# Next line
+folder("Engine")
+{
+    include = engine/engine.buildscript
+}
+```
+
+**Quoting:**
+
+Folder names can be quoted or unquoted:
+
+```ini
+folder("Engine") {   # quoted
+    ...
+}
+
+folder(Tools) {      # unquoted
+    ...
+}
+```
+
+**Pass-through buildscripts:**
+
+Folder context flows through includes. A buildscript that only includes other buildscripts will pass the folder assignment to all projects defined in those included files:
+
+```ini
+# main.buildscript
+folder("Engine") {
+    include = engine/projects.buildscript
+}
+
+# engine/projects.buildscript (pass-through - no projects defined here)
+include = core.buildscript
+include = renderer.buildscript
+# Both core and renderer projects end up in the "Engine" folder
+```
+
 ---
 
 ## 17. Advanced Patterns

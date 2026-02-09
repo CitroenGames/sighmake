@@ -247,6 +247,7 @@ struct Project {
     bool ignore_warn_compile_duplicated_filename = false;
     std::string vcxproj_path;                           // Original .vcxproj file path (for reverse conversion)
     std::string buildscript_path;                       // Buildscript file path (for path resolution in custom commands)
+    std::string solution_folder;                        // Solution folder name (empty = root level)
 
     std::vector<SourceFile> sources;
     std::vector<LibraryFile> libraries;
@@ -266,6 +267,11 @@ struct Project {
     std::vector<std::string> public_defines;    // Preprocessor definitions exposed to dependents
 };
 
+struct SolutionFolder {
+    std::string name;
+    std::string uuid;
+};
+
 // Solution
 struct Solution {
     std::string name;
@@ -273,6 +279,7 @@ struct Solution {
     std::vector<std::string> configurations;            // ["Debug", "Release"]
     std::vector<std::string> platforms;                 // ["Win32", "x64"]
     std::vector<Project> projects;
+    std::vector<SolutionFolder> folders;
 
     // Get all configuration keys (e.g., "Debug|Win32", "Release|x64")
     std::vector<std::string> get_config_keys() const {

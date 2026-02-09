@@ -62,6 +62,12 @@ private:
         bool pending_if_condition = false;  // True if we saw if() without { on same line
         bool pending_if_result = false;     // Result of evaluate_condition() for pending if
 
+        // Folder block tracking
+        std::string current_folder;
+        bool in_folder_block = false;
+        bool pending_folder_brace = false;
+        std::string pending_folder_name;
+
         struct ScopeState {
             bool executing;
             bool condition_met;
