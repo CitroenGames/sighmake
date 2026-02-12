@@ -10,6 +10,7 @@ enum class FileType {
     ClCompile,      // .cpp files
     ClInclude,      // .h, .hpp files
     CustomBuild,    // Files with custom build rules
+    MASM,           // .asm, .masm files
     None,           // Other files
     ResourceCompile // .rc files
 };
@@ -252,6 +253,7 @@ struct Project {
     std::vector<SourceFile> sources;
     std::vector<LibraryFile> libraries;
     std::vector<ProjectDependency> project_references;  // Structured dependencies with visibility
+    bool has_masm_files = false;                        // Track if project contains MASM files
 
     std::map<std::string, Configuration> configurations; // Key is "Config|Platform"
 
@@ -332,6 +334,8 @@ inline FileType get_file_type(const std::string& path) {
         return FileType::ClInclude;
     } else if (ext == ".rc") {
         return FileType::ResourceCompile;
+    } else if (ext == ".asm" || ext == ".masm") {
+        return FileType::MASM;
     }
 
     return FileType::None;

@@ -360,6 +360,8 @@ std = 20
 |---------|-------------|-------------------|
 | `sources` | Source files to compile | Yes |
 | `headers` | Header files (for IDE organization) | Yes |
+| `resources` | Resource files (.rc) | Yes |
+| `masm` | MASM assembly files (.asm, .masm) | Yes |
 | `includes` | Include directories (comma-separated) | No |
 | `defines` | Preprocessor definitions (comma-separated) | No |
 
@@ -370,6 +372,23 @@ headers = include/**/*.h
 includes = include, external/include, C:/Libraries/boost
 defines = MY_DEFINE, DEBUG_ENABLED, VERSION=1.0
 ```
+
+**MASM Assembly Files:**
+
+For x64 builds that require assembly code (e.g., coroutine support), use the `masm` setting with a platform specifier:
+
+```ini
+# Single MASM file for x64 only
+masm[x64] = getstackptr64.masm
+
+# Multiple MASM files
+masm[x64] = {
+    getstackptr64.masm
+    context_switch.masm
+}
+```
+
+When using `masm[x64]`, the assembly files are automatically excluded from Win32 builds. This generates the proper `<MASM>` ItemGroup in the vcxproj and imports the required `masm.props` and `masm.targets` build customizations.
 
 **Platform-specific defines with values:**
 
@@ -5980,6 +5999,8 @@ dir include\myheader.h
 | `type` | Project type | `exe`, `lib`, `dll` | Required |
 | `sources` | Source files | File paths, supports wildcards | Required |
 | `headers` | Header files | File paths, supports wildcards | None |
+| `resources` | Resource files (.rc) | File paths, supports wildcards | None |
+| `masm` | MASM assembly files | File paths, supports wildcards | None |
 | `includes` | Include directories | Comma-separated paths | None |
 | `defines` | Preprocessor defines | Comma-separated defines | None |
 | `std` | C++ standard | `14`, `17`, `20`, `23` | Compiler default |

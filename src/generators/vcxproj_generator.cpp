@@ -184,6 +184,7 @@ std::string VcxprojGenerator::get_file_type_name(FileType type) {
         case FileType::ClCompile: return "ClCompile";
         case FileType::ClInclude: return "ClInclude";
         case FileType::CustomBuild: return "CustomBuild";
+        case FileType::MASM: return "MASM";
         case FileType::ResourceCompile: return "ResourceCompile";
         default: return "None";
     }
@@ -299,8 +300,13 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     auto import2 = root.append_child("Import");
     import2.append_attribute("Project") = "$(VCTargetsPath)\\Microsoft.Cpp.props";
 
-    // Extension settings
-    root.append_child("ImportGroup").append_attribute("Label") = "ExtensionSettings";
+    // Extension settings - conditionally import MASM props if project has MASM files
+    auto ext_settings = root.append_child("ImportGroup");
+    ext_settings.append_attribute("Label") = "ExtensionSettings";
+    if (project.has_masm_files) {
+        auto masm_import = ext_settings.append_child("Import");
+        masm_import.append_attribute("Project") = "$(VCTargetsPath)\\BuildCustomizations\\masm.props";
+    }
 
     // Property sheets
     for (const auto& config_key : solution.get_config_keys()) {
@@ -1174,8 +1180,13 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     auto import3 = root.append_child("Import");
     import3.append_attribute("Project") = "$(VCTargetsPath)\\Microsoft.Cpp.targets";
 
-    // Extension targets
-    root.append_child("ImportGroup").append_attribute("Label") = "ExtensionTargets";
+    // Extension targets - conditionally import MASM targets if project has MASM files
+    auto ext_targets = root.append_child("ImportGroup");
+    ext_targets.append_attribute("Label") = "ExtensionTargets";
+    if (project.has_masm_files) {
+        auto masm_import = ext_targets.append_child("Import");
+        masm_import.append_attribute("Project") = "$(VCTargetsPath)\\BuildCustomizations\\masm.targets";
+    }
 
     // Save to file
     return doc.save_file(output_path.c_str(), "  ", pugi::format_default | pugi::format_write_bom);

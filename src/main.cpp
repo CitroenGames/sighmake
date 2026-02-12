@@ -2,6 +2,7 @@
 #include "config.hpp"
 #include "parsers/buildscript_parser.hpp"
 #include "parsers/cmake_parser.hpp"
+#include "parsers/vpc_parser.hpp"
 #include "generators/vcxproj_generator.hpp"
 #include "generators/makefile_generator.hpp"
 #include "parsers/vcxproj_reader.hpp"
@@ -13,7 +14,8 @@ void print_usage(const char* program_name) {
     std::cout << "sighmake - Build system generator\n\n";
     std::cout << "Usage:\n";
     std::cout << "  " << program_name << " <buildscript|CMakeLists.txt> [options]\n";
-    std::cout << "  " << program_name << " --convert <solution.sln> [options]\n\n";
+    std::cout << "  " << program_name << " --convert <solution.sln> [options]\n";
+    std::cout << "  " << program_name << " convert vpc <file.vpc> [options]\n\n";
     std::cout << "Options:\n";
     std::cout << "  -g, --generator <type>     Generator type (default: vcxproj)\n";
     std::cout << "  -c, --convert              Convert Visual Studio solution to buildscripts\n";
@@ -21,10 +23,13 @@ void print_usage(const char* program_name) {
     std::cout << "      --list-toolsets        List available toolsets\n";
     std::cout << "  -l, --list                 List available generators\n";
     std::cout << "  -h, --help                 Show this help message\n\n";
+    std::cout << "Commands:\n";
+    std::cout << "  convert vpc <file.vpc>     Convert VPC file to buildscript format\n\n";
     std::cout << "Examples:\n";
     std::cout << "  " << program_name << " project.buildscript -t msvc2022\n";
     std::cout << "  " << program_name << " CMakeLists.txt -g makefile\n";
     std::cout << "  " << program_name << " --convert solution.sln\n";
+    std::cout << "  " << program_name << " convert vpc project.vpc\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -40,6 +45,57 @@ int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage(argv[0]);
         return 1;
+    }
+
+    // Handle "convert" subcommand
+    if (argc >= 2 && strcmp(argv[1], "convert") == 0) {
+        if (argc < 4) {
+            std::cerr << "Usage: " << argv[0] << " convert <format> <file>\n";
+            std::cerr << "Formats: vpc\n";
+            return 1;
+        }
+
+        std::string format = argv[2];
+        std::string input_file = argv[3];
+
+        if (format == "vpc") {
+            // Convert VPC to buildscript
+            if (!fs::exists(input_file)) {
+                std::cerr << "Error: VPC file not found: " << input_file << "\n";
+                return 1;
+            }
+
+            try {
+                std::cout << "Parsing VPC file: " << input_file << "\n";
+
+                vcxproj::VpcParser parser;
+                vcxproj::Solution solution = parser.parse(input_file);
+
+                std::cout << "Solution: " << solution.name << "\n";
+                std::cout << "Projects: " << solution.projects.size() << "\n";
+
+                vcxproj::BuildscriptWriter writer;
+                std::string output_dir = fs::path(input_file).parent_path().string();
+                if (output_dir.empty()) {
+                    output_dir = ".";
+                }
+
+                if (!writer.write_solution_buildscripts(solution, output_dir)) {
+                    std::cerr << "Error: Failed to write buildscripts\n";
+                    return 1;
+                }
+
+                std::cout << "\nSuccess! Converted VPC to " << solution.projects.size() << " buildscript(s).\n";
+                return 0;
+
+            } catch (const std::exception& e) {
+                std::cerr << "Error: " << e.what() << "\n";
+                return 1;
+            }
+        } else {
+            std::cerr << "Error: Unknown format '" << format << "'. Supported formats: vpc\n";
+            return 1;
+        }
     }
 
     std::string buildscript_path;

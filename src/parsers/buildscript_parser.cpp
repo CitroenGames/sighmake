@@ -1245,6 +1245,38 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
             config_keys_to_apply.push_back(config_key);
         }
 
+        // Special handling for MASM files with platform specifier
+        // e.g., masm[x64] = file.masm should exclude other platforms
+        if ((setting == "masm" || setting == "asm_sources" || setting == "assembly") &&
+            state.current_project != nullptr && config_key.find('|') == std::string::npos) {
+
+            Project& proj = *state.current_project;
+            proj.has_masm_files = true;
+            std::string specified_platform = config_key;
+
+            auto entries = split(resolved_value, ',');
+            for (const auto& src : entries) {
+                auto [path, include] = parse_filename_with_condition(src);
+                if (path.empty() || !include) continue;
+
+                auto* file = find_or_create_source(path, state);
+                if (file) {
+                    file->type = FileType::MASM;
+
+                    // Mark all platforms OTHER than the specified one as excluded
+                    if (state.solution) {
+                        for (const auto& cfg_key : state.solution->get_config_keys()) {
+                            auto [cfg_config, cfg_platform] = parse_config_key(cfg_key);
+                            if (to_lower(cfg_platform) != to_lower(specified_platform)) {
+                                file->settings.excluded[cfg_key] = true;
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         // Apply setting to all matching config keys
         for (const auto& cfg_key : config_keys_to_apply) {
             // If we're in a file_properties() block, apply to all files in the group
@@ -1610,6 +1642,58 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
 
                 auto* file = find_or_create_source(expanded_path, state);
                 if (file) file->type = FileType::ResourceCompile;
+            }
+        }
+    }
+    // MASM assembly files
+    else if (key == "masm" || key == "asm_sources" || key == "assembly") {
+        auto entries = split(value, ',');
+
+        // Mark project as having MASM files
+        proj.has_masm_files = true;
+
+        // Pass 1: Collect explicit files with conditions
+        std::map<std::string, bool> explicit_overrides;
+
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+
+            if (!is_wildcard_path(path) && !condition.empty()) {
+                std::string abs_path = resolve_path(path, state.base_path);
+                explicit_overrides[abs_path] = include;
+
+                if (include) {
+                    auto* file = find_or_create_source(path, state);
+                    if (file) file->type = FileType::MASM;
+                }
+            }
+        }
+
+        // Pass 2: Process all entries
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+
+            if (!is_wildcard_path(path) && !condition.empty()) continue;
+
+            if (!is_wildcard_path(path)) {
+                auto* file = find_or_create_source(path, state);
+                if (file) file->type = FileType::MASM;
+                continue;
+            }
+
+            if (!include) continue;
+
+            auto expanded = expand_wildcards(path, state.base_path);
+            for (const auto& expanded_path : expanded) {
+                std::string abs_path = resolve_path(expanded_path, state.base_path);
+
+                auto it = explicit_overrides.find(abs_path);
+                if (it != explicit_overrides.end()) continue;
+
+                auto* file = find_or_create_source(expanded_path, state);
+                if (file) file->type = FileType::MASM;
             }
         }
     } else if (key == "libs" || key == "libraries") {
