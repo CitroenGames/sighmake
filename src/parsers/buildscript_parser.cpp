@@ -2218,8 +2218,12 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.int_dir = resolve_path(value, state.base_path);
     } else if (key == "includes" || key == "additional_include_directories") {
         auto dirs = split(value, ',');
+        std::vector<std::string> resolved_dirs;
+        for (const auto& dir : dirs) {
+            resolved_dirs.push_back(resolve_path(dir, state.base_path));
+        }
         cfg.cl_compile.additional_include_directories.insert(
-            cfg.cl_compile.additional_include_directories.end(), dirs.begin(), dirs.end());
+            cfg.cl_compile.additional_include_directories.end(), resolved_dirs.begin(), resolved_dirs.end());
     } else if (key == "defines" || key == "preprocessor_definitions") {
         auto defs = split(value, ',');
         cfg.cl_compile.preprocessor_definitions.insert(
@@ -2382,8 +2386,12 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.resource_compile.culture = value;
     } else if (key == "resource_includes" || key == "resource_additional_include_directories" || key == "rc_includes") {
         auto dirs = split(value, ',');
+        std::vector<std::string> resolved_dirs;
+        for (const auto& dir : dirs) {
+            resolved_dirs.push_back(resolve_path(dir, state.base_path));
+        }
         cfg.resource_compile.additional_include_directories.insert(
-            cfg.resource_compile.additional_include_directories.end(), dirs.begin(), dirs.end());
+            cfg.resource_compile.additional_include_directories.end(), resolved_dirs.begin(), resolved_dirs.end());
     }
     // Xdcmake/Bscmake settings
     else if (key == "xdcmake_suppress_startup_banner") {
