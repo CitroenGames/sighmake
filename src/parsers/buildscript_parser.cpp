@@ -654,6 +654,23 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                               project.project_level_preprocessor_definitions.end());
             }
         }
+
+        // Ensure config_type is consistent across all configurations
+        // This handles the case where project-level 'type' was set before all configs were discovered
+        std::string project_type;
+        for (const auto& [key, cfg] : project.configurations) {
+            if (!cfg.config_type.empty()) {
+                project_type = cfg.config_type;
+                break;
+            }
+        }
+        if (!project_type.empty()) {
+            for (auto& [key, cfg] : project.configurations) {
+                if (cfg.config_type.empty()) {
+                    cfg.config_type = project_type;
+                }
+            }
+        }
     }
 
     // Phase 3: Propagate public_includes, public_libs, and public_defines from dependencies
