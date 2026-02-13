@@ -2332,8 +2332,15 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
     } else if (key == "libs" || key == "additional_dependencies") {
         // Config-level libs should go into AdditionalDependencies
         auto libs = split(value, ',');
-        cfg.link.additional_dependencies.insert(
-            cfg.link.additional_dependencies.end(), libs.begin(), libs.end());
+        // For static libraries, use lib.additional_dependencies (Librarian)
+        // For applications/DLLs, use link.additional_dependencies (Linker)
+        if (cfg.config_type == "StaticLibrary") {
+            cfg.lib.additional_dependencies.insert(
+                cfg.lib.additional_dependencies.end(), libs.begin(), libs.end());
+        } else {
+            cfg.link.additional_dependencies.insert(
+                cfg.link.additional_dependencies.end(), libs.begin(), libs.end());
+        }
     } else if (key == "libdirs" || key == "lib_dirs" || key == "additional_library_directories") {
         auto dirs = split(value, ',');
         cfg.link.additional_library_directories.insert(
