@@ -944,6 +944,23 @@ warning_level = Level4
 legacy/old_code.cpp:warning_level = Level2
 ```
 
+**6. Excluding Files from Build**
+
+Exclude specific files from one or more configurations:
+
+```ini
+# Exclude a file from Release builds
+debug_helpers.cpp:excluded[Release|x64] = true
+
+# Exclude from all configurations/platforms
+deprecated_module.cpp:excluded[*] = true
+
+# Exclude from a single configuration
+win_only.cpp:excluded[Debug|x64] = true
+```
+
+Accepted aliases: `exclude`, `excluded`, `excluded_from_build`. Values: `true`, `yes`, `1`.
+
 ### Full Example
 
 ```ini
@@ -970,6 +987,9 @@ src/debug/debugger.cpp:optimization = Disabled
 
 # High optimization for hot path
 src/core/inner_loop.cpp:optimization[Release] = Full
+
+# Exclude debug-only files from Release
+src/debug/debug_helpers.cpp:excluded[Release] = true
 ```
 
 ### Important Notes
@@ -2076,6 +2096,30 @@ When parsing a buildscript with find_package, you'll see:
   Libraries: SDL2.lib;SDL2main.lib
   Library dirs: C:\Libraries\SDL2-2.30.0\lib\x64
 ```
+
+### Configuration-Specific Library Exclusion
+
+Use `excluded_library` to include a library only in specific configurations. The library is added to the project but marked as excluded from all configurations except the one specified.
+
+**Syntax:**
+```ini
+excluded_library[Configuration|Platform] = library.lib
+```
+
+**Example:**
+```ini
+[project:MyApp]
+type = exe
+sources = src/*.cpp
+
+# Link a profiling library only in Debug builds
+excluded_library[Debug|x64] = ProfilerLib.lib
+
+# Link a special allocator only in Release
+excluded_library[Release|x64] = MiMalloc.lib
+```
+
+This generates `<ExcludedFromBuild>true</ExcludedFromBuild>` for all other configurations in the Visual Studio project, so the library is only linked when building the specified configuration.
 
 ---
 
@@ -6057,6 +6101,21 @@ dir include\myheader.h
 | `depends` | Project dependencies | Comma-separated project names | None |
 | `libs` | Library dependencies | Comma-separated library files | None |
 | `libdirs` | Library search paths | Comma-separated paths | None |
+| `excluded_library` | Library included only in specified config | Library file path | None |
+
+#### Per-File Settings
+
+| Setting | Description | Valid Values |
+|---------|-------------|--------------|
+| `excluded` | Exclude file from build | `true`, `false` |
+| `optimization` | Per-file optimization level | `Disabled`, `MinSize`, `MaxSpeed`, `Full` |
+| `warning_level` | Per-file warning level | `Level0`–`Level4` |
+| `defines` | Per-file preprocessor defines | Comma-separated defines |
+| `cflags` | Per-file additional compiler flags | Raw flags string |
+| `compile_as` | Override compilation language | `CompileAsC`, `CompileAsCpp` |
+| `object_file` | Custom object file name | Path |
+
+Aliases for `excluded`: `exclude`, `excluded_from_build`
 
 #### PCH Settings
 
