@@ -264,9 +264,14 @@ struct Project {
     std::vector<std::string> project_level_preprocessor_definitions;
 
     // Public properties that propagate to dependent projects via target_link_libraries
-    std::vector<std::string> public_includes;   // Include directories exposed to dependents
-    std::vector<std::string> public_libs;       // Libraries exposed to dependents
-    std::vector<std::string> public_defines;    // Preprocessor definitions exposed to dependents
+    std::vector<std::string> public_includes;   // Include directories exposed to dependents (all configs)
+    std::vector<std::string> public_libs;       // Libraries exposed to dependents (all configs)
+    std::vector<std::string> public_defines;    // Preprocessor definitions exposed to dependents (all configs)
+
+    // Per-configuration public properties (for bracket notation like public_libs[Win32])
+    std::map<std::string, std::vector<std::string>> public_includes_per_config;
+    std::map<std::string, std::vector<std::string>> public_libs_per_config;
+    std::map<std::string, std::vector<std::string>> public_defines_per_config;
 };
 
 struct SolutionFolder {

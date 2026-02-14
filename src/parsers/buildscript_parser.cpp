@@ -224,7 +224,7 @@ std::pair<std::string, bool> BuildscriptParser::parse_filename_with_condition(co
         if (open_bracket != std::string::npos) {
             std::string condition = trimmed.substr(open_bracket + 1, trimmed.size() - open_bracket - 2);
             path = trim(trimmed.substr(0, open_bracket));
-            include = evaluate_condition(condition);
+            include = evaluate_condition(condition).should_execute;
         }
     }
 
@@ -252,7 +252,7 @@ BuildscriptParser::parse_filename_with_condition_extended(const std::string& ent
         if (open_bracket != std::string::npos) {
             condition = trimmed.substr(open_bracket + 1, trimmed.size() - open_bracket - 2);
             path = trim(trimmed.substr(0, open_bracket));
-            include = evaluate_condition(condition);
+            include = evaluate_condition(condition).should_execute;
         }
     }
 
@@ -800,16 +800,18 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
 
         if (start_paren != std::string::npos && end_paren != std::string::npos) {
             std::string condition = trimmed.substr(start_paren + 1, end_paren - start_paren - 1);
-            bool cond_met = evaluate_condition(condition);
+            auto result = evaluate_condition(condition);
+            bool cond_met = result.should_execute;
             bool parent_exec = state.is_executing();
 
             if (brace_pos != std::string::npos && brace_pos > end_paren) {
                 // Brace on same line: if(condition) {
-                state.conditional_stack.push_back({parent_exec && cond_met, cond_met, 0});
+                state.conditional_stack.push_back({parent_exec && cond_met, cond_met, 0, result.platform_filter});
             } else {
                 // No brace on this line: if(condition) - wait for { on next line
                 state.pending_if_condition = true;
                 state.pending_if_result = cond_met;
+                state.pending_if_platform_filter = result.platform_filter;
             }
             return;
         }
@@ -818,8 +820,9 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
     // Handle opening brace for pending if condition (brace on next line)
     if (trimmed == "{" && state.pending_if_condition) {
         bool parent_exec = state.is_executing();
-        state.conditional_stack.push_back({parent_exec && state.pending_if_result, state.pending_if_result, 0});
+        state.conditional_stack.push_back({parent_exec && state.pending_if_result, state.pending_if_result, 0, state.pending_if_platform_filter});
         state.pending_if_condition = false;
+        state.pending_if_platform_filter.clear();
         return;
     }
 
@@ -1333,7 +1336,21 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
         // We're in a [config:...] section
         parse_config_setting(key, resolved_value, state.current_config, state);
     } else {
-        parse_project_setting(key, resolved_value, state);
+        // Check for active platform filter from if(Win32)/if(x64) blocks
+        std::string pf = state.get_platform_filter();
+        if (!pf.empty() && state.solution) {
+            // Route through config-specific path for matching platform configs only
+            bool handled = false;
+            for (const auto& config : state.solution->configurations) {
+                handled = parse_config_setting(key, resolved_value, config + "|" + pf, state);
+            }
+            if (!handled) {
+                // Key not recognized as config-specific — fall back to project-level
+                parse_project_setting(key, resolved_value, state);
+            }
+        } else {
+            parse_project_setting(key, resolved_value, state);
+        }
     }
 }
 
@@ -2285,9 +2302,9 @@ void BuildscriptParser::parse_file_setting(const std::string& file_path, const s
     }
 }
 
-void BuildscriptParser::parse_config_setting(const std::string& key, const std::string& value,
+bool BuildscriptParser::parse_config_setting(const std::string& key, const std::string& value,
                                               const std::string& config_key, ParseState& state) {
-    if (!state.current_project) return;
+    if (!state.current_project) return false;
     
     auto& cfg = state.current_project->configurations[config_key];
     
@@ -2577,11 +2594,27 @@ void BuildscriptParser::parse_config_setting(const std::string& key, const std::
             }
         }
     }
-    // Also support the same keys as project settings
-    else {
-        // Forward to project setting parser but it will only affect this config
-        // This is a simplified approach - in production you'd want more granular control
+    // Per-config public properties (for bracket notation like public_libs[Win32])
+    else if (key == "public_libs" || key == "public_libraries") {
+        auto libs = split(value, ',');
+        for (const auto& lib : libs) {
+            state.current_project->public_libs_per_config[config_key].push_back(
+                resolve_path(trim(lib), state.base_path));
+        }
+    } else if (key == "public_includes" || key == "public_include_dirs") {
+        auto dirs = split(value, ',');
+        for (const auto& dir : dirs) {
+            state.current_project->public_includes_per_config[config_key].push_back(
+                resolve_path(trim(dir), state.base_path));
+        }
+    } else if (key == "public_defines" || key == "public_preprocessor_definitions") {
+        auto defs = split(value, ',');
+        auto& v = state.current_project->public_defines_per_config[config_key];
+        v.insert(v.end(), defs.begin(), defs.end());
+    } else {
+        return false;  // Key not recognized as a config-specific setting
     }
+    return true;
 }
 
 void BuildscriptParser::apply_template(Project& project, const std::string& derived_key,
@@ -2908,7 +2941,7 @@ void BuildscriptParser::parse_uses_pch(const std::string& line, ParseState& stat
     }
 }
 
-bool BuildscriptParser::evaluate_condition(const std::string& condition) {
+BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const std::string& condition) {
     std::string cond = trim(condition);
 
     // Convert to lowercase for case-insensitive matching
@@ -2927,20 +2960,27 @@ bool BuildscriptParser::evaluate_condition(const std::string& condition) {
     is_osx = true;
 #endif
 
-    if (cond == "windows" || cond == "win32") return is_windows;
-    if (cond == "linux") return is_linux;
-    if (cond == "osx" || cond == "macos" || cond == "darwin") return is_osx;
-    
+    // OS-level conditions: settings apply to ALL configurations
+    if (cond == "windows") return {is_windows, ""};
+    if (cond == "linux") return {is_linux, ""};
+    if (cond == "osx" || cond == "macos" || cond == "darwin") return {is_osx, ""};
+
+    // Platform-level conditions: settings apply only to matching platform configurations
+    if (cond == "win32") return {is_windows, "Win32"};
+    if (cond == "x64") return {is_windows, "x64"};
+
     // Check for negation
     if (cond.size() > 1 && cond[0] == '!') {
          std::string sub = cond.substr(1);
-         if (sub == "windows" || sub == "win32") return !is_windows;
-         if (sub == "linux") return !is_linux;
-         if (sub == "osx" || sub == "macos" || sub == "darwin") return !is_osx;
+         if (sub == "windows") return {!is_windows, ""};
+         if (sub == "linux") return {!is_linux, ""};
+         if (sub == "osx" || sub == "macos" || sub == "darwin") return {!is_osx, ""};
+         if (sub == "win32") return {is_windows, "x64"};
+         if (sub == "x64") return {is_windows, "Win32"};
     }
 
     std::cerr << "Warning: Unknown condition '" << condition << "'\n";
-    return false;
+    return {false, ""};
 }
 
 void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
@@ -2990,7 +3030,7 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
             for (const auto& config_key : solution.get_config_keys()) {
                 // Add locally if visibility permits (PUBLIC or PRIVATE)
                 if (should_add_locally) {
-                    // Propagate public_includes
+                    // Propagate public_includes (all-config)
                     auto& proj_includes = proj.configurations[config_key]
                         .cl_compile.additional_include_directories;
                     for (const auto& inc : dep->public_includes) {
@@ -2999,8 +3039,18 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
                             proj_includes.push_back(inc);
                         }
                     }
+                    // Propagate public_includes (per-config)
+                    auto inc_it = dep->public_includes_per_config.find(config_key);
+                    if (inc_it != dep->public_includes_per_config.end()) {
+                        for (const auto& inc : inc_it->second) {
+                            if (std::find(proj_includes.begin(), proj_includes.end(), inc)
+                                == proj_includes.end()) {
+                                proj_includes.push_back(inc);
+                            }
+                        }
+                    }
 
-                    // Propagate public_libs
+                    // Propagate public_libs (all-config)
                     auto& proj_libs = proj.configurations[config_key]
                         .link.additional_dependencies;
                     for (const auto& lib : dep->public_libs) {
@@ -3009,14 +3059,34 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
                             proj_libs.push_back(lib);
                         }
                     }
+                    // Propagate public_libs (per-config)
+                    auto lib_it = dep->public_libs_per_config.find(config_key);
+                    if (lib_it != dep->public_libs_per_config.end()) {
+                        for (const auto& lib : lib_it->second) {
+                            if (std::find(proj_libs.begin(), proj_libs.end(), lib)
+                                == proj_libs.end()) {
+                                proj_libs.push_back(lib);
+                            }
+                        }
+                    }
 
-                    // Propagate public_defines
+                    // Propagate public_defines (all-config)
                     auto& proj_defines = proj.configurations[config_key]
                         .cl_compile.preprocessor_definitions;
                     for (const auto& def : dep->public_defines) {
                         if (std::find(proj_defines.begin(), proj_defines.end(), def)
                             == proj_defines.end()) {
                             proj_defines.push_back(def);
+                        }
+                    }
+                    // Propagate public_defines (per-config)
+                    auto def_it = dep->public_defines_per_config.find(config_key);
+                    if (def_it != dep->public_defines_per_config.end()) {
+                        for (const auto& def : def_it->second) {
+                            if (std::find(proj_defines.begin(), proj_defines.end(), def)
+                                == proj_defines.end()) {
+                                proj_defines.push_back(def);
+                            }
                         }
                     }
                 }

@@ -61,6 +61,7 @@ private:
         // Pending if condition (when { is on next line)
         bool pending_if_condition = false;  // True if we saw if() without { on same line
         bool pending_if_result = false;     // Result of evaluate_condition() for pending if
+        std::string pending_if_platform_filter;  // Platform filter for pending if (e.g., "Win32", "x64")
 
         // Folder block tracking
         std::string current_folder;
@@ -72,6 +73,7 @@ private:
             bool executing;
             bool condition_met;
             int ignored_brace_depth = 0;
+            std::string platform_filter;  // "Win32", "x64", or "" (OS-level condition)
         };
         std::vector<ScopeState> conditional_stack;
 
@@ -81,13 +83,29 @@ private:
             }
             return true;
         }
+
+        // Get the active platform filter from the innermost conditional scope
+        std::string get_platform_filter() const {
+            for (auto it = conditional_stack.rbegin(); it != conditional_stack.rend(); ++it) {
+                if (it->executing && !it->platform_filter.empty()) {
+                    return it->platform_filter;
+                }
+            }
+            return "";
+        }
     };
     
     // Parse a single line
     void parse_line(const std::string& line, ParseState& state);
     
+    // Result of evaluating an if() condition
+    struct ConditionResult {
+        bool should_execute;           // Whether the block should execute at all
+        std::string platform_filter;   // Non-empty for platform conditions (e.g., "Win32", "x64")
+    };
+
     // Evaluate if condition
-    bool evaluate_condition(const std::string& condition);
+    ConditionResult evaluate_condition(const std::string& condition);
 
     // Parse section header [section] or [project:name]
     bool parse_section(const std::string& line, ParseState& state);
@@ -106,8 +124,8 @@ private:
                            const std::string& config_key, const std::string& value, 
                            ParseState& state);
     
-    // Parse configuration-specific settings
-    void parse_config_setting(const std::string& key, const std::string& value,
+    // Parse configuration-specific settings (returns true if key was handled)
+    bool parse_config_setting(const std::string& key, const std::string& value,
                               const std::string& config_key, ParseState& state);
 
     // Apply template configuration settings to derived configuration

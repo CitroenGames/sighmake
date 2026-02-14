@@ -862,6 +862,10 @@ defines[Debug|Win32] = _DEBUG, WIN32_DEBUG
 - Use bracket notation for single settings or when you need fine-grained control per configuration
 
 **Important Notes:**
+- `if(Windows)` is an **OS-level** condition — settings apply to all configurations (Debug|Win32, Debug|x64, Release|Win32, Release|x64) when building on Windows
+- `if(Win32)` and `if(x64)` are **platform-level** conditions — settings apply only to matching platform configurations (e.g., `if(Win32)` applies to Debug|Win32 and Release|Win32 only)
+- `if(Win32)` is **not** equivalent to `if(Windows)` — use `if(Windows)` when you want settings to apply to all Windows configurations regardless of platform
+- Negation works as expected: `if(!Win32)` applies to x64 configurations, `if(!x64)` applies to Win32 configurations
 - Conditional blocks can be nested
 - Settings inside blocks override settings defined outside
 - Platform-only bracket syntax (`[Linux]`, `[Win32]`) expands to all configurations for that platform
@@ -1251,6 +1255,19 @@ public_libs = lib/x64/prebuilt.lib
 |---------|-------------|---------|
 | `public_includes` | Include directories exposed to dependent projects | `public_includes = include` |
 | `public_libs` | Pre-built library files to link | `public_libs = lib/x64/SDL3.lib` |
+
+These settings support bracket notation for platform-specific values:
+
+```ini
+[project:SDL3]
+type = lib
+headers = include/**/*.h
+public_includes = include
+public_libs[Win32] = lib/x86/SDL3.lib
+public_libs[x64] = lib/x64/SDL3.lib
+```
+
+When a consuming project links to SDL3, the correct platform-specific library is automatically added to each configuration's `AdditionalDependencies`.
 
 **Example with pre-built library:**
 ```ini
