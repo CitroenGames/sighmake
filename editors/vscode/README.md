@@ -117,6 +117,20 @@ find_package(Vulkan, REQUIRED)
 defines = SPECIAL_BUILD
 ```
 
+## Installation
+
+> **Note:** This is a **Visual Studio Code** extension, not a Visual Studio extension. Do not open the `.vsix` file with Visual Studio's VSIX Installer.
+
+### From VSIX
+
+After packaging (see [Packaging](#packaging) below), install with either:
+
+```bash
+code --install-extension sighmake-buildscript-0.1.0.vsix
+```
+
+Or in VS Code: **Extensions** sidebar → **`...`** menu → **Install from VSIX...** → select the `.vsix` file.
+
 ## Development
 
 ```bash
