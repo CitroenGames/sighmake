@@ -1,0 +1,60 @@
+{
+  "name": "sighmake-buildscript",
+  "displayName": "sighmake Buildscript",
+  "description": "Language support for sighmake .buildscript files: syntax highlighting, snippets, autocomplete, and hover documentation.",
+  "version": "0.1.0",
+  "publisher": "sighmake",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CitroenGames/sighmake"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
+  "activationEvents": [
+    "onLanguage:buildscript"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "buildscript",
+        "aliases": [
+          "Buildscript",
+          "sighmake"
+        ],
+        "extensions": [
+          ".buildscript"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "buildscript",
+        "scopeName": "source.buildscript",
+        "path": "./syntaxes/buildscript.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "buildscript",
+        "path": "./snippets/buildscript.json"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@types/node": "^18.0.0",
+    "typescript": "^5.0.0"
+  }
+}

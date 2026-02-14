@@ -1,0 +1,167 @@
+{
+  "Solution": {
+    "prefix": ["solution", "[solution]"],
+    "body": [
+      "[solution]",
+      "name = ${1:MySolution}",
+      "configurations = ${2:Debug, Release}",
+      "platforms = ${3:Win32, x64}",
+      ""
+    ],
+    "description": "A new solution section with name, configurations, and platforms."
+  },
+  "Project (EXE)": {
+    "prefix": ["project", "[project"],
+    "body": [
+      "[project:${1:MyProject}]",
+      "type = exe",
+      "sources = ${2:src/**/*.cpp}",
+      "headers = ${3:include/**/*.h}",
+      "includes = ${4:include}",
+      "std = ${5|17,14,20,23|}",
+      "subsystem = ${6|Console,Windows|}",
+      ""
+    ],
+    "description": "A new executable project section."
+  },
+  "Project (LIB)": {
+    "prefix": ["project-lib", "staticlib"],
+    "body": [
+      "[project:${1:MyLib}]",
+      "type = lib",
+      "sources = ${2:src/**/*.cpp}",
+      "headers = ${3:include/**/*.h}",
+      "includes = ${4:include}",
+      "std = ${5|17,14,20,23|}",
+      ""
+    ],
+    "description": "A new static library project section."
+  },
+  "Project (DLL)": {
+    "prefix": ["project-dll", "dynamiclib"],
+    "body": [
+      "[project:${1:MyDLL}]",
+      "type = dll",
+      "sources = ${2:src/**/*.cpp}",
+      "headers = ${3:include/**/*.h}",
+      "includes = ${4:include}",
+      "defines = ${1}_EXPORTS",
+      "std = ${5|17,14,20,23|}",
+      ""
+    ],
+    "description": "A new DLL/shared library project section."
+  },
+  "Config Section": {
+    "prefix": ["config", "[config"],
+    "body": [
+      "[config:${1:Debug}|${2:Win32}]",
+      "optimization = ${3|Disabled,MinSize,MaxSpeed,Full|}",
+      "runtime_library = ${4|MultiThreadedDebug,MultiThreaded,MultiThreadedDLL,MultiThreadedDebugDLL|}",
+      "debug_info = ${5|ProgramDatabase,EditAndContinue,None|}",
+      ""
+    ],
+    "description": "A configuration section with common compiler settings."
+  },
+  "Config with Template": {
+    "prefix": ["config-template"],
+    "body": [
+      "[config:${1:Profile}|${2:x64}] : Template:${3:Release}",
+      "${0}",
+      ""
+    ],
+    "description": "A configuration section that inherits from a template."
+  },
+  "PCH Setup": {
+    "prefix": ["pch", "precompiled"],
+    "body": [
+      "pch = Use",
+      "pch_header = ${1:src/pch.h}",
+      "",
+      "${2:src/pch.cpp}:pch = Create",
+      "${2:src/pch.cpp}:pch_header = ${3:pch.h}",
+      ""
+    ],
+    "description": "Precompiled header setup with Use and Create."
+  },
+  "Output Directories": {
+    "prefix": ["outdir", "output-dirs"],
+    "body": [
+      "outdir[Debug|${1:Win32}] = ${2:bin/Debug/}",
+      "outdir[Release|${1:Win32}] = ${3:bin/Release/}",
+      "intdir[Debug|${1:Win32}] = ${4:obj/Debug/}",
+      "intdir[Release|${1:Win32}] = ${5:obj/Release/}",
+      ""
+    ],
+    "description": "Configuration-specific output and intermediate directories."
+  },
+  "If Windows": {
+    "prefix": ["if-windows", "if(windows)"],
+    "body": [
+      "if(windows) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Conditional block for Windows platform."
+  },
+  "If Linux": {
+    "prefix": ["if-linux", "if(linux)"],
+    "body": [
+      "if(linux) {",
+      "\t${0}",
+      "}"
+    ],
+    "description": "Conditional block for Linux platform."
+  },
+  "target_link_libraries": {
+    "prefix": ["target_link_libraries", "tll"],
+    "body": [
+      "target_link_libraries(",
+      "\t${1:LibName} ${2|PUBLIC,PRIVATE,INTERFACE|}",
+      ")",
+      ""
+    ],
+    "description": "CMake-style dependency declaration with visibility."
+  },
+  "find_package": {
+    "prefix": ["find_package"],
+    "body": [
+      "find_package(${1|Vulkan,OpenGL,SDL2,SDL3,DirectX11,DirectX12|}, REQUIRED)",
+      ""
+    ],
+    "description": "Find and configure an external package."
+  },
+  "File Section": {
+    "prefix": ["file", "[file"],
+    "body": [
+      "[file:${1:src/file.cpp}]",
+      "${2:defines} = ${3:VALUE}",
+      ""
+    ],
+    "description": "Per-file settings section."
+  },
+  "Complete Buildscript": {
+    "prefix": ["buildscript-full", "sighmake"],
+    "body": [
+      "[solution]",
+      "name = ${1:MySolution}",
+      "configurations = Debug, Release",
+      "platforms = ${2:x64}",
+      "",
+      "[project:${3:MyProject}]",
+      "type = ${4|exe,lib,dll|}",
+      "sources = ${5:src/**/*.cpp}",
+      "headers = ${6:include/**/*.h}",
+      "includes = ${7:include}",
+      "defines = ${8:_CRT_SECURE_NO_WARNINGS}",
+      "std = ${9|17,14,20,23|}",
+      "",
+      "warning_level = ${10|Level3,Level0,Level1,Level2,Level4|}",
+      "multiprocessor = true",
+      "exception_handling = Sync",
+      "",
+      "subsystem = ${11|Console,Windows|}",
+      ""
+    ],
+    "description": "A complete buildscript template with solution and project."
+  }
+}

@@ -1,0 +1,409 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "scopeName": "source.buildscript",
+  "name": "Buildscript",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#sections" },
+    { "include": "#control-flow" },
+    { "include": "#functions" },
+    { "include": "#per-file-key-value" },
+    { "include": "#key-value-config-qualified" },
+    { "include": "#key-value-simple" },
+    { "include": "#strings" },
+    { "include": "#variables" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.number-sign.buildscript",
+          "match": "#.*$"
+        },
+        {
+          "name": "comment.line.semicolon.buildscript",
+          "match": ";.*$"
+        }
+      ]
+    },
+
+    "sections": {
+      "patterns": [
+        {
+          "comment": "[solution]",
+          "match": "^\\s*(\\[)(solution)(\\])\\s*$",
+          "captures": {
+            "1": { "name": "punctuation.definition.section.begin.buildscript" },
+            "2": { "name": "keyword.other.section-type.buildscript" },
+            "3": { "name": "punctuation.definition.section.end.buildscript" }
+          }
+        },
+        {
+          "comment": "[project:Name]",
+          "match": "^\\s*(\\[)(project)(:)([^\\]]+)(\\])\\s*$",
+          "captures": {
+            "1": { "name": "punctuation.definition.section.begin.buildscript" },
+            "2": { "name": "keyword.other.section-type.buildscript" },
+            "3": { "name": "punctuation.separator.buildscript" },
+            "4": { "name": "entity.name.type.project.buildscript" },
+            "5": { "name": "punctuation.definition.section.end.buildscript" }
+          }
+        },
+        {
+          "comment": "[config:Name|Platform] with optional : Template:Name",
+          "match": "^\\s*(\\[)(config)(:)([^\\]]+)(\\])(?:\\s*(:)\\s*(Template)(:)(\\S+))?\\s*$",
+          "captures": {
+            "1": { "name": "punctuation.definition.section.begin.buildscript" },
+            "2": { "name": "keyword.other.section-type.buildscript" },
+            "3": { "name": "punctuation.separator.buildscript" },
+            "4": { "name": "entity.name.type.config.buildscript" },
+            "5": { "name": "punctuation.definition.section.end.buildscript" },
+            "6": { "name": "punctuation.separator.buildscript" },
+            "7": { "name": "keyword.other.template.buildscript" },
+            "8": { "name": "punctuation.separator.buildscript" },
+            "9": { "name": "entity.name.type.template.buildscript" }
+          }
+        },
+        {
+          "comment": "[file:path]",
+          "match": "^\\s*(\\[)(file)(:)([^\\]]+)(\\])\\s*$",
+          "captures": {
+            "1": { "name": "punctuation.definition.section.begin.buildscript" },
+            "2": { "name": "keyword.other.section-type.buildscript" },
+            "3": { "name": "punctuation.separator.buildscript" },
+            "4": { "name": "string.unquoted.filepath.buildscript" },
+            "5": { "name": "punctuation.definition.section.end.buildscript" }
+          }
+        }
+      ]
+    },
+
+    "control-flow": {
+      "patterns": [
+        {
+          "comment": "if(condition) {",
+          "match": "\\b(if)\\s*(\\()\\s*(!?)(windows|linux|osx|macos|darwin|win32|x64|Win32)\\s*(\\))\\s*(\\{)?",
+          "captures": {
+            "1": { "name": "keyword.control.conditional.buildscript" },
+            "2": { "name": "punctuation.definition.condition.begin.buildscript" },
+            "3": { "name": "keyword.operator.logical.not.buildscript" },
+            "4": { "name": "constant.language.platform.buildscript" },
+            "5": { "name": "punctuation.definition.condition.end.buildscript" },
+            "6": { "name": "punctuation.section.block.begin.buildscript" }
+          }
+        },
+        {
+          "comment": "Closing brace on its own line",
+          "match": "^\\s*(\\})\\s*$",
+          "captures": {
+            "1": { "name": "punctuation.section.block.end.buildscript" }
+          }
+        }
+      ]
+    },
+
+    "functions": {
+      "patterns": [
+        {
+          "comment": "target_link_libraries(...) - multiline",
+          "begin": "\\b(target_link_libraries)\\s*(\\()",
+          "end": "(\\))",
+          "beginCaptures": {
+            "1": { "name": "entity.name.function.buildscript" },
+            "2": { "name": "punctuation.definition.arguments.begin.buildscript" }
+          },
+          "endCaptures": {
+            "1": { "name": "punctuation.definition.arguments.end.buildscript" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            {
+              "match": "\\b(PUBLIC|PRIVATE|INTERFACE)\\b",
+              "name": "storage.modifier.visibility.buildscript"
+            },
+            {
+              "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b",
+              "name": "entity.name.type.dependency.buildscript"
+            }
+          ]
+        },
+        {
+          "comment": "find_package(...) - single or multiline",
+          "begin": "\\b(find_package)\\s*(\\()",
+          "end": "(\\))",
+          "beginCaptures": {
+            "1": { "name": "entity.name.function.buildscript" },
+            "2": { "name": "punctuation.definition.arguments.begin.buildscript" }
+          },
+          "endCaptures": {
+            "1": { "name": "punctuation.definition.arguments.end.buildscript" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            {
+              "match": "\\b(REQUIRED)\\b",
+              "name": "keyword.other.required.buildscript"
+            },
+            {
+              "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b",
+              "name": "entity.name.type.package.buildscript"
+            }
+          ]
+        },
+        {
+          "comment": "uses_pch(...) - multiline",
+          "begin": "\\b(uses_pch)\\s*(\\()",
+          "end": "(\\))",
+          "beginCaptures": {
+            "1": { "name": "entity.name.function.buildscript" },
+            "2": { "name": "punctuation.definition.arguments.begin.buildscript" }
+          },
+          "endCaptures": {
+            "1": { "name": "punctuation.definition.arguments.end.buildscript" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            { "include": "#strings" }
+          ]
+        },
+        {
+          "comment": "file_properties(...) { ... }",
+          "begin": "\\b(file_properties)\\s*(\\()",
+          "end": "(\\))",
+          "beginCaptures": {
+            "1": { "name": "entity.name.function.buildscript" },
+            "2": { "name": "punctuation.definition.arguments.begin.buildscript" }
+          },
+          "endCaptures": {
+            "1": { "name": "punctuation.definition.arguments.end.buildscript" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            { "include": "#strings" },
+            {
+              "match": "[a-zA-Z0-9_.\\-/\\\\]+",
+              "name": "string.unquoted.filepath.buildscript"
+            }
+          ]
+        },
+        {
+          "comment": "set_file_properties(...)",
+          "begin": "\\b(set_file_properties)\\s*(\\()",
+          "end": "(\\))",
+          "beginCaptures": {
+            "1": { "name": "entity.name.function.buildscript" },
+            "2": { "name": "punctuation.definition.arguments.begin.buildscript" }
+          },
+          "endCaptures": {
+            "1": { "name": "punctuation.definition.arguments.end.buildscript" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            { "include": "#strings" },
+            { "include": "#values" }
+          ]
+        },
+        {
+          "comment": "folder(\"name\") {",
+          "match": "\\b(folder)\\s*(\\()\\s*(\"[^\"]*\")\\s*(\\))\\s*(\\{)?",
+          "captures": {
+            "1": { "name": "entity.name.function.buildscript" },
+            "2": { "name": "punctuation.definition.arguments.begin.buildscript" },
+            "3": { "name": "string.quoted.double.buildscript" },
+            "4": { "name": "punctuation.definition.arguments.end.buildscript" },
+            "5": { "name": "punctuation.section.block.begin.buildscript" }
+          }
+        }
+      ]
+    },
+
+    "per-file-key-value": {
+      "patterns": [
+        {
+          "comment": "filepath.cpp:key[Config|Platform] = value",
+          "match": "^\\s*([^#;=\\[\\]{}()][^:=\\[\\]]*\\.[a-zA-Z0-9]+)(:)([a-zA-Z_][a-zA-Z0-9_]*)(\\[)([^\\]]*)(\\])\\s*(=)\\s*(.*?)\\s*(?=#|;|$)",
+          "captures": {
+            "1": { "name": "entity.name.tag.file.buildscript" },
+            "2": { "name": "punctuation.separator.file-setting.buildscript" },
+            "3": { "name": "variable.other.property.buildscript" },
+            "4": { "name": "punctuation.definition.config-qualifier.begin.buildscript" },
+            "5": {
+              "patterns": [
+                {
+                  "match": "\\*",
+                  "name": "constant.language.wildcard.buildscript"
+                },
+                {
+                  "match": "\\|",
+                  "name": "punctuation.separator.config-platform.buildscript"
+                },
+                {
+                  "match": "[a-zA-Z0-9_]+",
+                  "name": "entity.name.type.config.buildscript"
+                }
+              ]
+            },
+            "6": { "name": "punctuation.definition.config-qualifier.end.buildscript" },
+            "7": { "name": "keyword.operator.assignment.buildscript" },
+            "8": { "patterns": [{ "include": "#values" }] }
+          }
+        },
+        {
+          "comment": "filepath.cpp:key = value",
+          "match": "^\\s*([^#;=\\[\\]{}()][^:=\\[\\]]*\\.[a-zA-Z0-9]+)(:)([a-zA-Z_][a-zA-Z0-9_]*)\\s*(=)\\s*(.*?)\\s*(?=#|;|$)",
+          "captures": {
+            "1": { "name": "entity.name.tag.file.buildscript" },
+            "2": { "name": "punctuation.separator.file-setting.buildscript" },
+            "3": { "name": "variable.other.property.buildscript" },
+            "4": { "name": "keyword.operator.assignment.buildscript" },
+            "5": { "patterns": [{ "include": "#values" }] }
+          }
+        }
+      ]
+    },
+
+    "key-value-config-qualified": {
+      "patterns": [
+        {
+          "comment": "key[Config|Platform] = value",
+          "match": "^\\s*([a-zA-Z_][a-zA-Z0-9_]*)(\\[)([^\\]]*)(\\])\\s*(=)\\s*(.*?)\\s*(?=#|;|$)",
+          "captures": {
+            "1": { "name": "variable.other.property.buildscript" },
+            "2": { "name": "punctuation.definition.config-qualifier.begin.buildscript" },
+            "3": {
+              "patterns": [
+                {
+                  "match": "\\*",
+                  "name": "constant.language.wildcard.buildscript"
+                },
+                {
+                  "match": "\\|",
+                  "name": "punctuation.separator.config-platform.buildscript"
+                },
+                {
+                  "match": "[a-zA-Z0-9_]+",
+                  "name": "entity.name.type.config.buildscript"
+                }
+              ]
+            },
+            "4": { "name": "punctuation.definition.config-qualifier.end.buildscript" },
+            "5": { "name": "keyword.operator.assignment.buildscript" },
+            "6": { "patterns": [{ "include": "#values" }] }
+          }
+        }
+      ]
+    },
+
+    "key-value-simple": {
+      "patterns": [
+        {
+          "comment": "key = value",
+          "match": "^\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*(=)\\s*(.*?)\\s*(?=#|;|$)",
+          "captures": {
+            "1": { "name": "variable.other.property.buildscript" },
+            "2": { "name": "keyword.operator.assignment.buildscript" },
+            "3": { "patterns": [{ "include": "#values" }] }
+          }
+        }
+      ]
+    },
+
+    "values": {
+      "patterns": [
+        { "include": "#variables" },
+        {
+          "comment": "Triple-quoted multiline string",
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "name": "string.quoted.triple.buildscript"
+        },
+        {
+          "comment": "Double-quoted string",
+          "begin": "\"",
+          "end": "\"",
+          "name": "string.quoted.double.buildscript",
+          "patterns": [
+            { "include": "#variables" },
+            {
+              "match": "\\\\[n\\\\\"t]",
+              "name": "constant.character.escape.buildscript"
+            }
+          ]
+        },
+        {
+          "comment": "Boolean constants",
+          "match": "\\b(true|false)\\b",
+          "name": "constant.language.boolean.buildscript"
+        },
+        {
+          "comment": "Visibility and requirement keywords in values",
+          "match": "\\b(PUBLIC|PRIVATE|INTERFACE|REQUIRED)\\b",
+          "name": "storage.modifier.visibility.buildscript"
+        },
+        {
+          "comment": "Known enum values",
+          "match": "\\b(Disabled|MinSize|MaxSpeed|Full|Level0|Level1|Level2|Level3|Level4|MultiThreaded|MultiThreadedDebug|MultiThreadedDLL|MultiThreadedDebugDLL|None|ProgramDatabase|EditAndContinue|Sync|Async|Use|Create|NotUsing|Console|Windows|Default|CompileAsC|CompileAsCpp|exe|app|application|lib|static|staticlib|dll|shared|dynamiclib|interface|header-only|Utility|OnlyExplicitInline|AnySuitable|Neither|Size|Speed|AVX|AVX2|SSE|SSE2|Prompt|Queue|Send)\\b",
+          "name": "support.constant.enum.buildscript"
+        },
+        {
+          "comment": "Platform condition in file lists [!platform]",
+          "match": "(\\[)(!?)(windows|linux|osx|macos|darwin|win32|x64|Win32|Release|Debug)(\\])",
+          "captures": {
+            "1": { "name": "punctuation.definition.condition.begin.buildscript" },
+            "2": { "name": "keyword.operator.logical.not.buildscript" },
+            "3": { "name": "constant.language.platform.buildscript" },
+            "4": { "name": "punctuation.definition.condition.end.buildscript" }
+          }
+        },
+        {
+          "comment": "Glob pattern with wildcards",
+          "match": "[a-zA-Z0-9_.\\-/\\\\]+\\*[a-zA-Z0-9_.\\-/\\\\*]*",
+          "name": "string.unquoted.glob.buildscript"
+        },
+        {
+          "comment": "Standalone number",
+          "match": "\\b\\d+\\b",
+          "name": "constant.numeric.buildscript"
+        }
+      ]
+    },
+
+    "strings": {
+      "patterns": [
+        {
+          "comment": "Triple-quoted multiline string",
+          "begin": "\"\"\"",
+          "end": "\"\"\"",
+          "name": "string.quoted.triple.buildscript"
+        },
+        {
+          "comment": "Double-quoted string",
+          "begin": "\"",
+          "end": "\"",
+          "name": "string.quoted.double.buildscript",
+          "patterns": [
+            { "include": "#variables" },
+            {
+              "match": "\\\\[n\\\\\"t]",
+              "name": "constant.character.escape.buildscript"
+            }
+          ]
+        }
+      ]
+    },
+
+    "variables": {
+      "patterns": [
+        {
+          "comment": "Variable expansion ${VAR}",
+          "match": "(\\$\\{)([A-Za-z_][A-Za-z0-9_]*)(\\})",
+          "captures": {
+            "1": { "name": "punctuation.definition.variable.begin.buildscript" },
+            "2": { "name": "variable.other.readwrite.buildscript" },
+            "3": { "name": "punctuation.definition.variable.end.buildscript" }
+          }
+        }
+      ]
+    }
+  }
+}
