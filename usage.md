@@ -148,6 +148,7 @@ sighmake --convert <solution.sln> [options]
 | `-t <name>` | `--toolset <name>` | Specify default toolset (msvc2022, msvc2019, etc.) |
 | `-c` | `--convert` | Convert Visual Studio solution to buildscripts |
 | | `--list-toolsets` | List all available Visual Studio toolsets |
+| | `--export-deps` | Export project dependency report as HTML |
 | `-l` | `--list` | List all available generators |
 | `-h` | `--help` | Display help message |
 
@@ -210,6 +211,32 @@ sighmake --convert MySolution.sln
 This generates:
 - `MySolution.buildscript` (solution-level settings)
 - `Project1.buildscript`, `Project2.buildscript`, etc. (one per project)
+
+### Dependency Export
+
+Generate a self-contained HTML report of project dependencies:
+
+```batch
+sighmake project.buildscript --export-deps
+```
+
+This creates `<solution_name>_dependencies.html` in the output directory, containing:
+- Project cards showing each project's type and dependencies
+- Dependency visibility annotations (PUBLIC, PRIVATE, INTERFACE)
+- A dependency matrix for multi-project solutions
+
+The `--export-deps` flag works alongside any generator:
+
+```batch
+sighmake project.buildscript -g vcxproj --export-deps
+sighmake project.buildscript -g makefile --export-deps
+```
+
+It also works in conversion mode:
+
+```batch
+sighmake --convert MySolution.sln --export-deps
+```
 
 ### Environment Variables
 

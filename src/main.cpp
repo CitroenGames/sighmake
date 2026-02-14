@@ -5,6 +5,7 @@
 #include "parsers/vpc_parser.hpp"
 #include "generators/vcxproj_generator.hpp"
 #include "generators/makefile_generator.hpp"
+#include "generators/deps_exporter.hpp"
 #include "parsers/vcxproj_reader.hpp"
 #include "common/toolset_registry.hpp"
 
@@ -21,6 +22,7 @@ void print_usage(const char* program_name) {
     std::cout << "  -c, --convert              Convert Visual Studio solution to buildscripts\n";
     std::cout << "  -t, --toolset <name>       Default toolset (msvc2022, msvc2019, etc)\n";
     std::cout << "      --list-toolsets        List available toolsets\n";
+    std::cout << "      --export-deps          Export dependency report as HTML\n";
     std::cout << "  -l, --list                 List available generators\n";
     std::cout << "  -h, --help                 Show this help message\n\n";
     std::cout << "Commands:\n";
@@ -107,6 +109,7 @@ int main(int argc, char* argv[]) {
 #endif
     std::string default_toolset;
     bool convert_mode = false;
+    bool export_deps = false;
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -154,6 +157,8 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Error: -g requires an argument\n";
                 return 1;
             }
+        } else if (strcmp(argv[i], "--export-deps") == 0) {
+            export_deps = true;
         } else if (buildscript_path.empty()) {
             buildscript_path = argv[i];
         } else {
@@ -231,6 +236,10 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
 
+            if (export_deps) {
+                vcxproj::export_dependencies_html(solution, base_dir);
+            }
+
             std::cout << "\nSuccess! Generated " << solution.projects.size() << " buildscript(s).\n";
             return 0;
         }
@@ -280,6 +289,13 @@ int main(int argc, char* argv[]) {
         if (!generator->generate(solution, output_dir)) {
             std::cerr << "Error: Generation failed\n";
             return 1;
+        }
+
+        // Export dependency report if requested
+        if (export_deps) {
+            if (!vcxproj::export_dependencies_html(solution, output_dir)) {
+                std::cerr << "Warning: Failed to generate dependency report\n";
+            }
         }
 
         std::cout << "\nSuccess! All files generated.\n";
