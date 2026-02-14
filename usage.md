@@ -4735,13 +4735,8 @@ vs. **Unreadable changes in vcxproj:**
 
 **With buildscripts (easy):**
 ```ini
-<<<<<<< HEAD
-sources = src/core/*.cpp
-includes = include
-=======
 sources = src/core/*.cpp, src/utils/*.cpp
 includes = include, external
->>>>>>> feature-branch
 ```
 
 **Resolution:**
@@ -4752,12 +4747,6 @@ includes = include, external
 
 **With vcxproj (nightmare):**
 ```xml
-<<<<<<< HEAD
-  <ItemGroup>
-    <ClCompile Include="src\file1.cpp" />
-    <ClCompile Include="src\file2.cpp" />
-  </ItemGroup>
-=======
   <ItemGroup>
     <ClCompile Include="src\file1.cpp" />
     <ClCompile Include="src\file3.cpp" />
@@ -4765,7 +4754,6 @@ includes = include, external
   <ItemDefinitionGroup ...>
     ... 100 lines of XML ...
   </ItemDefinitionGroup>
->>>>>>> feature-branch
 ```
 
 ### Pre-Commit Hook (Optional)
