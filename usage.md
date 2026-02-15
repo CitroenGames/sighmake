@@ -310,6 +310,8 @@ The `[solution]` section defines solution-level settings.
 name = MySolution
 configurations = Debug, Release
 platforms = Win32, x64
+defines = COMMON_DEFINE
+defines[Win32] = INCLUDE_SCALEFORM
 ```
 
 **Settings:**
@@ -319,6 +321,7 @@ platforms = Win32, x64
 | `name` | Solution name | `name = MySolution` |
 | `configurations` | Build configurations (comma-separated) | `configurations = Debug, Release, Profile` |
 | `platforms` | Target platforms (comma-separated) | `platforms = Win32, x64` |
+| `defines` | Preprocessor defines for all projects (supports bracket notation) | `defines = MY_DEFINE` |
 
 **Common configuration names:**
 - `Debug` - Debug build with symbols
@@ -6067,6 +6070,7 @@ dir include\myheader.h
 | `name` | Solution name | `name = MyApplication` |
 | `configurations` | Build configurations | `configurations = Debug, Release` |
 | `platforms` | Target platforms | `platforms = Win32, x64` |
+| `defines` | Preprocessor defines for all projects | `defines = COMMON_DEFINE` |
 
 #### Project Basic Settings
 

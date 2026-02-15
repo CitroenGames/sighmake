@@ -288,6 +288,11 @@ struct Solution {
     std::vector<Project> projects;
     std::vector<SolutionFolder> folders;
 
+    // Solution-level defines that apply to ALL projects in ALL configurations
+    std::vector<std::string> solution_level_preprocessor_definitions;
+    // Per-config solution-level defines (for bracket notation like defines[Win32])
+    std::map<std::string, std::vector<std::string>> solution_level_preprocessor_definitions_per_config;
+
     // Get all configuration keys (e.g., "Debug|Win32", "Release|x64")
     std::vector<std::string> get_config_keys() const {
         std::vector<std::string> keys;

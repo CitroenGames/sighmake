@@ -643,6 +643,23 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
             // Users can manually specify ignore_libs if needed
         }
 
+        // Apply solution-level preprocessor definitions to ALL projects and configurations
+        if (!solution.solution_level_preprocessor_definitions.empty()) {
+            for (const auto& config_key : solution.get_config_keys()) {
+                auto& defines = project.configurations[config_key].cl_compile.preprocessor_definitions;
+                defines.insert(defines.begin(),
+                              solution.solution_level_preprocessor_definitions.begin(),
+                              solution.solution_level_preprocessor_definitions.end());
+            }
+        }
+        // Apply per-config solution-level defines (e.g., defines[Win32] in [solution])
+        for (const auto& [cfg_key, defs] : solution.solution_level_preprocessor_definitions_per_config) {
+            if (project.configurations.count(cfg_key)) {
+                auto& defines = project.configurations[cfg_key].cl_compile.preprocessor_definitions;
+                defines.insert(defines.end(), defs.begin(), defs.end());
+            }
+        }
+
         // Apply project-level preprocessor definitions to ALL final configurations
         // This ensures defines are present even if configs were discovered after parsing project settings
         if (!project.project_level_preprocessor_definitions.empty()) {
@@ -1312,6 +1329,15 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
             // If we're in a file context, treat as per-file setting
             else if (state.current_file != nullptr) {
                 parse_file_setting(state.current_file->path, setting, cfg_key, resolved_value, state);
+            }
+            // If no project context, route defines to solution-level per-config storage
+            else if (state.current_project == nullptr &&
+                     (setting == "defines" || setting == "preprocessor" || setting == "preprocessor_definitions")) {
+                auto defs = split(resolved_value, ',');
+                state.solution->solution_level_preprocessor_definitions_per_config[cfg_key].insert(
+                    state.solution->solution_level_preprocessor_definitions_per_config[cfg_key].end(),
+                    defs.begin(), defs.end()
+                );
             } else {
                 parse_config_setting(setting, resolved_value, cfg_key, state);
             }
@@ -1431,6 +1457,12 @@ void BuildscriptParser::parse_solution_setting(const std::string& key, const std
         state.solution->configurations = split(value, ',');
     } else if (key == "platforms") {
         state.solution->platforms = split(value, ',');
+    } else if (key == "defines" || key == "preprocessor" || key == "preprocessor_definitions") {
+        auto defs = split(value, ',');
+        state.solution->solution_level_preprocessor_definitions.insert(
+            state.solution->solution_level_preprocessor_definitions.end(),
+            defs.begin(), defs.end()
+        );
     } else if (key == "include") {
         process_include(value, state);
     }
