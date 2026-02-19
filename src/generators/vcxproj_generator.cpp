@@ -506,8 +506,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             std::string validated_std = map_cpp_standard(cfg.cl_compile.language_standard);
             cl.append_child("LanguageStandard").text() = validated_std.c_str();
         }
-        // C standard (for C projects)
-        if (!project.c_standard.empty() && detect_project_language(project) == "C") {
+        // C standard (emitted whenever c_standard is set; MSBuild applies it only to C compilations)
+        if (!project.c_standard.empty()) {
             std::string c_std_mapped = map_c_standard(project.c_standard);
             if (!c_std_mapped.empty()) {
                 cl.append_child("LanguageStandard_C").text() = c_std_mapped.c_str();
@@ -951,23 +951,41 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                 }
             }
 
-            // Auto-set CompileAs based on project language if not explicitly set
-            std::string detected_language = detect_project_language(project);
-            if (src->settings.compile_as.empty() && !detected_language.empty()) {
-                // Auto-apply CompileAs based on detected language for all configurations
-                std::string auto_compile_as;
-                if (detected_language == "C") {
-                    auto_compile_as = "CompileAsC";
-                } else if (detected_language == "C++") {
-                    auto_compile_as = "CompileAsCpp";
+            // Auto-set CompileAs based on file extension if not explicitly set per-file
+            if (src->settings.compile_as.empty()) {
+                // Check if project-level compile_as is set in any configuration.
+                // If so, skip per-file auto-detection — the ItemDefinitionGroup setting
+                // applies to all files, and the user overrides specific files via
+                // set_file_properties().
+                bool has_project_level_compile_as = false;
+                for (const auto& [cfg_name, cfg] : project.configurations) {
+                    if (!cfg.cl_compile.compile_as.empty()) {
+                        has_project_level_compile_as = true;
+                        break;
+                    }
                 }
 
-                if (!auto_compile_as.empty()) {
-                    for (const auto& [cfg_name, cfg] : project.configurations) {
-                        std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg_name + "'";
-                        auto node = file_elem.append_child("CompileAs");
-                        node.append_attribute("Condition") = condition.c_str();
-                        node.text() = auto_compile_as.c_str();
+                if (!has_project_level_compile_as) {
+                    // No project-level compile_as: auto-detect per file based on extension
+                    fs::path file_path(src->path);
+                    std::string ext = file_path.extension().string();
+                    std::transform(ext.begin(), ext.end(), ext.begin(),
+                                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+                    std::string auto_compile_as;
+                    if (ext == ".c") {
+                        auto_compile_as = "CompileAsC";
+                    } else if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") {
+                        auto_compile_as = "CompileAsCpp";
+                    }
+
+                    if (!auto_compile_as.empty()) {
+                        for (const auto& [cfg_name, cfg] : project.configurations) {
+                            std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg_name + "'";
+                            auto node = file_elem.append_child("CompileAs");
+                            node.append_attribute("Condition") = condition.c_str();
+                            node.text() = auto_compile_as.c_str();
+                        }
                     }
                 }
             }

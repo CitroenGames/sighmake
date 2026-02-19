@@ -489,6 +489,7 @@ pch_output[Release|Win32] = obj/Release/pch.pch
 | `optimization` | Optimization level | `Disabled`, `MinSize`, `MaxSpeed`, `Full` |
 | `runtime_library` | Runtime library linkage | See table below |
 | `debug_info` | Debug information format | `None`, `ProgramDatabase`, `EditAndContinue` |
+| `compile_as` | Force compilation language for all files | `CompileAsC`, `CompileAsCpp` |
 
 **Runtime Library Values:**
 - `MultiThreaded` - Static, release
@@ -2955,6 +2956,26 @@ headers = include/**/*.h
 **How it works:**
 - MSVC: `.c` files get `<CompileAs>CompileAsC</CompileAs>`, `.cpp` files get `CompileAsCpp`
 - GCC/Clang: Uses `g++` compiler (can handle both C and C++)
+
+**Project-level `compile_as` (for C SDKs with C++ wrappers):**
+
+Use `compile_as` at the project level to set the default compilation language for all files, then override specific files with `set_file_properties()`:
+
+```ini
+[project:lzma]
+type = lib
+std = 17
+compile_as = CompileAsC           # Default: compile everything as C
+sources = {
+    C/LzmaEnc.c
+    C/LzmaDec.c
+    lzma_wrapper.cpp
+}
+
+set_file_properties(lzma_wrapper.cpp,
+    compile_as = CompileAsCpp      # Override: this file is C++
+)
+```
 
 **Per-file override (if needed):**
 ```ini
@@ -6108,6 +6129,7 @@ dir include\myheader.h
 | `favor_size_or_speed` | Favor size or speed | `Neither`, `Speed`, `Size` | `Neither` |
 | `cflags` | Additional compiler flags | Raw flags string | None |
 | `ldflags` | Additional linker flags | Raw flags string | None |
+| `compile_as` | Force compilation language for all files | `CompileAsC`, `CompileAsCpp` | Auto-detect from extension |
 
 #### Runtime Library Values
 
