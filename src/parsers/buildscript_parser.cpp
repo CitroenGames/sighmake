@@ -1806,7 +1806,19 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         // Public libraries that propagate to dependent projects via target_link_libraries
         auto libs = split(value, ',');
         for (const auto& lib : libs) {
-            proj.public_libs.push_back(resolve_path(lib, state.base_path));
+            // If the library has a path separator, it's a file path - resolve it
+            // Otherwise it's a system library name (e.g. vulkan-1.lib) - keep as-is
+            if (lib.find('/') != std::string::npos || lib.find('\\') != std::string::npos) {
+                proj.public_libs.push_back(resolve_path(lib, state.base_path));
+            } else {
+                proj.public_libs.push_back(lib);
+            }
+        }
+    } else if (key == "public_libdirs" || key == "public_lib_dirs" || key == "public_library_directories") {
+        // Public library directories that propagate to dependent projects via target_link_libraries
+        auto dirs = split(value, ',');
+        for (const auto& dir : dirs) {
+            proj.public_libdirs.push_back(resolve_path(dir, state.base_path));
         }
     } else if (key == "public_defines" || key == "public_preprocessor_definitions") {
         // Public defines that propagate to dependent projects via target_link_libraries
@@ -2630,8 +2642,19 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
     else if (key == "public_libs" || key == "public_libraries") {
         auto libs = split(value, ',');
         for (const auto& lib : libs) {
-            state.current_project->public_libs_per_config[config_key].push_back(
-                resolve_path(trim(lib), state.base_path));
+            auto trimmed = trim(lib);
+            if (trimmed.find('/') != std::string::npos || trimmed.find('\\') != std::string::npos) {
+                state.current_project->public_libs_per_config[config_key].push_back(
+                    resolve_path(trimmed, state.base_path));
+            } else {
+                state.current_project->public_libs_per_config[config_key].push_back(trimmed);
+            }
+        }
+    } else if (key == "public_libdirs" || key == "public_lib_dirs" || key == "public_library_directories") {
+        auto dirs = split(value, ',');
+        for (const auto& dir : dirs) {
+            state.current_project->public_libdirs_per_config[config_key].push_back(
+                resolve_path(trim(dir), state.base_path));
         }
     } else if (key == "public_includes" || key == "public_include_dirs") {
         auto dirs = split(value, ',');
@@ -3098,6 +3121,26 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
                             if (std::find(proj_libs.begin(), proj_libs.end(), lib)
                                 == proj_libs.end()) {
                                 proj_libs.push_back(lib);
+                            }
+                        }
+                    }
+
+                    // Propagate public_libdirs (all-config)
+                    auto& proj_libdirs = proj.configurations[config_key]
+                        .link.additional_library_directories;
+                    for (const auto& dir : dep->public_libdirs) {
+                        if (std::find(proj_libdirs.begin(), proj_libdirs.end(), dir)
+                            == proj_libdirs.end()) {
+                            proj_libdirs.push_back(dir);
+                        }
+                    }
+                    // Propagate public_libdirs (per-config)
+                    auto libdir_it = dep->public_libdirs_per_config.find(config_key);
+                    if (libdir_it != dep->public_libdirs_per_config.end()) {
+                        for (const auto& dir : libdir_it->second) {
+                            if (std::find(proj_libdirs.begin(), proj_libdirs.end(), dir)
+                                == proj_libdirs.end()) {
+                                proj_libdirs.push_back(dir);
                             }
                         }
                     }
