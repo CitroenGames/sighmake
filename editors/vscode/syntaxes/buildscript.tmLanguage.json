@@ -265,6 +265,32 @@
     "key-value-config-qualified": {
       "patterns": [
         {
+          "comment": "key[Config|Platform] = \"\"\"multiline value\"\"\"",
+          "begin": "^\\s*([a-zA-Z_][a-zA-Z0-9_]*)(\\[)([^\\]]*)(\\])\\s*(=)\\s*(\"\"\")",
+          "end": "\"\"\"",
+          "beginCaptures": {
+            "1": { "name": "variable.other.property.buildscript" },
+            "2": { "name": "punctuation.definition.config-qualifier.begin.buildscript" },
+            "3": {
+              "patterns": [
+                { "match": "\\*", "name": "constant.language.wildcard.buildscript" },
+                { "match": "\\|", "name": "punctuation.separator.config-platform.buildscript" },
+                { "match": "[a-zA-Z0-9_]+", "name": "entity.name.type.config.buildscript" }
+              ]
+            },
+            "4": { "name": "punctuation.definition.config-qualifier.end.buildscript" },
+            "5": { "name": "keyword.operator.assignment.buildscript" },
+            "6": { "name": "punctuation.definition.string.begin.buildscript" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.buildscript" }
+          },
+          "contentName": "string.quoted.triple.buildscript",
+          "patterns": [
+            { "include": "#variables" }
+          ]
+        },
+        {
           "comment": "key[Config|Platform] = value",
           "match": "^\\s*([a-zA-Z_][a-zA-Z0-9_]*)(\\[)([^\\]]*)(\\])\\s*(=)\\s*(.*?)\\s*(?=#|;|$)",
           "captures": {
@@ -296,6 +322,23 @@
 
     "key-value-simple": {
       "patterns": [
+        {
+          "comment": "key = \"\"\"multiline value\"\"\"",
+          "begin": "^\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*(=)\\s*(\"\"\")",
+          "end": "\"\"\"",
+          "beginCaptures": {
+            "1": { "name": "variable.other.property.buildscript" },
+            "2": { "name": "keyword.operator.assignment.buildscript" },
+            "3": { "name": "punctuation.definition.string.begin.buildscript" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.buildscript" }
+          },
+          "contentName": "string.quoted.triple.buildscript",
+          "patterns": [
+            { "include": "#variables" }
+          ]
+        },
         {
           "comment": "key = value",
           "match": "^\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*(=)\\s*(.*?)\\s*(?=#|;|$)",
