@@ -31,6 +31,7 @@ struct FileSettings {
     std::map<std::string, bool> excluded;                                 // Per-config
     std::map<std::string, std::string> object_file;                       // Per-config
     std::map<std::string, std::string> compile_as;                        // Per-config
+    std::map<std::string, std::string> optimization;                       // Per-config
 };
 
 // Source file entry

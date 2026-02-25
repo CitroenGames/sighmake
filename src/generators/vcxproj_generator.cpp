@@ -1012,6 +1012,27 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                 }
             }
 
+            // Per-file, per-config Optimization
+            for (const auto& [config_key, opt] : src->settings.optimization) {
+                if (!opt.empty()) {
+                    std::vector<std::string> configs_to_write;
+                    if (config_key == ALL_CONFIGS) {
+                        for (const auto& [cfg_name, cfg] : project.configurations) {
+                            configs_to_write.push_back(cfg_name);
+                        }
+                    } else {
+                        configs_to_write.push_back(config_key);
+                    }
+
+                    for (const auto& cfg : configs_to_write) {
+                        std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg + "'";
+                        auto node = file_elem.append_child("Optimization");
+                        node.append_attribute("Condition") = condition.c_str();
+                        node.text() = opt.c_str();
+                    }
+                }
+            }
+
             // Custom build tool
             if (type == FileType::CustomBuild) {
                 // Get directories for path adjustment

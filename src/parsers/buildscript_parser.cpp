@@ -2329,6 +2329,8 @@ void BuildscriptParser::parse_file_setting(const std::string& file_path, const s
         file->settings.object_file[config_key] = value;
     } else if (setting == "compile_as") {
         file->settings.compile_as[config_key] = value;
+    } else if (setting == "optimization") {
+        file->settings.optimization[config_key] = value;
     }
     // Custom build settings
     else if (setting == "custom_command" || setting == "command") {

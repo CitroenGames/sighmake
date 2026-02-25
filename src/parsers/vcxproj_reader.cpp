@@ -740,6 +740,8 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
                     src.settings.pch[config_key].output = child.text().as_string();
                 } else if (name == "CompileAs") {
                     src.settings.compile_as[config_key] = child.text().as_string();
+                } else if (name == "Optimization") {
+                    src.settings.optimization[config_key] = child.text().as_string();
                 } else if (name == "Command") {
                     src.custom_command[config_key] = child.text().as_string();
                 } else if (name == "Message") {

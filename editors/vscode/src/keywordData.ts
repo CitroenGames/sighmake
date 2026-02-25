@@ -306,7 +306,7 @@ export const KEYWORDS: KeywordInfo[] = [
         aliases: [],
         validValues: ['Disabled', 'MinSize', 'MaxSpeed', 'Full'],
         valueType: 'enum',
-        context: ['project', 'config'],
+        context: ['project', 'config', 'file'],
         documentation: 'Compiler optimization level.\n- `Disabled` — No optimization, debug (/Od)\n- `MinSize` — Optimize for size (/O1)\n- `MaxSpeed` — Optimize for speed (/O2)\n- `Full` — Full optimization (/Ox)',
         supportsConfigQualifier: true,
     },
