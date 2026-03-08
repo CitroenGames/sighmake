@@ -1,0 +1,61 @@
+[solution]
+name = sighmake_tests
+configurations = Debug, Release
+platforms = Win32, x64
+
+[project:sighmake_tests]
+type = exe
+
+# Test files
+sources = {
+    catch_amalgamated.cpp
+    test_project_types.cpp
+    test_toolset_registry.cpp
+    test_buildscript_parser.cpp
+    test_cmake_parser.cpp
+    test_vcxproj_generator.cpp
+    test_makefile_generator.cpp
+    test_dependency_propagation.cpp
+    test_integration.cpp
+    test_vpc_parser.cpp
+    test_deps_exporter.cpp
+    test_vcxproj_reader.cpp
+    test_buildscript_writer.cpp
+    test_generator_factory.cpp
+}
+
+# Source files under test (exclude main.cpp to avoid duplicate main)
+sources = {
+    ../src/parsers/buildscript_parser.cpp
+    ../src/parsers/cmake_parser.cpp
+    ../src/parsers/vcxproj_reader.cpp
+    ../src/parsers/vpc_parser.cpp
+    ../src/generators/vcxproj_generator.cpp
+    ../src/generators/makefile_generator.cpp
+    ../src/generators/deps_exporter.cpp
+    ../src/common/toolset_registry.cpp
+    ../src/common/vs_detector.cpp
+    ../src/pugixml.cpp
+}
+
+headers = catch_amalgamated.hpp
+
+includes = ., ../src, ../src/parsers, ../src/common, ../src/generators
+
+defines = _CRT_SECURE_NO_WARNINGS
+
+std = 17
+warning_level = Level3
+multiprocessor = true
+subsystem = Console
+
+# Output directories
+outdir[Debug|Win32] = .\build\bin\Debug
+outdir[Release|Win32] = .\build\bin\Release
+outdir[Debug|x64] = .\build\bin\x64\Debug
+outdir[Release|x64] = .\build\bin\x64\Release
+
+intdir[Debug|Win32] = .\build\obj\Debug
+intdir[Release|Win32] = .\build\obj\Release
+intdir[Debug|x64] = .\build\obj\x64\Debug
+intdir[Release|x64] = .\build\obj\x64\Release
