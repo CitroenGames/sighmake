@@ -426,3 +426,80 @@ TEST_CASE("VcxprojReader reads file ExcludedFromBuild", "[vcxproj_reader]") {
     }
     CHECK(found_excluded);
 }
+
+TEST_CASE("VcxprojReader skips conditional import when file does not exist", "[vcxproj_reader]") {
+    std::string xml = R"(<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{12345678-1234-1234-1234-123456789012}</ProjectGuid>
+    <ProjectName>TestConditionalImport</ProjectName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+  </PropertyGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="optional.props" Condition="exists('optional.props')" />
+  </ImportGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <PreprocessorDefinitions>BASE_DEF;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+  </ItemGroup>
+</Project>)";
+
+    TempVcxproj temp(xml);
+    // optional.props does NOT exist in temp_dir
+    VcxprojReader reader;
+    auto proj = reader.read_vcxproj(temp.vcxproj_path.string());
+    CHECK(proj.project_name == "TestConditionalImport");
+    // Should load without errors - no props settings applied
+    auto& defs = proj.configurations["Debug|Win32"].cl_compile.preprocessor_definitions;
+    CHECK(std::find(defs.begin(), defs.end(), "BASE_DEF") != defs.end());
+}
+
+TEST_CASE("VcxprojReader loads conditional import when file exists", "[vcxproj_reader]") {
+    std::string xml = R"(<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{12345678-1234-1234-1234-123456789012}</ProjectGuid>
+    <ProjectName>TestConditionalImportExists</ProjectName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+  </PropertyGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="optional.props" Condition="exists('optional.props')" />
+  </ImportGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <PreprocessorDefinitions>BASE_DEF;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+  </ItemGroup>
+</Project>)";
+
+    TempVcxproj temp(xml);
+
+    // Create the optional.props file so the condition is true
+    {
+        std::ofstream props_file(temp.temp_dir / "optional.props");
+        props_file << R"(<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PreprocessorDefinitions>FROM_PROPS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>)";
+    }
+
+    VcxprojReader reader;
+    auto proj = reader.read_vcxproj(temp.vcxproj_path.string());
+    auto& defs = proj.configurations["Debug|Win32"].cl_compile.preprocessor_definitions;
+    CHECK(std::find(defs.begin(), defs.end(), "FROM_PROPS") != defs.end());
+}

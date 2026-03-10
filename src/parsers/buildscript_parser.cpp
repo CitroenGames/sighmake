@@ -936,7 +936,7 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
                 std::string path = trim(file_path);
                 if (!path.empty()) {
                     SourceFile* src = find_or_create_source(path, state);
-                    state.file_properties_files.push_back(src);
+                    if (src) state.file_properties_files.push_back(src->path);
                 }
             }
 
@@ -1318,8 +1318,8 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
         for (const auto& cfg_key : config_keys_to_apply) {
             // If we're in a file_properties() block, apply to all files in the group
             if (state.in_file_properties && !state.file_properties_files.empty()) {
-                for (SourceFile* file : state.file_properties_files) {
-                    parse_file_setting(file->path, setting, cfg_key, resolved_value, state);
+                for (const auto& file_path : state.file_properties_files) {
+                    parse_file_setting(file_path, setting, cfg_key, resolved_value, state);
                 }
             }
             // If we're in a set_file_properties() block, apply to that file
@@ -1350,8 +1350,8 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
         parse_solution_setting(key, resolved_value, state);
     } else if (state.in_file_properties && !state.file_properties_files.empty()) {
         // If we're in a file_properties() block, apply to all files in the group
-        for (SourceFile* file : state.file_properties_files) {
-            parse_file_setting(file->path, key, ALL_CONFIGS, resolved_value, state);
+        for (const auto& file_path : state.file_properties_files) {
+            parse_file_setting(file_path, key, ALL_CONFIGS, resolved_value, state);
         }
     } else if (state.in_set_file_properties && state.set_file_properties_file != nullptr) {
         // If we're in a set_file_properties() block, apply to that file
@@ -1550,14 +1550,15 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             proj.configurations[config_key].target_ext = value;
         }
     } else if (key == "outdir" || key == "output_dir") {
-        // Resolve relative to buildscript location to get absolute path
-        std::string resolved_dir = resolve_path(value, state.base_path);
+        // Skip resolve_path for values containing MSBuild variables - they must be preserved as-is
+        std::string resolved_dir = (value.find("$(") != std::string::npos)
+            ? value : resolve_path(value, state.base_path);
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].out_dir = resolved_dir;
         }
     } else if (key == "intdir" || key == "intermediate_dir") {
-        // Resolve relative to buildscript location to get absolute path
-        std::string resolved_dir = resolve_path(value, state.base_path);
+        std::string resolved_dir = (value.find("$(") != std::string::npos)
+            ? value : resolve_path(value, state.base_path);
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].int_dir = resolved_dir;
         }
@@ -2380,11 +2381,12 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
     } else if (key == "windows_sdk" || key == "windows_sdk_version" || key == "windows_target_platform_version") {
         cfg.windows_target_platform_version = value;
     } else if (key == "outdir" || key == "output_dir") {
-        // Resolve relative to buildscript location to get absolute path
-        cfg.out_dir = resolve_path(value, state.base_path);
+        // Skip resolve_path for values containing MSBuild variables - they must be preserved as-is
+        cfg.out_dir = (value.find("$(") != std::string::npos)
+            ? value : resolve_path(value, state.base_path);
     } else if (key == "intdir" || key == "intermediate_dir") {
-        // Resolve relative to buildscript location to get absolute path
-        cfg.int_dir = resolve_path(value, state.base_path);
+        cfg.int_dir = (value.find("$(") != std::string::npos)
+            ? value : resolve_path(value, state.base_path);
     } else if (key == "includes" || key == "additional_include_directories") {
         auto dirs = split(value, ',');
         std::vector<std::string> resolved_dirs;

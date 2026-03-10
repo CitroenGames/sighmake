@@ -207,6 +207,22 @@ static PropSheetSettings read_props_file(const std::string& filepath) {
     return settings;
 }
 
+// Evaluate an MSBuild-style exists() condition on an Import element.
+// Returns true if the import should proceed, false if it should be skipped.
+static bool should_import(const std::string& condition, const fs::path& base_dir) {
+    if (condition.empty()) return true;
+
+    std::regex exists_re(R"(exists\(\s*'([^']+)'\s*\))");
+    std::smatch match;
+    if (std::regex_search(condition, match, exists_re) && match.size() > 1) {
+        std::string path_str = match[1].str();
+        if (path_str.find("$(") != std::string::npos) return true;
+        fs::path resolved = (base_dir / path_str).lexically_normal();
+        return fs::exists(resolved);
+    }
+    return true;
+}
+
 Project VcxprojReader::read_vcxproj(const std::string& filepath) {
     Project project;
     pugi::xml_document doc;
@@ -351,6 +367,10 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
 
             // Skip MSBuild system property sheets (they contain MSBuild variables we can't resolve)
             if (props_path.find("$(") != std::string::npos) continue;
+
+            // Check Condition attribute (e.g., exists('game.props'))
+            std::string import_condition = import_node.attribute("Condition").as_string();
+            if (!should_import(import_condition, vcxproj_dir)) continue;
 
             // Resolve relative path
             fs::path abs_props_path = vcxproj_dir / props_path;
@@ -1542,7 +1562,8 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         // This ensures the buildscript is location-independent
         if (!cfg.out_dir.empty()) {
             std::string converted_out_dir = cfg.out_dir;
-            if (!project.vcxproj_path.empty()) {
+            // Skip path conversion for values containing MSBuild variables - they must be preserved as-is
+            if (cfg.out_dir.find("$(") == std::string::npos && !project.vcxproj_path.empty()) {
                 namespace fs = std::filesystem;
                 try {
                     // Resolve out_dir to absolute path based on vcxproj location
@@ -1573,7 +1594,8 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         }
         if (!cfg.int_dir.empty()) {
             std::string converted_int_dir = cfg.int_dir;
-            if (!project.vcxproj_path.empty()) {
+            // Skip path conversion for values containing MSBuild variables - they must be preserved as-is
+            if (cfg.int_dir.find("$(") == std::string::npos && !project.vcxproj_path.empty()) {
                 namespace fs = std::filesystem;
                 try {
                     // Resolve int_dir to absolute path based on vcxproj location

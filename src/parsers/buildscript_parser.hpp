@@ -40,7 +40,7 @@ private:
         bool in_uses_pch = false;  // Track if we're inside a uses_pch() call
         std::string target_link_libraries_accumulator;  // Accumulate multi-line target_link_libraries() calls
         bool in_target_link_libraries = false;  // Track if we're inside a target_link_libraries() call
-        std::vector<SourceFile*> file_properties_files;  // Files being set in file_properties() block
+        std::vector<std::string> file_properties_files;  // Paths of files in file_properties() block
         bool in_file_properties = false;  // Track if we're inside a file_properties() block
         SourceFile* set_file_properties_file = nullptr;  // File being set in set_file_properties() block
         bool in_set_file_properties = false;  // Track if we're inside a set_file_properties() block

@@ -335,56 +335,38 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
         std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
 
         if (!cfg.out_dir.empty()) {
-            // Validate that out_dir is an absolute path (as expected from buildscript_parser)
-            try {
-                fs::path out_path(cfg.out_dir);
-                if (!out_path.is_absolute()) {
-                    std::cerr << "Warning: OutDir '" << cfg.out_dir
-                             << "' is not absolute for configuration " << config_key
-                             << " in project " << project.name << "\n";
-                }
-            } catch (const std::exception& e) {
-                std::cerr << "Error: Invalid OutDir path '" << cfg.out_dir
-                         << "' for configuration " << config_key
-                         << " in project " << project.name << ": " << e.what() << "\n";
-                return false;
-            }
-
             auto node = props.append_child("OutDir");
             node.append_attribute("Condition") = condition.c_str();
-            // Make relative to vcxproj output location
-            std::string relative_out = make_relative_path(cfg.out_dir, output_path);
-            // Ensure trailing slash for MSBuild
-            if (!relative_out.empty() && relative_out.back() != '\\') {
-                relative_out += '\\';
+            std::string out_value;
+            if (cfg.out_dir.find("$(") != std::string::npos) {
+                // Contains MSBuild variables - write as-is
+                out_value = cfg.out_dir;
+            } else {
+                // Absolute path - make relative to vcxproj output location
+                out_value = make_relative_path(cfg.out_dir, output_path);
             }
-            node.text() = relative_out.c_str();
+            // Ensure trailing slash for MSBuild
+            if (!out_value.empty() && out_value.back() != '\\') {
+                out_value += '\\';
+            }
+            node.text() = out_value.c_str();
         }
         if (!cfg.int_dir.empty()) {
-            // Validate that int_dir is an absolute path (as expected from buildscript_parser)
-            try {
-                fs::path int_path(cfg.int_dir);
-                if (!int_path.is_absolute()) {
-                    std::cerr << "Warning: IntDir '" << cfg.int_dir
-                             << "' is not absolute for configuration " << config_key
-                             << " in project " << project.name << "\n";
-                }
-            } catch (const std::exception& e) {
-                std::cerr << "Error: Invalid IntDir path '" << cfg.int_dir
-                         << "' for configuration " << config_key
-                         << " in project " << project.name << ": " << e.what() << "\n";
-                return false;
-            }
-
             auto node = props.append_child("IntDir");
             node.append_attribute("Condition") = condition.c_str();
-            // Make relative to vcxproj output location
-            std::string relative_int = make_relative_path(cfg.int_dir, output_path);
-            // Ensure trailing slash for MSBuild
-            if (!relative_int.empty() && relative_int.back() != '\\') {
-                relative_int += '\\';
+            std::string int_value;
+            if (cfg.int_dir.find("$(") != std::string::npos) {
+                // Contains MSBuild variables - write as-is
+                int_value = cfg.int_dir;
+            } else {
+                // Absolute path - make relative to vcxproj output location
+                int_value = make_relative_path(cfg.int_dir, output_path);
             }
-            node.text() = relative_int.c_str();
+            // Ensure trailing slash for MSBuild
+            if (!int_value.empty() && int_value.back() != '\\') {
+                int_value += '\\';
+            }
+            node.text() = int_value.c_str();
         }
         // Note: TargetName is written in the Configuration PropertyGroup, not here
         if (!cfg.target_ext.empty()) {
