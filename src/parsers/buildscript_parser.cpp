@@ -1527,6 +1527,11 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             for (const auto& config_key : state.solution->get_config_keys()) {
                 proj.configurations[config_key].platform_toolset = toolset_id;
             }
+
+            // Set solution-level target_toolset if not already set
+            if (state.solution->target_toolset.empty()) {
+                state.solution->target_toolset = toolset_id;
+            }
         }
     } else if (key == "windows_sdk" || key == "windows_sdk_version" || key == "windows_target_platform_version") {
         for (const auto& config_key : state.solution->get_config_keys()) {

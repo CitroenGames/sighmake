@@ -1237,12 +1237,17 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
         return false;
     }
 
-    // Header
+    // Header - version-appropriate for the target toolset
+    std::string toolset = resolve_solution_toolset(solution);
+    auto ver = get_sln_version_info(toolset);
+
     file << "\xEF\xBB\xBF\n"; // UTF-8 BOM
-    file << "Microsoft Visual Studio Solution File, Format Version 12.00\n";
-    file << "# Visual Studio Version 17\n";
-    file << "VisualStudioVersion = 17.0.31903.59\n";
-    file << "MinimumVisualStudioVersion = 10.0.40219.1\n";
+    file << "Microsoft Visual Studio Solution File, Format Version " << ver.format_version << "\n";
+    file << ver.comment << "\n";
+    if (!ver.visual_studio_version.empty()) {
+        file << "VisualStudioVersion = " << ver.visual_studio_version << "\n";
+        file << "MinimumVisualStudioVersion = " << ver.min_vs_version << "\n";
+    }
 
     // Build a map from project name to UUID for dependency resolution
     std::map<std::string, std::string> name_to_uuid;
@@ -1671,12 +1676,57 @@ bool VcxprojGenerator::should_use_slnx_format() const {
 
 // Determine ToolsVersion based on toolset
 std::string VcxprojGenerator::get_tools_version(const std::string& toolset) const {
-    // MSVC 2026 uses ToolsVersion 18.0
-    if (toolset == "v145" || toolset == "v144") {
-        return "18.0";
-    }
-    // Legacy toolsets use 4.0
+    if (toolset == "v145" || toolset == "v144") return "18.0";
+    if (toolset == "v143") return "Current";
+    if (toolset == "v142") return "Current";
+    if (toolset == "v141" || toolset == "v141_xp") return "15.0";
+    if (toolset == "v140" || toolset == "v140_xp") return "14.0";
+    if (toolset == "v120" || toolset == "v120_xp") return "12.0";
+    // v110, v100 and other legacy toolsets use MSBuild 4.0
     return "4.0";
+}
+
+// Get .sln header version info for a given toolset
+VcxprojGenerator::SlnVersionInfo VcxprojGenerator::get_sln_version_info(const std::string& toolset) const {
+    if (toolset == "v100" || toolset == "v100_xp") {
+        return {"11.00", "# Visual Studio 2010", "", "10.0.40219.1"};
+    }
+    if (toolset == "v110" || toolset == "v110_xp") {
+        return {"12.00", "# Visual Studio 2012", "11.0.61030.0", "10.0.40219.1"};
+    }
+    if (toolset == "v120" || toolset == "v120_xp") {
+        return {"12.00", "# Visual Studio 2013", "12.0.21005.1", "10.0.40219.1"};
+    }
+    if (toolset == "v140" || toolset == "v140_xp") {
+        return {"12.00", "# Visual Studio 14", "14.0.25420.1", "10.0.40219.1"};
+    }
+    if (toolset == "v141" || toolset == "v141_xp") {
+        return {"12.00", "# Visual Studio 15", "15.0.26228.4", "10.0.40219.1"};
+    }
+    if (toolset == "v142") {
+        return {"12.00", "# Visual Studio Version 16", "16.0.28729.10", "10.0.40219.1"};
+    }
+    if (toolset == "v145" || toolset == "v144") {
+        return {"12.00", "# Visual Studio Version 18", "18.0.00000.0", "10.0.40219.1"};
+    }
+    // Default: VS 2022 (v143)
+    return {"12.00", "# Visual Studio Version 17", "17.0.31903.59", "10.0.40219.1"};
+}
+
+// Resolve the effective toolset from a Solution
+std::string VcxprojGenerator::resolve_solution_toolset(const Solution& solution) const {
+    if (!solution.target_toolset.empty()) {
+        return solution.target_toolset;
+    }
+    // Fall back to first project's first configuration toolset
+    for (const auto& proj : solution.projects) {
+        for (const auto& [key, cfg] : proj.configurations) {
+            if (!cfg.platform_toolset.empty()) {
+                return cfg.platform_toolset;
+            }
+        }
+    }
+    return "v143"; // Default to VS 2022
 }
 
 // Register the vcxproj generator

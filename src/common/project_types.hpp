@@ -296,6 +296,10 @@ struct Solution {
     // Per-config solution-level defines (for bracket notation like defines[Win32])
     std::map<std::string, std::vector<std::string>> solution_level_preprocessor_definitions_per_config;
 
+    // Target toolset for .sln/.vcxproj generation (e.g., "v110", "v143")
+    // Populated from buildscript toolset or parsed from .sln VisualStudioVersion header
+    std::string target_toolset;
+
     // Get all configuration keys (e.g., "Debug|Win32", "Release|x64")
     std::vector<std::string> get_config_keys() const {
         std::vector<std::string> keys;
