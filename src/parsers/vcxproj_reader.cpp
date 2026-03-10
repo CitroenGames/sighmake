@@ -840,6 +840,25 @@ Solution SlnReader::read_sln(const std::string& filepath) {
     buffer << file.rdbuf();
     std::string content = buffer.str();
 
+    // Parse VisualStudioVersion from header to determine source VS version
+    {
+        std::regex vs_ver_re(R"(VisualStudioVersion\s*=\s*(\d+)\.)");
+        std::smatch vs_match;
+        if (std::regex_search(content, vs_match, vs_ver_re)) {
+            int major = std::stoi(vs_match[1].str());
+            switch (major) {
+                case 11: solution.target_toolset = "v110"; break;
+                case 12: solution.target_toolset = "v120"; break;
+                case 14: solution.target_toolset = "v140"; break;
+                case 15: solution.target_toolset = "v141"; break;
+                case 16: solution.target_toolset = "v142"; break;
+                case 17: solution.target_toolset = "v143"; break;
+                case 18: solution.target_toolset = "v145"; break;
+                default: break;
+            }
+        }
+    }
+
     // Parse solution configurations
     std::regex config_re(R"((\w+)\|(\w+)\s*=\s*(\w+)\|(\w+))");
     std::smatch match;

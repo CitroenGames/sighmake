@@ -46,6 +46,20 @@ private:
 
     // Determine ToolsVersion based on toolset
     std::string get_tools_version(const std::string& toolset) const;
+
+    // .sln header version info for a given VS toolset
+    struct SlnVersionInfo {
+        std::string format_version;        // e.g., "12.00"
+        std::string comment;               // e.g., "# Visual Studio 2012"
+        std::string visual_studio_version; // e.g., "11.0.61030.0" (empty for VS 2010)
+        std::string min_vs_version;        // e.g., "10.0.40219.1"
+    };
+
+    // Get .sln header version info for a given toolset
+    SlnVersionInfo get_sln_version_info(const std::string& toolset) const;
+
+    // Resolve the effective toolset from a Solution (target_toolset, or first project's config)
+    std::string resolve_solution_toolset(const Solution& solution) const;
 };
 
 } // namespace vcxproj
