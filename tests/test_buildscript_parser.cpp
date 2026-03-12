@@ -2042,3 +2042,118 @@ type = exe
     auto& debug_defs = sol.projects[0].configurations["Debug|Win32"].cl_compile.preprocessor_definitions;
     CHECK(contains(debug_defs, "_DEBUG_SOL"));
 }
+
+// ============================================================================
+// Bug fix tests: config template and per-config override bugs
+// ============================================================================
+
+TEST_CASE("Template syntax outside brackets", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug, Release, Profile
+platforms = Win32
+
+[project:App]
+type = exe
+
+[config:Release|Win32]
+optimization = MaxSpeed
+runtime_library = MultiThreaded
+forced_includes = release_force.h, basetypes.h
+cflags = /O2
+
+[config:Profile|Win32] : Template:Release
+warning_level = Level4
+forced_includes = profile_force.h
+)");
+    auto& profile_cfg = sol.projects[0].configurations["Profile|Win32"];
+    // Inherited from Release template
+    CHECK(profile_cfg.cl_compile.optimization == "MaxSpeed");
+    CHECK(profile_cfg.cl_compile.runtime_library == "MultiThreaded");
+    // Overridden in Profile
+    CHECK(profile_cfg.cl_compile.warning_level == "Level4");
+    // forced_includes overridden (not inherited)
+    REQUIRE(profile_cfg.cl_compile.forced_include_files.size() == 1);
+    CHECK(profile_cfg.cl_compile.forced_include_files[0] == "profile_force.h");
+    // cflags inherited from Release
+    CHECK(profile_cfg.cl_compile.additional_options == "/O2");
+}
+
+TEST_CASE("Config-section forced_includes overrides project-level", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+forced_includes = common.h, basetypes.h
+
+[config:Release|x64]
+forced_includes = release_force.h
+)");
+    auto& release_cfg = sol.projects[0].configurations["Release|x64"];
+    // Config-section should REPLACE, not append
+    REQUIRE(release_cfg.cl_compile.forced_include_files.size() == 1);
+    CHECK(release_cfg.cl_compile.forced_include_files[0] == "release_force.h");
+
+    // Debug should still have project-level includes
+    auto& debug_cfg = sol.projects[0].configurations["Debug|x64"];
+    REQUIRE(debug_cfg.cl_compile.forced_include_files.size() == 2);
+}
+
+TEST_CASE("Config-section cflags overrides project-level", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug, BankRelease
+platforms = x64
+
+[project:App]
+type = exe
+cflags = /wd4668 %(AdditionalOptions)
+
+[config:BankRelease|x64]
+cflags = /wd4668 /wd4244 %(AdditionalOptions)
+)");
+    auto& bank_cfg = sol.projects[0].configurations["BankRelease|x64"];
+    // Config-section should REPLACE, not concatenate
+    CHECK(bank_cfg.cl_compile.additional_options == "/wd4668 /wd4244 %(AdditionalOptions)");
+
+    // Debug should still have only project-level cflags
+    auto& debug_cfg = sol.projects[0].configurations["Debug|x64"];
+    CHECK(debug_cfg.cl_compile.additional_options == "/wd4668 %(AdditionalOptions)");
+}
+
+TEST_CASE("Bracket notation for forced_includes", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug, BankRelease, Release
+platforms = x64
+
+[project:App]
+type = exe
+forced_includes[BankRelease|x64] = bankrelease_force.h, basetypes.h
+forced_includes[Release|x64] = release_force.h, basetypes.h
+)");
+    auto& bank_cfg = sol.projects[0].configurations["BankRelease|x64"];
+    REQUIRE(bank_cfg.cl_compile.forced_include_files.size() == 2);
+    CHECK(bank_cfg.cl_compile.forced_include_files[0] == "bankrelease_force.h");
+    CHECK(bank_cfg.cl_compile.forced_include_files[1] == "basetypes.h");
+
+    auto& release_cfg = sol.projects[0].configurations["Release|x64"];
+    REQUIRE(release_cfg.cl_compile.forced_include_files.size() == 2);
+    CHECK(release_cfg.cl_compile.forced_include_files[0] == "release_force.h");
+    CHECK(release_cfg.cl_compile.forced_include_files[1] == "basetypes.h");
+
+    // Debug should have no forced includes (none were set for it)
+    auto& debug_cfg = sol.projects[0].configurations["Debug|x64"];
+    CHECK(debug_cfg.cl_compile.forced_include_files.empty());
+}

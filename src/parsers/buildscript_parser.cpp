@@ -911,10 +911,16 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
         }
     }
 
-    // Check for section headers
-    if (trimmed[0] == '[' && trimmed.back() == ']') {
-        parse_section(trimmed, state);
-        return;
+    // Check for section headers (including template syntax like [config:X] : Template:Y)
+    if (trimmed[0] == '[') {
+        size_t bracket_end = trimmed.find(']');
+        if (bracket_end != std::string::npos) {
+            std::string after = trim(trimmed.substr(bracket_end + 1));
+            if (after.empty() || after.find(": Template:") == 0 || after.find(":Template:") == 0) {
+                parse_section(trimmed, state);
+                return;
+            }
+        }
     }
 
     // Check for file_properties() function call
@@ -1107,7 +1113,14 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
 }
 
 bool BuildscriptParser::parse_section(const std::string& line, ParseState& state) {
-    std::string section = line.substr(1, line.length() - 2);
+    // Extract content between [ and ], handling template suffix outside brackets
+    // e.g., "[config:Release|x64] : Template:BankRelease" -> "config:Release|x64 : Template:BankRelease"
+    size_t bracket_end = line.find(']');
+    std::string section = line.substr(1, bracket_end - 1);
+    std::string after_bracket = trim(line.substr(bracket_end + 1));
+    if (!after_bracket.empty()) {
+        section += " " + after_bracket;
+    }
     
     if (section == "solution") {
         state.current_project = nullptr;
