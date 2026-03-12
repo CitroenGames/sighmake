@@ -705,7 +705,8 @@ You can define configuration templates to reduce duplication when creating custo
 **Features:**
 - Templates are regular configurations that other configs inherit from
 - Derived configs inherit **all** settings from the template
-- Individual settings can be overridden in the derived config
+- Individual settings can be overridden in the derived config (e.g., `forced_includes`, `cflags`, `defines`)
+- Config-section settings **replace** project-level values for that configuration (they do not append)
 - Works with platform-specific (`[config:Test|Win32]`) and all-platform (`[config:Test]`) syntax
 
 **Example - Single Platform Template:**
@@ -794,9 +795,36 @@ defines = NDEBUG, PRODUCTION_ENV, API_URL="https://api.com"
 whole_program_optimization = true  # Extra optimization for production
 ```
 
+**Example - Overriding Settings Per Configuration:**
+```ini
+[project:MyApp]
+type = exe
+sources = src/*.cpp
+
+# Project-level defaults (applied to all configurations)
+forced_includes = common.h, basetypes.h
+cflags = /Zc:sizedDealloc- /wd4668 %(AdditionalOptions)
+
+# BankRelease inherits from Release, overrides forced_includes and cflags
+[config:BankRelease|x64] : Template:Release
+forced_includes = bankrelease_force.h, basetypes.h
+cflags = /Zc:sizedDealloc- /wd4668 /wd4244 %(AdditionalOptions)
+
+# Release uses its own forced_includes (replaces the project-level value)
+[config:Release|x64]
+forced_includes = release_force.h, basetypes.h
+```
+
+In this example:
+- `BankRelease|x64` gets `bankrelease_force.h` — not the project-level `common.h`
+- `Release|x64` gets `release_force.h` — config-section values **replace** project-level values
+- Config-section `cflags` replaces the project-level value (no duplication)
+
 **Important Notes:**
+- `BaseConfig` in `: Template:BaseConfig` must be the name of an existing `[config:...]` section (e.g., `Release`, `Debug`) — it is not an arbitrary label. For example, `: Template:Release` inherits from the `[config:Release]` section.
 - Templates must be defined before they are referenced (define `[config:Release]` before using `: Template:Release`)
 - Templates remain buildable configurations themselves
+- Config-section settings **replace** project-level values for that configuration (they do not append)
 - Override order: Derived config settings → Template settings → System defaults
 - Circular template references (e.g., `Test : Template:Test`) are detected and produce an error
 

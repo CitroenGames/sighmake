@@ -2395,6 +2395,9 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
         }
         cfg.cl_compile.additional_include_directories.insert(
             cfg.cl_compile.additional_include_directories.end(), resolved_dirs.begin(), resolved_dirs.end());
+    } else if (key == "forced_includes" || key == "forced_include_files") {
+        auto files = split(value, ',');
+        cfg.cl_compile.forced_include_files = files;
     } else if (key == "defines" || key == "preprocessor_definitions") {
         auto defs = split(value, ',');
         cfg.cl_compile.preprocessor_definitions.insert(
@@ -2492,11 +2495,9 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
     } else if (key == "language_standard" || key == "std" || key == "cpp_standard") {
         cfg.cl_compile.language_standard = (value.find("stdcpp") == 0) ? value : ("stdcpp" + value);
     } else if (key == "cflags" || key == "compiler_flags" || key == "additional_options") {
-        if (!cfg.cl_compile.additional_options.empty()) cfg.cl_compile.additional_options += " ";
-        cfg.cl_compile.additional_options += value;
+        cfg.cl_compile.additional_options = value;
     } else if (key == "ldflags" || key == "linker_flags" || key == "link_additional_options") {
-        if (!cfg.link.additional_options.empty()) cfg.link.additional_options += " ";
-        cfg.link.additional_options += value;
+        cfg.link.additional_options = value;
     }
     // New linker settings
     else if (key == "show_progress" || key == "link_show_progress") {
