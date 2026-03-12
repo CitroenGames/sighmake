@@ -795,30 +795,40 @@ defines = NDEBUG, PRODUCTION_ENV, API_URL="https://api.com"
 whole_program_optimization = true  # Extra optimization for production
 ```
 
-**Example - Overriding Settings Per Configuration:**
+**Example - Inheriting and Overriding Configurations:**
 ```ini
-[project:MyApp]
+[solution]
+configurations = Debug, BankRelease, Release
+platforms = x64
+
+[project:MyGame]
 type = exe
 sources = src/*.cpp
-
-# Project-level defaults (applied to all configurations)
 forced_includes = common.h, basetypes.h
-cflags = /Zc:sizedDealloc- /wd4668 %(AdditionalOptions)
+cflags = /wd4668 /wd4263 %(AdditionalOptions)
 
-# BankRelease inherits from Release, overrides forced_includes and cflags
-[config:BankRelease|x64] : Template:Release
+# Define BankRelease as the base configuration
+[config:BankRelease|x64]
+optimization = MaxSpeed
+runtime_library = MultiThreadedDLL
 forced_includes = bankrelease_force.h, basetypes.h
-cflags = /Zc:sizedDealloc- /wd4668 /wd4244 %(AdditionalOptions)
+cflags = /wd4668 /wd4263 /wd4244 %(AdditionalOptions)
+defines = NDEBUG, BANK_BUILD
+whole_program_optimization = true
 
-# Release uses its own forced_includes (replaces the project-level value)
-[config:Release|x64]
+# Release inherits everything from BankRelease, overrides a few settings
+[config:Release|x64] : Template:BankRelease
 forced_includes = release_force.h, basetypes.h
+defines = NDEBUG
 ```
 
-In this example:
-- `BankRelease|x64` gets `bankrelease_force.h` — not the project-level `common.h`
-- `Release|x64` gets `release_force.h` — config-section values **replace** project-level values
-- Config-section `cflags` replaces the project-level value (no duplication)
+In this example, `Release|x64` will have:
+- `optimization = MaxSpeed` (inherited from BankRelease)
+- `runtime_library = MultiThreadedDLL` (inherited from BankRelease)
+- `whole_program_optimization = true` (inherited from BankRelease)
+- `cflags = /wd4668 /wd4263 /wd4244 %(AdditionalOptions)` (inherited from BankRelease)
+- `forced_includes = release_force.h, basetypes.h` (overridden in Release)
+- `defines = NDEBUG` (overridden in Release, without `BANK_BUILD`)
 
 **Important Notes:**
 - `BaseConfig` in `: Template:BaseConfig` must be the name of an existing `[config:...]` section (e.g., `Release`, `Debug`) — it is not an arbitrary label. For example, `: Template:Release` inherits from the `[config:Release]` section.
