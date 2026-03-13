@@ -428,7 +428,7 @@ TEST_CASE("VcxprojReader reads file ExcludedFromBuild", "[vcxproj_reader]") {
 }
 
 TEST_CASE("VcxprojReader skips conditional import when file does not exist", "[vcxproj_reader]") {
-    std::string xml = R"(<?xml version="1.0" encoding="utf-8"?>
+    std::string xml = R"xml(<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Label="Globals">
     <ProjectGuid>{12345678-1234-1234-1234-123456789012}</ProjectGuid>
@@ -448,7 +448,7 @@ TEST_CASE("VcxprojReader skips conditional import when file does not exist", "[v
   <ItemGroup>
     <ClCompile Include="main.cpp" />
   </ItemGroup>
-</Project>)";
+</Project>)xml";
 
     TempVcxproj temp(xml);
     // optional.props does NOT exist in temp_dir
@@ -461,7 +461,7 @@ TEST_CASE("VcxprojReader skips conditional import when file does not exist", "[v
 }
 
 TEST_CASE("VcxprojReader loads conditional import when file exists", "[vcxproj_reader]") {
-    std::string xml = R"(<?xml version="1.0" encoding="utf-8"?>
+    std::string xml = R"xml(<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Label="Globals">
     <ProjectGuid>{12345678-1234-1234-1234-123456789012}</ProjectGuid>
@@ -481,21 +481,21 @@ TEST_CASE("VcxprojReader loads conditional import when file exists", "[vcxproj_r
   <ItemGroup>
     <ClCompile Include="main.cpp" />
   </ItemGroup>
-</Project>)";
+</Project>)xml";
 
     TempVcxproj temp(xml);
 
     // Create the optional.props file so the condition is true
     {
         std::ofstream props_file(temp.temp_dir / "optional.props");
-        props_file << R"(<?xml version="1.0" encoding="utf-8"?>
+        props_file << R"xml(<?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemDefinitionGroup>
     <ClCompile>
       <PreprocessorDefinitions>FROM_PROPS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
   </ItemDefinitionGroup>
-</Project>)";
+</Project>)xml";
     }
 
     VcxprojReader reader;

@@ -2157,3 +2157,94 @@ forced_includes[Release|x64] = release_force.h, basetypes.h
     auto& debug_cfg = sol.projects[0].configurations["Debug|x64"];
     CHECK(debug_cfg.cl_compile.forced_include_files.empty());
 }
+
+TEST_CASE("Project-level settings applied to late-discovered custom config", "[buildscript_parser]") {
+    // BankRelease is NOT pre-declared in [solution]; it is discovered from its [config:] section.
+    // Project-level settings should still apply to it via project_level_defaults (Phase 1.7).
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+platforms = x64
+
+[project:App]
+type = exe
+warning_level = Level3
+exception_handling = Sync
+includes = mydir
+forced_includes = global.h
+cflags = /wd4668
+charset = Unicode
+
+[config:BankRelease|x64]
+toolset = v143
+)");
+    auto& bank_cfg = sol.projects[0].configurations["BankRelease|x64"];
+    CHECK(bank_cfg.cl_compile.warning_level == "Level3");
+    CHECK(bank_cfg.cl_compile.exception_handling == "Sync");
+    REQUIRE(!bank_cfg.cl_compile.additional_include_directories.empty());
+    REQUIRE(!bank_cfg.cl_compile.forced_include_files.empty());
+    CHECK(bank_cfg.cl_compile.forced_include_files[0] == "global.h");
+    CHECK(bank_cfg.cl_compile.additional_options == "/wd4668");
+    CHECK(bank_cfg.character_set == "Unicode");
+
+    // Debug/Release should also have the same project-level settings (eagerly applied)
+    auto& debug_cfg = sol.projects[0].configurations["Debug|x64"];
+    CHECK(debug_cfg.cl_compile.warning_level == "Level3");
+    CHECK(debug_cfg.character_set == "Unicode");
+}
+
+TEST_CASE("Charset in config section overrides project-level", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+platforms = x64
+
+[project:App]
+type = exe
+charset = MultiByte
+
+[config:BankRelease|x64]
+charset = Unicode
+)");
+    auto& bank_cfg = sol.projects[0].configurations["BankRelease|x64"];
+    CHECK(bank_cfg.character_set == "Unicode");
+
+    // Debug should have project-level MultiByte
+    auto& debug_cfg = sol.projects[0].configurations["Debug|x64"];
+    CHECK(debug_cfg.character_set == "MultiByte");
+}
+
+TEST_CASE("Template platform fallback for single-platform template", "[buildscript_parser]") {
+    // BankRelease defined only for x64; Release|Win32 uses it as a template (fallback needed)
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug, BankRelease, Release
+platforms = Win32, x64
+
+[project:App]
+type = exe
+
+[config:BankRelease|x64]
+optimization = MaxSpeed
+runtime_library = MultiThreaded
+cflags = /wd4668
+
+[config:Release|x64] : Template:BankRelease
+[config:Release|Win32] : Template:BankRelease
+)");
+    // Release|x64 should inherit BankRelease|x64 settings
+    auto& rel_x64 = sol.projects[0].configurations["Release|x64"];
+    CHECK(rel_x64.cl_compile.optimization == "MaxSpeed");
+    CHECK(rel_x64.cl_compile.runtime_library == "MultiThreaded");
+    CHECK(rel_x64.cl_compile.additional_options == "/wd4668");
+
+    // Release|Win32 should also get BankRelease settings via fallback (BankRelease|Win32 doesn't exist)
+    auto& rel_w32 = sol.projects[0].configurations["Release|Win32"];
+    CHECK(rel_w32.cl_compile.optimization == "MaxSpeed");
+    CHECK(rel_w32.cl_compile.runtime_library == "MultiThreaded");
+    CHECK(rel_w32.cl_compile.additional_options == "/wd4668");
+}

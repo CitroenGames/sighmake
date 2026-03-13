@@ -525,6 +525,25 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                     std::string derived_key = config_name + "|" + platform;
                     std::string template_key = template_name + "|" + platform;
 
+                    // Fallback: if platform-specific template isn't explicitly defined, try any platform
+                    if (!state.explicitly_defined_config_keys.count(template_key)) {
+                        // Prefer explicitly-defined configs (not auto-created stubs)
+                        bool found = false;
+                        for (const auto& [cfg_key, cfg_val] : project.configurations) {
+                            auto [cname, cplatform] = parse_config_key(cfg_key);
+                            if (cname == template_name && state.explicitly_defined_config_keys.count(cfg_key)) {
+                                template_key = cfg_key; found = true; break;
+                            }
+                        }
+                        // Fall back to any matching config if no explicitly-defined one found
+                        if (!found && project.configurations.find(template_key) == project.configurations.end()) {
+                            for (const auto& [cfg_key, cfg_val] : project.configurations) {
+                                auto [cname, cplatform] = parse_config_key(cfg_key);
+                                if (cname == template_name) { template_key = cfg_key; break; }
+                            }
+                        }
+                    }
+
                     apply_template(project, derived_key, template_key, state);
                 }
             } else {
@@ -535,8 +554,89 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 auto [config, platform] = parse_config_key(pending_config);
                 std::string template_key = template_name + "|" + platform;
 
+                // Fallback: if platform-specific template isn't explicitly defined, try any platform
+                if (!state.explicitly_defined_config_keys.count(template_key)) {
+                    // Prefer explicitly-defined configs (not auto-created stubs)
+                    bool found = false;
+                    for (const auto& [cfg_key, cfg_val] : project.configurations) {
+                        auto [cname, cplatform] = parse_config_key(cfg_key);
+                        if (cname == template_name && state.explicitly_defined_config_keys.count(cfg_key)) {
+                            template_key = cfg_key; found = true; break;
+                        }
+                    }
+                    // Fall back to any matching config if no explicitly-defined one found
+                    if (!found && project.configurations.find(template_key) == project.configurations.end()) {
+                        for (const auto& [cfg_key, cfg_val] : project.configurations) {
+                            auto [cname, cplatform] = parse_config_key(cfg_key);
+                            if (cname == template_name) { template_key = cfg_key; break; }
+                        }
+                    }
+                }
+
                 apply_template(project, pending_config, template_key, state);
             }
+        }
+    }
+
+    // Phase 1.7: Apply project-level defaults to configs that were discovered after
+    // project-level settings were parsed (e.g., custom config names not pre-declared
+    // in [solution]). Uses "copy-if-empty" semantics so config-section values take precedence.
+    for (auto& project : solution.projects) {
+        const Configuration& defs = project.project_level_defaults;
+        for (const auto& config_key : solution.get_config_keys()) {
+            auto& cfg = project.configurations[config_key];
+            auto& cl = cfg.cl_compile;
+            const auto& d = defs.cl_compile;
+
+            // Scalar settings: copy if not already set by eager project-level or config-section
+            if (cfg.character_set.empty() && !defs.character_set.empty())
+                cfg.character_set = defs.character_set;
+            if (cfg.platform_toolset.empty() && !defs.platform_toolset.empty())
+                cfg.platform_toolset = defs.platform_toolset;
+            if (cfg.windows_target_platform_version.empty() && !defs.windows_target_platform_version.empty())
+                cfg.windows_target_platform_version = defs.windows_target_platform_version;
+            if (cfg.target_name.empty() && !defs.target_name.empty())
+                cfg.target_name = defs.target_name;
+            if (cfg.target_ext.empty() && !defs.target_ext.empty())
+                cfg.target_ext = defs.target_ext;
+            if (cfg.out_dir.empty() && !defs.out_dir.empty())
+                cfg.out_dir = defs.out_dir;
+            if (cfg.int_dir.empty() && !defs.int_dir.empty())
+                cfg.int_dir = defs.int_dir;
+            if (cfg.config_type.empty() && !defs.config_type.empty())
+                cfg.config_type = defs.config_type;
+
+            if (cl.warning_level.empty() && !d.warning_level.empty())
+                cl.warning_level = d.warning_level;
+            if (cl.exception_handling.empty() && !d.exception_handling.empty())
+                cl.exception_handling = d.exception_handling;
+            if (cl.language_standard.empty() && !d.language_standard.empty())
+                cl.language_standard = d.language_standard;
+            if (cl.error_reporting.empty() && !d.error_reporting.empty())
+                cl.error_reporting = d.error_reporting;
+            if (cl.additional_options.empty() && !d.additional_options.empty())
+                cl.additional_options = d.additional_options;
+            if (!cl.runtime_type_info && d.runtime_type_info)
+                cl.runtime_type_info = d.runtime_type_info;
+            if (!cl.utf8_source && d.utf8_source)
+                cl.utf8_source = d.utf8_source;
+            if (!cl.multi_processor_compilation && d.multi_processor_compilation)
+                cl.multi_processor_compilation = d.multi_processor_compilation;
+
+            // Vector settings: copy if empty
+            if (cl.additional_include_directories.empty() && !d.additional_include_directories.empty())
+                cl.additional_include_directories = d.additional_include_directories;
+            if (cl.forced_include_files.empty() && !d.forced_include_files.empty())
+                cl.forced_include_files = d.forced_include_files;
+            if (cl.disable_specific_warnings.empty() && !d.disable_specific_warnings.empty())
+                cl.disable_specific_warnings = d.disable_specific_warnings;
+
+            if (cfg.link.additional_dependencies.empty() && !defs.link.additional_dependencies.empty())
+                cfg.link.additional_dependencies = defs.link.additional_dependencies;
+            if (cfg.link.additional_library_directories.empty() && !defs.link.additional_library_directories.empty())
+                cfg.link.additional_library_directories = defs.link.additional_library_directories;
+            if (cfg.link.additional_options.empty() && !defs.link.additional_options.empty())
+                cfg.link.additional_options = defs.link.additional_options;
         }
     }
 
@@ -1178,6 +1278,7 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
             if (!config.empty() && !platform.empty()) {
                 state.discovered_configs.insert(config);
                 state.discovered_platforms.insert(platform);
+                state.explicitly_defined_config_keys.insert(state.current_config);
 
                 // Update solution configurations/platforms immediately so project-level settings
                 // can be applied to all configs (including newly discovered ones)
@@ -1525,6 +1626,7 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].config_type = config_type;
         }
+        proj.project_level_defaults.config_type = config_type;
     } else if (key == "toolset" || key == "platform_toolset") {
         auto& registry = ToolsetRegistry::instance();
         auto resolved = registry.resolve(value);
@@ -1540,6 +1642,7 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             for (const auto& config_key : state.solution->get_config_keys()) {
                 proj.configurations[config_key].platform_toolset = toolset_id;
             }
+            proj.project_level_defaults.platform_toolset = toolset_id;
 
             // Set solution-level target_toolset if not already set
             if (state.solution->target_toolset.empty()) {
@@ -1550,18 +1653,22 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].windows_target_platform_version = value;
         }
+        proj.project_level_defaults.windows_target_platform_version = value;
     } else if (key == "charset" || key == "character_set") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].character_set = value;
         }
+        proj.project_level_defaults.character_set = value;
     } else if (key == "target_name" || key == "targetname") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].target_name = value;
         }
+        proj.project_level_defaults.target_name = value;
     } else if (key == "target_ext" || key == "targetext") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].target_ext = value;
         }
+        proj.project_level_defaults.target_ext = value;
     } else if (key == "outdir" || key == "output_dir") {
         // Skip resolve_path for values containing MSBuild variables - they must be preserved as-is
         std::string resolved_dir = (value.find("$(") != std::string::npos)
@@ -1569,12 +1676,14 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].out_dir = resolved_dir;
         }
+        proj.project_level_defaults.out_dir = resolved_dir;
     } else if (key == "intdir" || key == "intermediate_dir") {
         std::string resolved_dir = (value.find("$(") != std::string::npos)
             ? value : resolve_path(value, state.base_path);
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].int_dir = resolved_dir;
         }
+        proj.project_level_defaults.int_dir = resolved_dir;
     }
     // Source files - with platform-conditional override support
     else if (key == "sources" || key == "src" || key == "files") {
@@ -1815,6 +1924,8 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             auto& includes = proj.configurations[config_key].cl_compile.additional_include_directories;
             includes.insert(includes.end(), resolved_dirs.begin(), resolved_dirs.end());
         }
+        auto& def_includes = proj.project_level_defaults.cl_compile.additional_include_directories;
+        def_includes.insert(def_includes.end(), resolved_dirs.begin(), resolved_dirs.end());
     } else if (key == "public_includes" || key == "public_include_dirs") {
         // Public includes that propagate to dependent projects via target_link_libraries
         auto dirs = split(value, ',');
@@ -1849,6 +1960,8 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             auto& forced = proj.configurations[config_key].cl_compile.forced_include_files;
             forced.insert(forced.end(), files.begin(), files.end());
         }
+        auto& def_forced = proj.project_level_defaults.cl_compile.forced_include_files;
+        def_forced.insert(def_forced.end(), files.begin(), files.end());
     } else if (key == "defines" || key == "preprocessor" || key == "preprocessor_definitions") {
         auto defs = split(value, ',');
         // Store as project-level defines that will be applied to all final configs
@@ -1863,6 +1976,7 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.language_standard = std_value;
         }
+        proj.project_level_defaults.cl_compile.language_standard = std_value;
     } else if (key == "language" || key == "lang") {
         // Validate language value
         if (value != "C" && value != "C++" && !value.empty()) {
@@ -1880,20 +1994,27 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             if (!opts.empty()) opts += " ";
             opts += value;
         }
+        auto& def_opts = proj.project_level_defaults.cl_compile.additional_options;
+        if (!def_opts.empty()) def_opts += " ";
+        def_opts += value;
     } else if (key == "warning_level") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.warning_level = value;
         }
+        proj.project_level_defaults.cl_compile.warning_level = value;
     } else if (key == "disable_warnings" || key == "disable_specific_warnings") {
         auto warnings = split(value, ',');
         for (const auto& config_key : state.solution->get_config_keys()) {
             auto& disabled = proj.configurations[config_key].cl_compile.disable_specific_warnings;
             disabled.insert(disabled.end(), warnings.begin(), warnings.end());
         }
+        auto& def_disabled = proj.project_level_defaults.cl_compile.disable_specific_warnings;
+        def_disabled.insert(def_disabled.end(), warnings.begin(), warnings.end());
     } else if (key == "error_reporting") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.error_reporting = value;
         }
+        proj.project_level_defaults.cl_compile.error_reporting = value;
     } else if (key == "assembler_listing" || key == "assembler_listing_location") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.assembler_listing_location = value;
@@ -1922,16 +2043,19 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.exception_handling = eh_value;
         }
+        proj.project_level_defaults.cl_compile.exception_handling = eh_value;
     } else if (key == "rtti" || key == "runtime_type_info") {
         bool rtti = (value == "true" || value == "yes" || value == "1");
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.runtime_type_info = rtti;
         }
+        proj.project_level_defaults.cl_compile.runtime_type_info = rtti;
     } else if (key == "multiprocessor" || key == "mp" || key == "multi_processor_compilation") {
         bool mp = (value == "true" || value == "yes" || value == "1");
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.multi_processor_compilation = mp;
         }
+        proj.project_level_defaults.cl_compile.multi_processor_compilation = mp;
     } else if (key == "simd" || key == "enhanced_instruction_set") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.enhanced_instruction_set = value;
@@ -2035,6 +2159,7 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.utf8_source = val;
         }
+        proj.project_level_defaults.cl_compile.utf8_source = val;
     }
     // PCH settings
     else if (key == "pch" || key == "precompiled_header") {
@@ -2057,6 +2182,9 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             if (!opts.empty()) opts += " ";
             opts += value;
         }
+        auto& def_link_opts = proj.project_level_defaults.link.additional_options;
+        if (!def_link_opts.empty()) def_link_opts += " ";
+        def_link_opts += value;
     } else if (key == "libdirs" || key == "lib_dirs" || key == "additional_library_directories") {
         auto dirs = split(value, ',');
         std::vector<std::string> resolved_dirs;
@@ -2067,6 +2195,8 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             auto& libdirs = proj.configurations[config_key].link.additional_library_directories;
             libdirs.insert(libdirs.end(), resolved_dirs.begin(), resolved_dirs.end());
         }
+        auto& def_libdirs = proj.project_level_defaults.link.additional_library_directories;
+        def_libdirs.insert(def_libdirs.end(), resolved_dirs.begin(), resolved_dirs.end());
     } else if (key == "libs") {
         // Project-level libs should become Library elements
         auto libs = split(value, ',');
@@ -2393,6 +2523,8 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
         }
     } else if (key == "windows_sdk" || key == "windows_sdk_version" || key == "windows_target_platform_version") {
         cfg.windows_target_platform_version = value;
+    } else if (key == "charset" || key == "character_set") {
+        cfg.character_set = value;
     } else if (key == "outdir" || key == "output_dir") {
         // Skip resolve_path for values containing MSBuild variables - they must be preserved as-is
         cfg.out_dir = (value.find("$(") != std::string::npos)

@@ -46,6 +46,7 @@ private:
         bool in_set_file_properties = false;  // Track if we're inside a set_file_properties() block
         std::set<std::string> discovered_configs;  // Track configs discovered from [config:...] sections
         std::set<std::string> discovered_platforms;  // Track platforms discovered from [config:...] sections
+        std::set<std::string> explicitly_defined_config_keys;  // Full "Config|Platform" keys with explicit [config:] sections
 
         // Template inheritance tracking
         std::map<std::string, std::string> config_templates;  // Maps "Config" or "Config|Platform" -> "TemplateName"

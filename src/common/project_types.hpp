@@ -264,6 +264,11 @@ struct Project {
     // including multiple buildscripts, configs from later projects affect all projects)
     std::vector<std::string> project_level_preprocessor_definitions;
 
+    // Project-level defaults for ALL non-defines settings (warning_level, charset, cflags, etc.)
+    // Applied post-parse via "copy-if-empty" semantics so config-section values take precedence.
+    // Fixes the case where custom configs are discovered after project-level settings run.
+    Configuration project_level_defaults;
+
     // Public properties that propagate to dependent projects via target_link_libraries
     std::vector<std::string> public_includes;   // Include directories exposed to dependents (all configs)
     std::vector<std::string> public_libs;       // Libraries exposed to dependents (all configs)
