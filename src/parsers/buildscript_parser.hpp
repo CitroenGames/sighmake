@@ -155,8 +155,8 @@ private:
     PackageFindResult find_directx9();
     PackageFindResult find_directx10();
 
-#ifdef __linux__
-    // Linux-specific pkg-config helper
+#if defined(__linux__) || defined(__APPLE__)
+    // Unix pkg-config helper (Linux and macOS)
     PackageFindResult try_pkg_config(const std::string& package_name);
 #endif
 

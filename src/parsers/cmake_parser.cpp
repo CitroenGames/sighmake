@@ -1264,6 +1264,8 @@ std::string CMakeParser::evaluate_simple_gen_expr(const std::string& expr, const
     if (type == "PLATFORM_ID") {
         #ifdef _WIN32
         return (args == "Windows") ? "1" : "0";
+        #elif defined(__APPLE__)
+        return (args == "Darwin" || args == "Apple") ? "1" : "0";
         #else
         return (args == "Linux") ? "1" : "0";
         #endif

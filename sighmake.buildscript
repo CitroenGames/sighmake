@@ -1,7 +1,7 @@
 [solution]
 name = sighmake
 configurations = Debug, Release
-platforms = Win32, x64
+platforms = Win32, x64, Linux
 
 [project:sighmake]
 # Project type: executable
@@ -33,9 +33,16 @@ intdir[Release|Win32] = .\build\obj\Release
 intdir[Debug|x64] = .\build\obj\x64\Debug
 intdir[Release|x64] = .\build\obj\x64\Release
 
+outdir[Debug|Linux] = build/bin/Debug
+outdir[Release|Linux] = build/bin/Release
+intdir[Debug|Linux] = build/obj/Debug
+intdir[Release|Linux] = build/obj/Release
+
 # Target settings
 target_name = sighmake
+if (windows) {
 target_ext = .exe
+}
 
 # Compiler settings
 warning_level = Level4

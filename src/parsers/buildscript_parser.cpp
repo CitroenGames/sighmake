@@ -3490,8 +3490,8 @@ void BuildscriptParser::parse_find_package(const std::string& line, ParseState& 
     }
 }
 
-#ifdef __linux__
-// Linux-specific pkg-config helper
+#if defined(__linux__) || defined(__APPLE__)
+// Unix pkg-config helper (Linux and macOS)
 PackageFindResult BuildscriptParser::try_pkg_config(const std::string& package_name) {
     PackageFindResult result;
 
@@ -3577,7 +3577,7 @@ PackageFindResult BuildscriptParser::try_pkg_config(const std::string& package_n
     result.found = true;
     return result;
 }
-#endif
+#endif // defined(__linux__) || defined(__APPLE__)
 
 // Package finder: Vulkan
 PackageFindResult BuildscriptParser::find_vulkan() {
@@ -3603,8 +3603,8 @@ PackageFindResult BuildscriptParser::find_vulkan() {
         result.error_message = "VULKAN_SDK environment variable not set";
     }
 
-#elif defined(__linux__)
-    // Linux: Try pkg-config first, then fallback to standard paths
+#elif defined(__linux__) || defined(__APPLE__)
+    // Linux/macOS: Try pkg-config first, then fallback to standard paths
     result = try_pkg_config("vulkan");
 
     if (result.found && result.include_dirs.empty()) {
@@ -3642,8 +3642,8 @@ PackageFindResult BuildscriptParser::find_opengl() {
     result.include_dirs = "";  // System include path
     result.libraries = "opengl32.lib";
 
-#elif defined(__linux__)
-    // Linux: Try pkg-config first
+#elif defined(__linux__) || defined(__APPLE__)
+    // Linux/macOS: Try pkg-config first
     result = try_pkg_config("gl");
 
     if (!result.found) {
@@ -3723,8 +3723,8 @@ PackageFindResult BuildscriptParser::find_sdl2() {
         }
     }
 
-#elif defined(__linux__)
-    // Linux: Use pkg-config
+#elif defined(__linux__) || defined(__APPLE__)
+    // Linux/macOS: Use pkg-config
     result = try_pkg_config("sdl2");
 
     if (!result.found) {
@@ -3801,8 +3801,8 @@ PackageFindResult BuildscriptParser::find_sdl3() {
         }
     }
 
-#elif defined(__linux__)
-    // Linux: Use pkg-config
+#elif defined(__linux__) || defined(__APPLE__)
+    // Linux/macOS: Use pkg-config
     result = try_pkg_config("sdl3");
 
     if (!result.found) {

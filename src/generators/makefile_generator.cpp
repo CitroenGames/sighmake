@@ -306,7 +306,11 @@ std::string MakefileGenerator::get_linker_flags(const Configuration& config, con
 
     // Garbage collection of unused sections (equivalent to MSVC optimize_references + enable_comdat_folding)
     if (config.link.optimize_references || config.link.enable_comdat_folding) {
+#ifdef __APPLE__
+        ss << "-Wl,-dead_strip ";
+#else
         ss << "-Wl,--gc-sections ";
+#endif
     }
 
     return ss.str();
