@@ -18,7 +18,7 @@ public:
 
     // Get generator description
     std::string description() const override {
-        return "GNU Makefile generator for Linux/GCC";
+        return "GNU Makefile generator for Linux/macOS (GCC/Clang)";
     }
 
     // Generate a Makefile for a specific project and configuration

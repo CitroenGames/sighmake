@@ -43,6 +43,12 @@ target_name = sighmake
 if (windows) {
 target_ext = .exe
 }
+if (macos) {
+target_name = sighmake_macos
+}
+if (linux) {
+target_name = sighmake_linux
+}
 
 # Compiler settings
 warning_level = Level4

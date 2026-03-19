@@ -7,12 +7,12 @@ set -u
 cd "$(dirname "$(realpath "$0")")" || exit 1
 
 # Check if a macOS-compatible sighmake binary exists
-SIGHMAKE="./sighmake"
+SIGHMAKE="./sighmake_macos"
 if [ -f "$SIGHMAKE" ] && file "$SIGHMAKE" | grep -q "Mach-O"; then
     echo "Using existing macOS binary."
 else
     echo "No macOS binary found, compiling from source..."
-    clang++ -std=c++17 -O2 -Wall -Isrc/ -include src/pch.h -o sighmake \
+    clang++ -std=c++17 -O2 -Wall -Isrc/ -include src/pch.h -o sighmake_macos \
         src/main.cpp src/pch.cpp src/pugixml.cpp \
         src/common/toolset_registry.cpp src/common/vs_detector.cpp \
         src/generators/vcxproj_generator.cpp src/generators/makefile_generator.cpp \
@@ -28,7 +28,7 @@ else
 fi
 
 # Run sighmake
-./sighmake "sighmake.buildscript"
+./sighmake_macos "sighmake.buildscript"
 STATUS=$?
 
 if [ $STATUS -ne 0 ]; then

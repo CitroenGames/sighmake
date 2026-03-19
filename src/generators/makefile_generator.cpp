@@ -92,6 +92,26 @@ std::string MakefileGenerator::compute_relative_path(const std::string& path, co
     }
 }
 
+// Split a CMake-style semicolon-separated list into individual entries
+static std::vector<std::string> split_semicolons(const std::string& value) {
+    std::vector<std::string> result;
+    std::string current;
+    for (char c : value) {
+        if (c == ';') {
+            if (!current.empty()) {
+                result.push_back(current);
+                current.clear();
+            }
+        } else {
+            current += c;
+        }
+    }
+    if (!current.empty()) {
+        result.push_back(current);
+    }
+    return result;
+}
+
 // Strip .lib or .dll extension from library names
 std::string MakefileGenerator::strip_lib_extension(const std::string& lib) {
     std::string result = lib;
@@ -257,8 +277,10 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
 
     // Include directories - convert to relative paths
     for (const auto& inc : config.cl_compile.additional_include_directories) {
-        std::string inc_path = compute_relative_path(inc, makefile_dir);
-        ss << "-I" << inc_path << " ";
+        for (const auto& part : split_semicolons(inc)) {
+            std::string inc_path = compute_relative_path(part, makefile_dir);
+            ss << "-I" << inc_path << " ";
+        }
     }
 
     // Preprocessor definitions
@@ -295,8 +317,10 @@ std::string MakefileGenerator::get_linker_flags(const Configuration& config, con
 
     // Library directories - convert to relative paths
     for (const auto& libdir : config.link.additional_library_directories) {
-        std::string lib_path = compute_relative_path(libdir, makefile_dir);
-        ss << "-L" << lib_path << " ";
+        for (const auto& part : split_semicolons(libdir)) {
+            std::string lib_path = compute_relative_path(part, makefile_dir);
+            ss << "-L" << lib_path << " ";
+        }
     }
 
     // Additional linker options
@@ -322,18 +346,20 @@ std::string MakefileGenerator::get_linker_libs(const Configuration& config) {
 
     // Additional dependencies (libraries)
     for (const auto& lib : config.link.additional_dependencies) {
-        std::string libname = strip_lib_extension(lib);
+        for (const auto& part : split_semicolons(lib)) {
+            std::string libname = strip_lib_extension(part);
 
-        // Skip empty library names
-        if (libname.empty()) continue;
+            // Skip empty library names
+            if (libname.empty()) continue;
 
-        // Check if it's a full path to a .lib or .a file
-        if (lib.find('/') != std::string::npos || lib.find('\\') != std::string::npos) {
-            // It's a path, use it directly
-            ss << to_unix_path(lib) << " ";
-        } else {
-            // It's a library name, use -l flag
-            ss << "-l" << libname << " ";
+            // Check if it's a full path to a .lib or .a file
+            if (part.find('/') != std::string::npos || part.find('\\') != std::string::npos) {
+                // It's a path, use it directly
+                ss << to_unix_path(part) << " ";
+            } else {
+                // It's a library name, use -l flag
+                ss << "-l" << libname << " ";
+            }
         }
     }
 
@@ -341,7 +367,7 @@ std::string MakefileGenerator::get_linker_libs(const Configuration& config) {
 }
 
 // Generate a single Makefile for a project and configuration
-bool MakefileGenerator::generate_makefile(const Project& project, const Solution& /*solution*/,
+bool MakefileGenerator::generate_makefile(const Project& project, const Solution& solution,
                                          const std::string& config_key, const std::string& output_path) {
     namespace fs = std::filesystem;
 
@@ -394,7 +420,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
 
     // Output and intermediate directories - convert to relative paths
     std::string out_dir = compute_relative_path(config.out_dir.empty() ? "build/" + config_name : config.out_dir, makefile_dir);
-    std::string int_dir = compute_relative_path(config.int_dir.empty() ? "build/" + config_name + "/obj" : config.int_dir, makefile_dir);
+    std::string int_dir = compute_relative_path(config.int_dir.empty() ? "build/" + config_name + "/obj/" + project.name : config.int_dir, makefile_dir);
 
     // Ensure directories end with /
     if (!out_dir.empty() && out_dir.back() != '/') out_dir += '/';
@@ -449,6 +475,89 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     std::string cxxflags = get_compiler_flags(config, project, makefile_dir);
     std::string ldflags = get_linker_flags(config, makefile_dir);
     std::string ldlibs = get_linker_libs(config);
+
+    // Add project reference outputs (.a files) to link line, including transitive PUBLIC deps
+    if (config.config_type == "Application" || config.config_type == "DynamicLibrary") {
+        // Collect all project .a files by traversing the dependency tree
+        std::vector<std::string> dep_archives;
+        std::set<std::string> visited_deps;
+
+        // Helper to find a project by name
+        auto find_project = [&](const std::string& name) -> const Project* {
+            for (const auto& p : solution.projects) {
+                if (p.name == name) return &p;
+            }
+            return nullptr;
+        };
+
+        // Helper to compute a project's output archive path
+        auto get_archive_path = [&](const Project& dep_proj, const std::string& cfg_key,
+                                     const std::string& cfg_name) -> std::string {
+            auto dep_config_it = dep_proj.configurations.find(cfg_key);
+            if (dep_config_it == dep_proj.configurations.end()) return "";
+            const auto& dep_config = dep_config_it->second;
+
+            if (dep_config.config_type != "StaticLibrary" &&
+                dep_config.config_type != "DynamicLibrary") return "";
+
+            std::string dep_target_name = dep_config.target_name.empty() ? dep_proj.name : dep_config.target_name;
+            std::string dep_target_ext = dep_config.target_ext;
+            if (dep_target_ext.empty()) {
+                if (dep_config.config_type == "StaticLibrary") {
+                    dep_target_ext = ".a";
+                } else {
+#ifdef __APPLE__
+                    dep_target_ext = ".dylib";
+#else
+                    dep_target_ext = ".so";
+#endif
+                }
+            }
+
+            std::string dep_out_dir = dep_config.out_dir.empty()
+                ? "build/" + cfg_name
+                : dep_config.out_dir;
+            if (!dep_out_dir.empty() && dep_out_dir.back() != '/' && dep_out_dir.back() != '\\')
+                dep_out_dir += '/';
+
+            return dep_out_dir + dep_target_name + dep_target_ext;
+        };
+
+        // Recursive traversal: visit a dependency and its transitive PUBLIC deps
+        std::function<void(const std::string&, bool)> collect_deps =
+            [&](const std::string& dep_name, bool add_locally) {
+            if (visited_deps.count(dep_name)) return;
+            visited_deps.insert(dep_name);
+
+            const Project* dep_proj = find_project(dep_name);
+            if (!dep_proj) return;
+
+            // Add this project's archive if it's a library
+            if (add_locally) {
+                std::string archive = get_archive_path(*dep_proj, config_key, config_name);
+                if (!archive.empty()) {
+                    dep_archives.push_back(compute_relative_path(archive, makefile_dir));
+                }
+            }
+
+            // Follow transitive PUBLIC dependencies
+            for (const auto& sub_dep : dep_proj->project_references) {
+                if (sub_dep.visibility == DependencyVisibility::PRIVATE) continue;
+                collect_deps(sub_dep.name, true);
+            }
+        };
+
+        // Start from the project's direct dependencies
+        for (const auto& dep : project.project_references) {
+            if (dep.visibility == DependencyVisibility::INTERFACE) continue;
+            collect_deps(dep.name, true);
+        }
+
+        // Prepend archives to ldlibs (reverse order so direct deps come first)
+        for (auto it = dep_archives.rbegin(); it != dep_archives.rend(); ++it) {
+            ldlibs = *it + " " + ldlibs;
+        }
+    }
 
     if (has_cpp_files) {
         out << "CXXFLAGS = " << cxxflags << "\n";
@@ -739,6 +848,8 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
         // Nothing to build
         out << "# Empty solution - no targets\n";
         out << "all:\n\t@echo \"No projects to build\"\n";
+        std::cerr << "Warning: No non-Windows platforms found. Makefile has no targets.\n";
+        std::cerr << "  Hint: Add 'Linux' to your platforms list, e.g.: platforms = x64, Linux\n";
         return true;
     }
 
@@ -765,10 +876,34 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
     out << "all: " << default_config << "\n\n";
 
     // Per-configuration targets (e.g., make Debug, make Release)
+    // Build projects in dependency order: dependencies before dependents
     for (const auto& cfg : configs) {
-        out << cfg << ":\n";
+        // Topological sort: compute build order
+        std::vector<const Project*> build_order;
+        std::set<std::string> visited;
+
+        std::function<void(const Project*)> visit = [&](const Project* p) {
+            if (visited.count(p->name)) return;
+            visited.insert(p->name);
+            // Visit dependencies first
+            for (const auto& dep : p->project_references) {
+                for (const auto& other : solution.projects) {
+                    if (other.name == dep.name) {
+                        visit(&other);
+                        break;
+                    }
+                }
+            }
+            build_order.push_back(p);
+        };
+
         for (const auto& proj : solution.projects) {
-            out << "\t$(MAKE) -f " << proj.name << "." << cfg << "\n";
+            visit(&proj);
+        }
+
+        out << cfg << ":\n";
+        for (const auto* proj : build_order) {
+            out << "\t$(MAKE) -f " << proj->name << "." << cfg << "\n";
         }
         out << "\n";
     }
