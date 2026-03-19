@@ -392,6 +392,12 @@ inline bool is_linux_platform(const std::string& platform) {
     return p == "linux";
 }
 
+// Check if platform is a Unix platform (Linux or macOS - for skipping in vcxproj generator)
+inline bool is_unix_platform(const std::string& platform) {
+    std::string p = to_lower(platform);
+    return p == "linux" || p == "macos" || p == "darwin" || p == "osx";
+}
+
 // Detect project language based on source files
 inline std::string detect_project_language(const Project& proj) {
     // If explicitly set, use it

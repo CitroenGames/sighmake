@@ -42,7 +42,7 @@
 
 - **Simple, readable format**: INI-style syntax instead of verbose XML
 - **Version control friendly**: Easy to diff and merge buildscripts
-- **Cross-platform**: Generate Visual Studio projects on Windows, Makefiles on Linux
+- **Cross-platform**: Generate Visual Studio projects on Windows, Makefiles on Linux and macOS
 - **Bidirectional**: Convert existing Visual Studio solutions back to buildscripts
 - **Flexible**: Per-configuration and per-file settings
 - **Powerful**: Wildcard support, project dependencies, file inclusion
@@ -92,7 +92,21 @@ msbuild MyApp_.sln /p:Configuration=Release /p:Platform=x64
 #   build/MyApp.Debug    (Debug configuration Makefile)
 #   build/MyApp.Release  (Release configuration Makefile)
 
-# Build with make
+# Build with make (uses g++ by default)
+make -f build/MyApp.Release
+```
+
+#### Generate and Build (macOS)
+
+```bash
+# Generate Makefile
+./sighmake myapp.buildscript -g makefile
+
+# This creates:
+#   build/MyApp.Debug    (Debug configuration Makefile)
+#   build/MyApp.Release  (Release configuration Makefile)
+
+# Build with make (uses clang++ by default)
 make -f build/MyApp.Release
 ```
 
@@ -336,14 +350,16 @@ defines[Win32] = INCLUDE_SCALEFORM
 - `x64` - 64-bit x86-64 (vcxproj only)
 - `ARM` - ARM 32-bit (vcxproj only)
 - `ARM64` - ARM 64-bit (vcxproj only)
-- `Linux` - Linux platform (makefile only)
+- `Linux` - Linux/macOS platform (makefile only)
+- `macOS` - macOS platform (makefile only, alternative to `Linux`)
+- `Darwin` - macOS platform (makefile only, alternative to `Linux`)
 
 **Platform filtering by generator:**
 Platforms are automatically filtered by generator type:
-- **vcxproj generator**: Only includes Win32, x64, ARM, ARM64 platforms (skips Linux)
-- **makefile generator**: Only includes Linux platform (skips Windows platforms)
+- **vcxproj generator**: Only includes Win32, x64, ARM, ARM64 platforms (skips Linux, macOS, Darwin)
+- **makefile generator**: Only includes non-Windows platforms like Linux, macOS, Darwin (skips Windows platforms)
 
-This allows a single buildscript to define both Windows and Linux configurations:
+This allows a single buildscript to define both Windows and Unix configurations:
 ```ini
 platforms = x64, Linux
 
@@ -353,6 +369,8 @@ defines = _DEBUG, _WIN32
 [config:Debug|Linux]
 defines = _DEBUG, __linux__
 ```
+
+> **Note:** On macOS, the `Linux` platform name works for Makefile generation. The generated Makefiles will automatically use `clang++`/`clang` on macOS and `g++`/`gcc` on Linux, with appropriate linker flags for each platform.
 
 ### Project Section
 
@@ -2755,13 +2773,14 @@ make -f build/MyProject.Release
 
 | Feature | vcxproj | makefile |
 |---------|---------|----------|
-| Platform | Windows | Linux (cross-platform) |
-| IDE | Visual Studio | Any (VSCode, Vim, etc.) |
+| Platform | Windows | Linux / macOS |
+| IDE | Visual Studio | Any (VSCode, Vim, Xcode, etc.) |
 | Build tool | MSBuild | GNU Make |
+| Compiler | MSVC | GCC (Linux) / Clang (macOS) |
 | Parallel builds | Automatic | `-j` flag |
-| Debugging | Integrated | GDB/LLDB |
+| Debugging | Integrated | GDB (Linux) / LLDB (macOS) |
 | Configurations | Multi-config | Separate files |
-| Default on | Windows | Linux |
+| Default on | Windows | Linux / macOS |
 
 ---
 
@@ -3031,20 +3050,25 @@ Sighmake selects the appropriate compiler based on detected language:
 - C projects: `/TC` flag (compile as C)
 - C++ projects: `/TP` flag (compile as C++)
 
-**Linux/macOS (Makefile):**
-- **C projects**: Uses `gcc` (or `$CC` environment variable)
-- **C++ projects**: Uses `g++` (or `$CXX` environment variable)
+**Linux (Makefile):**
+- **C projects**: Uses `gcc`
+- **C++ projects**: Uses `g++`
 - **Mixed projects**: Uses `g++` (can compile both)
 
-**Example Makefile output for C project:**
+**macOS (Makefile):**
+- **C projects**: Uses `clang`
+- **C++ projects**: Uses `clang++`
+- **Mixed projects**: Uses `clang++` (can compile both)
+
+**Example Makefile output for C project (Linux):**
 ```makefile
 CC = gcc
 CFLAGS = -std=c99 -O3 -Wall
 ```
 
-**Example Makefile output for C++ project:**
+**Example Makefile output for C++ project (macOS):**
 ```makefile
-CXX = g++
+CXX = clang++
 CXXFLAGS = -std=c++20 -O3 -Wall
 ```
 
@@ -3413,7 +3437,7 @@ obj/
 
 1. **Version control friendly**: No more XML merge conflicts
 2. **Human readable**: Easy to review changes in pull requests
-3. **Cross-platform**: Generate Makefiles for Linux
+3. **Cross-platform**: Generate Makefiles for Linux and macOS
 4. **Automation friendly**: Integrate into scripts and CI/CD
 5. **Simpler maintenance**: Edit INI files instead of XML
 
@@ -3421,7 +3445,7 @@ obj/
 
 ## 14. Cross-Platform Development
 
-sighmake makes it easy to maintain a single buildscript for Windows and Linux.
+sighmake makes it easy to maintain a single buildscript for Windows, Linux, and macOS.
 
 ### Cross-Platform Buildscript
 
@@ -3458,7 +3482,16 @@ msbuild MyApp_.sln /p:Configuration=Release /p:Platform=x64
 
 **Linux workflow:**
 ```bash
-# Generate Makefile
+# Generate Makefile (uses g++)
+./sighmake project.buildscript -g makefile
+
+# Build with make
+make -f build/MyApp.Release -j8
+```
+
+**macOS workflow:**
+```bash
+# Generate Makefile (uses clang++)
 ./sighmake project.buildscript -g makefile
 
 # Build with make
@@ -3492,7 +3525,9 @@ project/
 │   └── platform/
 │       ├── windows/        (Windows-specific)
 │       │   └── file_io.cpp
-│       └── linux/          (Linux-specific)
+│       ├── linux/          (Linux-specific)
+│       │   └── file_io.cpp
+│       └── macos/          (macOS-specific)
 │           └── file_io.cpp
 └── project.buildscript
 ```
@@ -3629,6 +3664,9 @@ if(Windows)
     #include <windows.h>
 #elif defined(__linux__)
     #include <unistd.h>
+#elif defined(__APPLE__)
+    #include <unistd.h>
+    #include <TargetConditionals.h>
 #endif
 ```
 
@@ -3651,13 +3689,13 @@ libs[x64] = user32.lib, gdi32.lib, opengl32.lib
 
 These settings work across platforms:
 
-| Setting | MSVC (Windows) | GCC/Clang (Linux) |
-|---------|----------------|-------------------|
-| `std` | `/std:c++17` | `-std=c++17` |
-| `optimization = Disabled` | `/Od` | `-O0` |
-| `optimization = MaxSpeed` | `/O2` | `-O3` |
-| `defines` | `/D DEFINE` | `-DDEFINE` |
-| `includes` | `/I path` | `-Ipath` |
+| Setting | MSVC (Windows) | GCC (Linux) | Clang (macOS) |
+|---------|----------------|-------------|---------------|
+| `std` | `/std:c++17` | `-std=c++17` | `-std=c++17` |
+| `optimization = Disabled` | `/Od` | `-O0` | `-O0` |
+| `optimization = MaxSpeed` | `/O2` | `-O3` | `-O3` |
+| `defines` | `/D DEFINE` | `-DDEFINE` | `-DDEFINE` |
+| `includes` | `/I path` | `-Ipath` | `-Ipath` |
 
 sighmake translates settings to platform-appropriate compiler flags.
 
@@ -3726,9 +3764,15 @@ sighmake project.buildscript
 make -f build/Engine.Release -j8
 ```
 
+**macOS developer (same buildscript):**
+```bash
+./sighmake project.buildscript -g makefile
+make -f build/Engine.Release -j8
+```
+
 ### Cross-Platform Best Practices
 
-1. **Separate platform code**: Use `src/platform/windows/` and `src/platform/linux/`
+1. **Separate platform code**: Use `src/platform/windows/`, `src/platform/linux/`, and `src/platform/macos/`
 2. **Abstract platform APIs**: Create common interfaces for platform-specific code
 3. **Use platform defines**: `WIN32`, `__linux__`, `__APPLE__`
 4. **Test on all platforms**: Build and test on Windows and Linux regularly
@@ -6276,14 +6320,15 @@ Aliases for `excluded`: `exclude`, `excluded_from_build`
 
 | Feature | vcxproj | makefile |
 |---------|---------|----------|
-| **Platform** | Windows | Linux / Cross-platform |
-| **Default OS** | Windows | Linux |
-| **IDE** | Visual Studio | Any (VSCode, Vim, etc.) |
+| **Platform** | Windows | Linux / macOS |
+| **Default OS** | Windows | Linux / macOS |
+| **IDE** | Visual Studio | Any (VSCode, Vim, Xcode, etc.) |
 | **Build Tool** | MSBuild | GNU Make |
+| **Compiler** | MSVC | GCC (Linux) / Clang (macOS) |
 | **File Extension** | `.vcxproj`, `.sln` | Makefile |
 | **Multi-config** | Yes | No (separate files) |
 | **Parallel builds** | Automatic (`/m`) | Manual (`-j`) |
-| **Debugging** | Integrated | External (GDB/LLDB) |
+| **Debugging** | Integrated | GDB (Linux) / LLDB (macOS) |
 | **Incremental builds** | Yes | Yes |
 | **Project dependencies** | Automatic | Managed |
 

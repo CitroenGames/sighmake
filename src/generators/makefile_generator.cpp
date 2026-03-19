@@ -371,7 +371,11 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
         if (config.config_type == "Application") {
             target_ext = "";  // No extension for executables on Linux
         } else if (config.config_type == "DynamicLibrary") {
+#ifdef __APPLE__
+            target_ext = ".dylib";
+#else
             target_ext = ".so";
+#endif
         } else if (config.config_type == "StaticLibrary") {
             target_ext = ".a";
         }
@@ -427,10 +431,18 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
 
     // Compiler variables
     if (has_cpp_files) {
+#ifdef __APPLE__
+        out << "CXX = clang++\n";
+#else
         out << "CXX = g++\n";
+#endif
     }
     if (has_c_files) {
+#ifdef __APPLE__
+        out << "CC = clang\n";
+#else
         out << "CC = gcc\n";
+#endif
     }
 
     // Compiler flags

@@ -36,3 +36,4 @@ Ankh.NoLoad
 
 # But keep the example engine.vcxproj
 !engine.vcxproj
+.DS_Store

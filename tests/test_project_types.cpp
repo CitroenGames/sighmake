@@ -116,6 +116,23 @@ TEST_CASE("is_linux_platform rejects non-Linux platforms", "[project_types]") {
     CHECK(is_linux_platform("x64") == false);
 }
 
+TEST_CASE("is_unix_platform recognizes Linux and macOS platforms", "[project_types]") {
+    CHECK(is_unix_platform("Linux") == true);
+    CHECK(is_unix_platform("linux") == true);
+    CHECK(is_unix_platform("macOS") == true);
+    CHECK(is_unix_platform("macos") == true);
+    CHECK(is_unix_platform("Darwin") == true);
+    CHECK(is_unix_platform("darwin") == true);
+    CHECK(is_unix_platform("osx") == true);
+    CHECK(is_unix_platform("OSX") == true);
+}
+
+TEST_CASE("is_unix_platform rejects Windows platforms", "[project_types]") {
+    CHECK(is_unix_platform("Win32") == false);
+    CHECK(is_unix_platform("x64") == false);
+    CHECK(is_unix_platform("ARM64") == false);
+}
+
 // ============================================================================
 // parse_visibility / visibility_to_string tests
 // ============================================================================

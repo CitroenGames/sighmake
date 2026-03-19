@@ -239,7 +239,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     configs_group.append_attribute("Label") = "ProjectConfigurations";
     for (const auto& config_key : solution.get_config_keys()) {
         auto [config, platform] = parse_config_key(config_key);
-        if (is_linux_platform(platform)) continue;  // Skip Linux configs for vcxproj
+        if (is_unix_platform(platform)) continue;  // Skip Unix configs for vcxproj
         auto proj_config = configs_group.append_child("ProjectConfiguration");
         proj_config.append_attribute("Include") = config_key.c_str();
         proj_config.append_child("Configuration").text() = config.c_str();
@@ -275,7 +275,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     // Configuration properties
     for (const auto& [config_key, cfg] : project.configurations) {
         auto [config, platform] = parse_config_key(config_key);
-        if (is_linux_platform(platform)) continue;  // Skip Linux configs for vcxproj
+        if (is_unix_platform(platform)) continue;  // Skip Unix configs for vcxproj
         std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
 
         auto cfg_props = root.append_child("PropertyGroup");
@@ -311,7 +311,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     // Property sheets
     for (const auto& config_key : solution.get_config_keys()) {
         auto [config, platform] = parse_config_key(config_key);
-        if (is_linux_platform(platform)) continue;  // Skip Linux configs for vcxproj
+        if (is_unix_platform(platform)) continue;  // Skip Unix configs for vcxproj
         std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
         auto sheets = root.append_child("ImportGroup");
         sheets.append_attribute("Condition") = condition.c_str();
@@ -331,7 +331,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     props.append_child("_ProjectFileVersion").text() = "10.0.30319.1";
     for (const auto& [config_key, cfg] : project.configurations) {
         auto [config_name, platform_name] = parse_config_key(config_key);
-        if (is_linux_platform(platform_name)) continue;  // Skip Linux configs for vcxproj
+        if (is_unix_platform(platform_name)) continue;  // Skip Unix configs for vcxproj
         std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
 
         if (!cfg.out_dir.empty()) {
@@ -436,7 +436,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     // ItemDefinitionGroup for each configuration
     for (const auto& [config_key, cfg] : project.configurations) {
         auto [config_name, platform_name] = parse_config_key(config_key);
-        if (is_linux_platform(platform_name)) continue;  // Skip Linux configs for vcxproj
+        if (is_unix_platform(platform_name)) continue;  // Skip Unix configs for vcxproj
         std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
         auto item_def = root.append_child("ItemDefinitionGroup");
         item_def.append_attribute("Condition") = condition.c_str();
@@ -1299,7 +1299,7 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
     file << "\tGlobalSection(SolutionConfigurationPlatforms) = preSolution\n";
     for (const auto& config : solution.configurations) {
         for (const auto& platform : solution.platforms) {
-            if (is_linux_platform(platform)) continue;  // Skip Linux configs for vcxproj
+            if (is_unix_platform(platform)) continue;  // Skip Unix configs for vcxproj
             std::string key = config + "|" + platform;
             file << "\t\t" << key << " = " << key << "\n";
         }
@@ -1311,7 +1311,7 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
     for (const auto& proj : solution.projects) {
         for (const auto& config : solution.configurations) {
             for (const auto& platform : solution.platforms) {
-                if (is_linux_platform(platform)) continue;  // Skip Linux configs for vcxproj
+                if (is_unix_platform(platform)) continue;  // Skip Unix configs for vcxproj
                 std::string key = config + "|" + platform;
                 std::string guid = "{" + proj.uuid + "}";
                 file << "\t\t" << guid << "." << key << ".ActiveCfg = " << key << "\n";
@@ -1370,7 +1370,7 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
 
     // Platforms (Win32, x64, etc.)
     for (const auto& platform : solution.platforms) {
-        if (is_linux_platform(platform)) continue;  // Skip Linux configs for vcxproj
+        if (is_unix_platform(platform)) continue;  // Skip Unix configs for vcxproj
         auto plat_elem = configs.append_child("Platform");
         plat_elem.append_attribute("Name") = platform.c_str();
     }
