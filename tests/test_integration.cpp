@@ -59,7 +59,7 @@ TEST_CASE("Parse sighmake's own buildscript", "[integration]") {
 
     // Should have Debug and Release configurations
     CHECK(sol.configurations.size() == 2);
-    CHECK(sol.platforms.size() == 2);
+    CHECK(sol.platforms.size() == 3);
 
     // Should have source files
     CHECK(sol.projects[0].sources.size() > 0);

@@ -35,6 +35,7 @@ sources = {
     ../src/generators/deps_exporter.cpp
     ../src/common/toolset_registry.cpp
     ../src/common/vs_detector.cpp
+    ../src/common/build_cache.cpp
     ../src/pugixml.cpp
 }
 

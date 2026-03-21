@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "makefile_generator.hpp"
+#include "common/build_cache.hpp"
 
 namespace vcxproj {
 
@@ -813,6 +814,22 @@ bool MakefileGenerator::generate(Solution& solution, const std::string& output_d
     }
 
     std::cout << "Makefile generation complete!\n";
+
+    // Write build cache for --build support
+    {
+        BuildCache cache;
+        cache.generator = "makefile";
+        cache.solution_name = solution.name;
+        cache.configurations = solution.configurations;
+        for (const auto& p : solution.platforms) {
+            if (!is_windows_platform(p)) {
+                cache.platforms.push_back(p);
+            }
+        }
+        cache.build_dir = "build";
+        cache.write(output_dir);
+    }
+
     return true;
 }
 

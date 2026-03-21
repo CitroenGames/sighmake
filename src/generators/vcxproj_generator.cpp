@@ -3,6 +3,7 @@
 #include "vcxproj_generator.hpp"
 #include "common/vs_detector.hpp"
 #include "common/toolset_registry.hpp"
+#include "common/build_cache.hpp"
 #define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"
 
@@ -1637,6 +1638,24 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
                 return false;
             }
         }
+    }
+
+    // Write build cache for --build support
+    {
+        BuildCache cache;
+        cache.generator = "vcxproj";
+        cache.solution_name = solution.name.empty() ? solution.projects[0].name : solution.name;
+        if (vs_info->year >= 2026) {
+            cache.solution_file = cache.solution_name + GENERATED_SLNX;
+        } else {
+            cache.solution_file = cache.solution_name + GENERATED_SLN;
+        }
+        cache.vs_installation_path = vs_info->installation_path;
+        cache.vs_year = vs_info->year;
+        cache.platform_toolset = vs_info->platform_toolset;
+        cache.configurations = solution.configurations;
+        cache.platforms = solution.platforms;
+        cache.write(output_dir);
     }
 
     return true;

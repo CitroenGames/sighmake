@@ -8,6 +8,7 @@
 #include "generators/deps_exporter.hpp"
 #include "parsers/vcxproj_reader.hpp"
 #include "common/toolset_registry.hpp"
+#include "common/build_runner.hpp"
 
 namespace fs = std::filesystem;
 
@@ -15,6 +16,7 @@ void print_usage(const char* program_name) {
     std::cout << "sighmake - Build system generator\n\n";
     std::cout << "Usage:\n";
     std::cout << "  " << program_name << " <buildscript|CMakeLists.txt> [options]\n";
+    std::cout << "  " << program_name << " --build <dir> [--config <cfg>]\n";
     std::cout << "  " << program_name << " --convert <solution.sln> [options]\n";
     std::cout << "  " << program_name << " convert vpc <file.vpc> [options]\n\n";
     std::cout << "Options:\n";
@@ -25,10 +27,17 @@ void print_usage(const char* program_name) {
     std::cout << "      --export-deps          Export dependency report as HTML\n";
     std::cout << "  -l, --list                 List available generators\n";
     std::cout << "  -h, --help                 Show this help message\n\n";
+    std::cout << "Build options:\n";
+    std::cout << "  -b, --build <dir>          Build using previously generated project files\n";
+    std::cout << "      --config <cfg>         Build configuration (e.g. Debug, Release)\n";
+    std::cout << "      --target <tgt>         Build specific target\n";
+    std::cout << "      --clean-first          Clean before building\n";
+    std::cout << "  -j, --parallel <N>         Parallel build jobs\n\n";
     std::cout << "Commands:\n";
     std::cout << "  convert vpc <file.vpc>     Convert VPC file to buildscript format\n\n";
     std::cout << "Examples:\n";
     std::cout << "  " << program_name << " project.buildscript -t msvc2022\n";
+    std::cout << "  " << program_name << " --build . --config Release\n";
     std::cout << "  " << program_name << " CMakeLists.txt -g makefile\n";
     std::cout << "  " << program_name << " --convert solution.sln\n";
     std::cout << "  " << program_name << " convert vpc project.vpc\n";
@@ -98,6 +107,35 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: Unknown format '" << format << "'. Supported formats: vpc\n";
             return 1;
         }
+    }
+
+    // Handle --build mode
+    if (argc >= 2 && (strcmp(argv[1], "--build") == 0 || strcmp(argv[1], "-b") == 0)) {
+        if (argc < 3) {
+            std::cerr << "Error: --build requires a directory argument\n";
+            std::cerr << "Usage: " << argv[0] << " --build <dir> [--config <cfg>]\n";
+            return 1;
+        }
+
+        vcxproj::BuildOptions options;
+        options.directory = argv[2];
+
+        for (int i = 3; i < argc; i++) {
+            if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+                options.config = argv[++i];
+            } else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
+                options.target = argv[++i];
+            } else if (strcmp(argv[i], "--clean-first") == 0) {
+                options.clean_first = true;
+            } else if ((strcmp(argv[i], "--parallel") == 0 || strcmp(argv[i], "-j") == 0) && i + 1 < argc) {
+                options.parallel = std::atoi(argv[++i]);
+            } else {
+                std::cerr << "Error: Unknown --build option: " << argv[i] << "\n";
+                return 1;
+            }
+        }
+
+        return vcxproj::BuildRunner::run(options);
     }
 
     std::string buildscript_path;
