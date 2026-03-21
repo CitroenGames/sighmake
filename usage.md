@@ -74,40 +74,27 @@ subsystem = Console
 # Generate Visual Studio project
 sighmake myapp.buildscript
 
-# This creates:
-#   MyApp_.sln       (solution file)
-#   MyApp_.vcxproj   (project file)
+# Build directly with sighmake
+sighmake --build . --config Release
 
-# Open in Visual Studio and build, or use MSBuild:
+# Or open in Visual Studio, or use MSBuild manually:
 msbuild MyApp_.sln /p:Configuration=Release /p:Platform=x64
 ```
 
-#### Generate and Build (Linux)
+#### Generate and Build (Linux/macOS)
 
 ```bash
 # Generate Makefile
 ./sighmake myapp.buildscript -g makefile
 
-# This creates:
-#   build/MyApp.Debug    (Debug configuration Makefile)
-#   build/MyApp.Release  (Release configuration Makefile)
+# Build directly with sighmake
+./sighmake --build . --config Release
 
-# Build with make (uses g++ by default)
-make -f build/MyApp.Release
-```
+# Or use make manually:
+make -C build Release
 
-#### Generate and Build (macOS)
-
-```bash
-# Generate Makefile
-./sighmake myapp.buildscript -g makefile
-
-# This creates:
-#   build/MyApp.Debug    (Debug configuration Makefile)
-#   build/MyApp.Release  (Release configuration Makefile)
-
-# Build with make (uses clang++ by default)
-make -f build/MyApp.Release
+# Install system-wide
+sudo make -C build install
 ```
 
 That's it! You now have a working build system. Continue reading for in-depth coverage of all features.
@@ -151,6 +138,7 @@ Perfect for quick prototyping! To customize configurations, define your own `[co
 
 ```
 sighmake <buildscript|CMakeLists.txt> [options]
+sighmake --build <dir> [--config <cfg>]
 sighmake --convert <solution.sln> [options]
 ```
 
@@ -161,6 +149,11 @@ sighmake --convert <solution.sln> [options]
 | `-g <type>` | `--generator <type>` | Specify generator type (vcxproj, makefile) |
 | `-t <name>` | `--toolset <name>` | Specify default toolset (msvc2022, msvc2019, etc.) |
 | `-c` | `--convert` | Convert Visual Studio solution to buildscripts |
+| `-b <dir>` | `--build <dir>` | Build using previously generated project files |
+| | `--config <cfg>` | Build configuration (with --build, e.g. Release) |
+| | `--target <tgt>` | Build specific target (with --build) |
+| | `--clean-first` | Clean before building (with --build) |
+| `-j <N>` | `--parallel <N>` | Parallel build jobs (with --build) |
 | | `--list-toolsets` | List all available Visual Studio toolsets |
 | | `--export-deps` | Export project dependency report as HTML |
 | `-l` | `--list` | List all available generators |
@@ -244,6 +237,59 @@ The `--export-deps` flag works alongside any generator:
 ```batch
 sighmake project.buildscript -g vcxproj --export-deps
 sighmake project.buildscript -g makefile --export-deps
+```
+
+### Building Projects
+
+After generating project files, use `--build` to invoke the appropriate build tool automatically (MSBuild on Windows, make on Linux/macOS) — similar to `cmake --build`:
+
+```bash
+# Generate project files first
+sighmake project.buildscript
+
+# Build using the generated files
+sighmake --build .
+sighmake --build . --config Release
+sighmake --build . --config Debug --parallel 8
+sighmake --build . --target MyApp
+sighmake --build . --clean-first
+```
+
+sighmake detects which build system was generated (via a `.sighmake_cache` file written during generation) and invokes the correct tool:
+- **Windows**: Runs MSBuild on the `.sln`/`.slnx` file
+- **Linux/macOS**: Runs `make` on the generated Makefile
+
+If `--config` is not specified, it defaults to `Debug`.
+
+### Installation (Linux/macOS)
+
+The generated Makefile includes `install` and `uninstall` targets:
+
+```bash
+# Generate Makefiles
+./sighmake project.buildscript -g makefile
+
+# Build and install
+make -C build Release
+sudo make -C build install
+
+# Install to a custom prefix
+make -C build install PREFIX=/opt/myapp
+
+# Uninstall
+sudo make -C build uninstall
+```
+
+**Installing sighmake itself:**
+
+A convenience script is provided to bootstrap, build, and install sighmake:
+
+```bash
+# Install to /usr/local/bin (default)
+sudo ./install.sh
+
+# Install to a custom prefix
+PREFIX=~/.local ./install.sh
 ```
 
 It also works in conversion mode:

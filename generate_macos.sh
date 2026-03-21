@@ -14,7 +14,7 @@ else
     echo "No macOS binary found, compiling from source..."
     clang++ -std=c++17 -O2 -Wall -Isrc/ -include src/pch.h -o sighmake_macos \
         src/main.cpp src/pch.cpp src/pugixml.cpp \
-        src/common/toolset_registry.cpp src/common/vs_detector.cpp \
+        src/common/toolset_registry.cpp src/common/vs_detector.cpp src/common/build_cache.cpp \
         src/generators/vcxproj_generator.cpp src/generators/makefile_generator.cpp \
         src/generators/deps_exporter.cpp \
         src/parsers/buildscript_parser.cpp src/parsers/cmake_parser.cpp \

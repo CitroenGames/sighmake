@@ -877,10 +877,14 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
     out << "# Build all projects with: make\n";
     out << "# Build specific config:   make Release\n";
     out << "# Build specific project:  make ProjectName\n";
-    out << "# Clean all:               make clean\n\n";
+    out << "# Clean all:               make clean\n";
+    out << "# Install:                 sudo make install\n";
+    out << "# Install to custom dir:   make install PREFIX=/opt/myapp\n\n";
+
+    out << "PREFIX ?= /usr/local\n\n";
 
     // .PHONY targets
-    out << ".PHONY: all clean";
+    out << ".PHONY: all clean install uninstall";
     for (const auto& cfg : configs) {
         out << " " << cfg;
     }
@@ -939,6 +943,83 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
         }
     }
     out << "\n";
+
+    // Install target - install executable targets from Release (or default) config
+    {
+        std::string install_config = configs.count("Release") ? "Release" : default_config;
+
+        // Collect installable targets (executables and shared libraries)
+        struct InstallTarget {
+            std::string binary_path;  // Relative to build dir
+            std::string name;         // Binary name for destination
+        };
+        std::vector<InstallTarget> exe_targets;
+        std::vector<InstallTarget> lib_targets;
+
+        for (const auto& proj : solution.projects) {
+            for (const auto& [config_key, config] : proj.configurations) {
+                size_t pipe_pos = config_key.find('|');
+                std::string cfg_name = (pipe_pos != std::string::npos)
+                    ? config_key.substr(0, pipe_pos) : config_key;
+                std::string plat = (pipe_pos != std::string::npos)
+                    ? config_key.substr(pipe_pos + 1) : "";
+
+                if (cfg_name != install_config) continue;
+                if (is_windows_platform(plat)) continue;
+
+                std::string target_name = config.target_name.empty() ? proj.name : config.target_name;
+                std::string out_dir = config.out_dir.empty() ? "bin/" + cfg_name : config.out_dir;
+                // Make path relative to build dir
+                fs::path out_path = fs::path(out_dir);
+                if (out_path.is_absolute()) {
+                    out_path = fs::relative(out_path, build_dir);
+                } else {
+                    // out_dir from buildscript is relative to project root, make relative to build dir
+                    out_path = fs::relative(fs::path(output_dir) / out_dir, build_dir);
+                }
+                std::string rel_out = to_unix_path(out_path.string());
+                if (!rel_out.empty() && rel_out.back() != '/') rel_out += '/';
+
+                if (config.config_type == "Application") {
+                    exe_targets.push_back({rel_out + target_name, target_name});
+                } else if (config.config_type == "DynamicLibrary") {
+#ifdef __APPLE__
+                    std::string ext = ".dylib";
+#else
+                    std::string ext = ".so";
+#endif
+                    lib_targets.push_back({rel_out + "lib" + target_name + ext, "lib" + target_name + ext});
+                }
+                break;  // Only need one non-Windows platform config per project
+            }
+        }
+
+        if (!exe_targets.empty() || !lib_targets.empty()) {
+            out << "install: " << install_config << "\n";
+            if (!exe_targets.empty()) {
+                out << "\tinstall -d $(DESTDIR)$(PREFIX)/bin\n";
+                for (const auto& t : exe_targets) {
+                    out << "\tinstall -m 755 " << t.binary_path << " $(DESTDIR)$(PREFIX)/bin/" << t.name << "\n";
+                }
+            }
+            if (!lib_targets.empty()) {
+                out << "\tinstall -d $(DESTDIR)$(PREFIX)/lib\n";
+                for (const auto& t : lib_targets) {
+                    out << "\tinstall -m 755 " << t.binary_path << " $(DESTDIR)$(PREFIX)/lib/" << t.name << "\n";
+                }
+            }
+            out << "\n";
+
+            out << "uninstall:\n";
+            for (const auto& t : exe_targets) {
+                out << "\trm -f $(DESTDIR)$(PREFIX)/bin/" << t.name << "\n";
+            }
+            for (const auto& t : lib_targets) {
+                out << "\trm -f $(DESTDIR)$(PREFIX)/lib/" << t.name << "\n";
+            }
+            out << "\n";
+        }
+    }
 
     std::cout << "Generated master Makefile: " << makefile_path << "\n";
     return true;
