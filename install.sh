@@ -37,9 +37,15 @@ echo "Building Release..."
 make -C build Release
 echo
 
-# Install
+# Install - find the built binary and install as 'sighmake'
 echo "Installing to $PREFIX/bin..."
-make -C build install PREFIX="$PREFIX"
+BUILT_BIN=$(find build/bin/Release -type f -perm +111 | head -1)
+if [ -z "$BUILT_BIN" ]; then
+    echo "Error: no binary found in build/bin/Release"
+    exit 1
+fi
+install -d "$PREFIX/bin"
+install -m 755 "$BUILT_BIN" "$PREFIX/bin/sighmake"
 echo
 echo "sighmake installed to $PREFIX/bin/sighmake"
 echo "Run 'sighmake --help' to get started."

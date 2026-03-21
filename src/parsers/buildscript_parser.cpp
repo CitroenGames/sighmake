@@ -3174,7 +3174,7 @@ BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const s
     bool is_unix = is_linux || is_osx;
 
     if (cond == "windows") return {is_windows, ""};
-    if (cond == "linux") return {is_linux || is_osx, ""};  // Linux matches macOS too (shared POSIX/Makefile tooling)
+    if (cond == "linux") return {is_linux, ""};
     if (cond == "osx" || cond == "macos" || cond == "darwin") return {is_osx, ""};
     if (cond == "unix" || cond == "posix") return {is_unix, ""};
 
@@ -3186,7 +3186,7 @@ BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const s
     if (cond.size() > 1 && cond[0] == '!') {
          std::string sub = cond.substr(1);
          if (sub == "windows") return {!is_windows, ""};
-         if (sub == "linux") return {!(is_linux || is_osx), ""};
+         if (sub == "linux") return {!is_linux, ""};
          if (sub == "osx" || sub == "macos" || sub == "darwin") return {!is_osx, ""};
          if (sub == "unix" || sub == "posix") return {!is_unix, ""};
          if (sub == "win32") return {is_windows, "x64"};

@@ -917,7 +917,9 @@ if(Platform)
 
 **Supported conditions:**
 - `if(Windows)` - Settings apply to all Windows platforms (Win32, x64)
-- `if(Linux)` - Settings apply to Linux platforms
+- `if(Linux)` - Settings apply only on Linux
+- `if(macOS)` / `if(osx)` / `if(darwin)` - Settings apply only on macOS
+- `if(unix)` / `if(posix)` - Settings apply on both Linux and macOS
 - `if(Win32)` - Settings apply only to Win32 platform
 - `if(x64)` - Settings apply only to x64 platform
 
@@ -996,8 +998,9 @@ defines[Debug|Win32] = _DEBUG, WIN32_DEBUG
 
 **Important Notes:**
 - `if(Windows)` is an **OS-level** condition — settings apply to all configurations (Debug|Win32, Debug|x64, Release|Win32, Release|x64) when building on Windows
-- `if(Linux)` matches on **both Linux and macOS** — since they share POSIX tooling and the Makefile generator, `if(Linux)` blocks apply on both operating systems. Use `if(macOS)` or `if(osx)` for macOS-only settings
-- `if(unix)` or `if(posix)` — explicitly matches both Linux and macOS
+- `if(Linux)` matches **only on Linux** — use `if(unix)` or `if(posix)` if you want settings to apply on both Linux and macOS
+- `if(macOS)` / `if(osx)` / `if(darwin)` matches **only on macOS**
+- `if(unix)` or `if(posix)` matches **both Linux and macOS**
 - `if(Win32)` and `if(x64)` are **platform-level** conditions — settings apply only to matching platform configurations (e.g., `if(Win32)` applies to Debug|Win32 and Release|Win32 only)
 - `if(Win32)` is **not** equivalent to `if(Windows)` — use `if(Windows)` when you want settings to apply to all Windows configurations regardless of platform
 - Negation works as expected: `if(!Win32)` applies to x64 configurations, `if(!x64)` applies to Win32 configurations
@@ -3595,11 +3598,11 @@ sources = {
 
 **Supported conditions:**
 - `[windows]` or `[win32]` - Include only on Windows
-- `[linux]` - Include on Linux and macOS (shared POSIX tooling)
+- `[linux]` - Include only on Linux
 - `[osx]`, `[macos]`, or `[darwin]` - Include only on macOS
-- `[unix]` or `[posix]` - Include on Linux and macOS
+- `[unix]` or `[posix]` - Include on both Linux and macOS
 - `[!windows]` - Include on everything except Windows
-- `[!linux]` - Include on everything except Linux and macOS
+- `[!linux]` - Include on everything except Linux
 - `[!osx]` - Include on everything except macOS
 
 **Override behavior:**
@@ -3659,10 +3662,10 @@ sources = src/core/*.cpp, src/utils/*.cpp, src/platform/common.cpp, src/platform
 | `common.cpp` | (none) | Included | Included | Included |
 | `win32_impl.cpp` | `[windows]` | Included | Excluded | Excluded |
 | `posix_impl.cpp` | `[!windows]` | Excluded | Included | Included |
-| `unix_impl.cpp` | `[linux]` | Excluded | Included | Included |
+| `unix_impl.cpp` | `[linux]` | Excluded | Included | Excluded |
 | `mac_only.cpp` | `[osx]` | Excluded | Excluded | Included |
 
-> **Note:** `[linux]` matches on both Linux and macOS since they share POSIX tooling. Use `[osx]` or `[macos]` for macOS-only files.
+> **Note:** `[linux]` matches only on Linux. Use `[unix]` or `[posix]` to include files on both Linux and macOS.
 
 **Note:** Inline conditions also work with `headers` and `resources`:
 ```ini
