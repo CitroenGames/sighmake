@@ -42,25 +42,54 @@ make -f build/ProjectName.Release
 ## Installation
 
 ### Prerequisites
-- C++17 compatible compiler (MSVC on Windows, GCC/Clang on Linux)
+- C++17 compatible compiler (MSVC on Windows, GCC/Clang on Linux/macOS)
+- Windows: Visual Studio with C++ workload
+- Linux: `build-essential` (or equivalent)
+- macOS: Xcode Command Line Tools (`xcode-select --install`)
 
-### Building from Source
+### Quick Install
+
+#### Windows
+Run from an **elevated** Developer Command Prompt (right-click, "Run as administrator"):
+```batch
+install.bat
+```
+Installs to `C:\Program Files\sighmake` and adds it to the system PATH.
+
+Set `SIGHMAKE_INSTALL_DIR` to customize the install location:
+```batch
+set SIGHMAKE_INSTALL_DIR=C:\Tools\sighmake
+install.bat
+```
+
+#### Linux / macOS
+```bash
+./install.sh
+```
+Installs to `/usr/local/bin/sighmake` by default. Will prompt for `sudo` if needed.
+
+Set `PREFIX` to customize the install location:
+```bash
+PREFIX=$HOME/.local ./install.sh
+```
+
+### Building from Source (without installing)
 
 #### Windows
 ```batch
-# Use the provided executable
-sighmake.exe
-
-# Or generate and build from source
 GenerateSolution.bat
-# Then open and build in Visual Studio
+:: Open the generated .sln in Visual Studio and build
 ```
 
 #### Linux
 ```bash
-# Bootstrap script to compile and generate Makefiles
-chmod +x generate_linux.sh
 ./generate_linux.sh
+make -f build/sighmake.Release
+```
+
+#### macOS
+```bash
+./generate_macos.sh
 make -f build/sighmake.Release
 ```
 
