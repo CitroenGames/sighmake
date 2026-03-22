@@ -616,6 +616,8 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 cl.error_reporting = d.error_reporting;
             if (cl.additional_options.empty() && !d.additional_options.empty())
                 cl.additional_options = d.additional_options;
+            if (cl.objcxx_flags.empty() && !d.objcxx_flags.empty())
+                cl.objcxx_flags = d.objcxx_flags;
             if (!cl.runtime_type_info && d.runtime_type_info)
                 cl.runtime_type_info = d.runtime_type_info;
             if (!cl.utf8_source && d.utf8_source)
@@ -2042,6 +2044,15 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         auto& def_opts = proj.project_level_defaults.cl_compile.additional_options;
         if (!def_opts.empty()) def_opts += " ";
         def_opts += value;
+    } else if (key == "objcflags" || key == "objc_flags" || key == "objcxxflags") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            auto& opts = proj.configurations[config_key].cl_compile.objcxx_flags;
+            if (!opts.empty()) opts += " ";
+            opts += value;
+        }
+        auto& def_opts = proj.project_level_defaults.cl_compile.objcxx_flags;
+        if (!def_opts.empty()) def_opts += " ";
+        def_opts += value;
     } else if (key == "warning_level") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.warning_level = value;
@@ -2686,6 +2697,8 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.cl_compile.language_standard = (value.find("stdcpp") == 0) ? value : ("stdcpp" + value);
     } else if (key == "cflags" || key == "compiler_flags" || key == "additional_options") {
         cfg.cl_compile.additional_options = value;
+    } else if (key == "objcflags" || key == "objc_flags" || key == "objcxxflags") {
+        cfg.cl_compile.objcxx_flags = value;
     } else if (key == "ldflags" || key == "linker_flags" || key == "link_additional_options") {
         cfg.link.additional_options = value;
     }

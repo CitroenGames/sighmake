@@ -23,6 +23,7 @@ enum class FileType {
     CustomBuild,    // Files with custom build rules
     MASM,           // .asm, .masm files
     None,           // Other files
+    ObjCxx,         // .mm, .m files (Objective-C/C++)
     ResourceCompile // .rc files
 };
 
@@ -98,6 +99,7 @@ struct ClCompileSettings {
     bool multi_processor_compilation = false;
     std::string error_reporting;                        // "None", "Prompt", "Queue", "Send"
     std::string additional_options;
+    std::string objcxx_flags;                           // Additional flags for Objective-C++ (.mm) files
     std::string language_standard;                      // "stdcpp14", "stdcpp17", "stdcpp20"
     bool treat_wchar_t_as_built_in_type = true;        // TreatWChar_tAsBuiltInType
     std::string assembler_output;                       // "NoListing", "AssemblyCode", "All", etc.
@@ -376,6 +378,8 @@ inline FileType get_file_type(const std::string& path) {
         return FileType::ResourceCompile;
     } else if (ext == ".asm" || ext == ".masm") {
         return FileType::MASM;
+    } else if (ext == ".mm" || ext == ".m") {
+        return FileType::ObjCxx;
     }
 
     return FileType::None;

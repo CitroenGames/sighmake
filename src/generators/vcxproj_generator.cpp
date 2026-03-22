@@ -186,6 +186,7 @@ std::string VcxprojGenerator::get_file_type_name(FileType type) {
         case FileType::ClInclude: return "ClInclude";
         case FileType::CustomBuild: return "CustomBuild";
         case FileType::MASM: return "MASM";
+        case FileType::ObjCxx: return "ClCompile";  // Emit as ClCompile for cross-platform project listing
         case FileType::ResourceCompile: return "ResourceCompile";
         default: return "None";
     }
@@ -1149,8 +1150,9 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                     // This is crucial for wrapper projects that only propagate public_libs.
                     bool has_linkable_content = false;
                     for (const auto& src : sol_proj.sources) {
-                        if (src.type == FileType::ClCompile || 
-                            src.type == FileType::ResourceCompile || 
+                        if (src.type == FileType::ClCompile ||
+                            src.type == FileType::ObjCxx ||
+                            src.type == FileType::ResourceCompile ||
                             src.type == FileType::CustomBuild) {
                             has_linkable_content = true;
                             break;

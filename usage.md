@@ -2295,6 +2295,74 @@ libs = ${Vulkan_LIBRARIES}
 libdirs = ${Vulkan_LIBRARY_DIRS}
 ```
 
+### Objective-C++ (.mm) File Support
+
+Sighmake supports Objective-C++ (`.mm`) and Objective-C (`.m`) source files. These are commonly needed for macOS-specific APIs like Metal, Core Animation, and Cocoa.
+
+**.mm files in sources:**
+
+`.mm` and `.m` files can be listed under `sources` like any other source file, including with glob patterns and platform conditions:
+
+```ini
+sources = {
+    src/**/*.cpp
+    src/Graphics/MetalRenderAPI.mm [macOS]
+    src/Graphics/MetalMesh.mm [macOS]
+}
+```
+
+**objcflags — Objective-C++ compiler flags:**
+
+Use `objcflags` to add flags that apply only to `.mm` and `.m` files. These are appended to the base C++ flags:
+
+```ini
+objcflags = -fobjc-arc
+```
+
+**Framework linking on macOS:**
+
+Use `-framework` in `libs` to link against macOS frameworks:
+
+```ini
+if(macOS) {
+    libs = -framework Metal, -framework QuartzCore, -framework Cocoa
+}
+```
+
+**Complete Metal example:**
+
+```ini
+[solution]
+name = MetalApp
+configurations = Debug, Release
+platforms = x64
+
+find_package(Vulkan)
+
+[project:Renderer]
+type = lib
+sources = {
+    src/**/*.cpp
+    src/Metal/*.mm [macOS]
+}
+headers = include/**/*.h
+public_includes = include
+
+if(macOS) {
+    objcflags = -fobjc-arc
+    libs = -framework Metal, -framework QuartzCore, -framework Cocoa
+}
+
+if(windows) {
+    target_link_libraries(Vulkan)
+}
+
+[project:Game]
+type = exe
+sources = game/*.cpp
+target_link_libraries(Renderer)
+```
+
 ### Configuration-Specific Library Exclusion
 
 Use `excluded_library` to include a library only in specific configurations. The library is added to the project but marked as excluded from all configurations except the one specified.

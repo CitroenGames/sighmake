@@ -348,9 +348,16 @@ std::string MakefileGenerator::get_linker_libs(const Configuration& config) {
     // Additional dependencies (libraries)
     for (const auto& lib : config.link.additional_dependencies) {
         for (const auto& part : split_semicolons(lib)) {
-            std::string libname = strip_lib_extension(part);
-
             // Skip empty library names
+            if (part.empty()) continue;
+
+            // Pass through flags that start with - (e.g., -framework Metal)
+            if (part[0] == '-') {
+                ss << part << " ";
+                continue;
+            }
+
+            std::string libname = strip_lib_extension(part);
             if (libname.empty()) continue;
 
             // Check if it's a full path to a .lib or .a file
@@ -444,6 +451,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     // Determine compiler
     bool has_cpp_files = false;
     bool has_c_files = false;
+    bool has_objcxx_files = false;
     for (const auto& src : project.sources) {
         if (src.type == FileType::ClCompile) {
             std::string ext = fs::path(src.path).extension().string();
@@ -453,6 +461,8 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
             } else if (ext == ".c") {
                 has_c_files = true;
             }
+        } else if (src.type == FileType::ObjCxx) {
+            has_objcxx_files = true;
         }
     }
 
@@ -470,6 +480,16 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
 #else
         out << "CC = gcc\n";
 #endif
+    }
+    if (has_objcxx_files) {
+        // ObjC++ uses the same C++ compiler (clang++ auto-detects .mm)
+        if (!has_cpp_files) {
+#ifdef __APPLE__
+            out << "CXX = clang++\n";
+#else
+            out << "CXX = g++\n";
+#endif
+        }
     }
 
     // Compiler flags
@@ -560,11 +580,18 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
         }
     }
 
-    if (has_cpp_files) {
+    if (has_cpp_files || has_objcxx_files) {
         out << "CXXFLAGS = " << cxxflags << "\n";
     }
     if (has_c_files) {
         out << "CFLAGS = " << cxxflags << "\n";
+    }
+    if (has_objcxx_files) {
+        out << "OBJCXXFLAGS = $(CXXFLAGS)";
+        if (!config.cl_compile.objcxx_flags.empty()) {
+            out << " " << config.cl_compile.objcxx_flags;
+        }
+        out << "\n";
     }
 
     if (!ldflags.empty()) {
@@ -609,7 +636,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     std::vector<bool> source_uses_pch; // Track which files use PCH
 
     for (const auto& src : project.sources) {
-        if (src.type == FileType::ClCompile) {
+        if (src.type == FileType::ClCompile || src.type == FileType::ObjCxx) {
             // Check if excluded for this config
             auto excl_it = src.settings.excluded.find(config_key);
             if (excl_it != src.settings.excluded.end() && excl_it->second) {
@@ -712,6 +739,9 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
         } else if (ext == ".c") {
             compiler = "$(CC)";
             flags = "$(CFLAGS)";
+        } else if (ext == ".mm" || ext == ".m") {
+            compiler = "$(CXX)";
+            flags = "$(OBJCXXFLAGS)";
         } else {
             continue; // Skip unknown file types
         }
