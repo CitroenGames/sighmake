@@ -4,17 +4,6 @@
 
 namespace vcxproj {
 
-// Result from package finding operations
-struct PackageFindResult {
-    bool found = false;
-    std::string include_dirs;      // Semicolon-separated list
-    std::string libraries;         // Semicolon-separated list
-    std::string library_dirs;      // Semicolon-separated list (default/x86)
-    std::string library_dirs_x64;  // x64 library path (optional, for DX9/DX10)
-    std::string version;           // Package version if detectable
-    std::string error_message;     // Error message if not found
-};
-
 // Parser for buildscript files
 class BuildscriptParser {
 public:

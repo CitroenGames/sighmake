@@ -1240,6 +1240,7 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
 
     // Projects
     for (const auto& proj : solution.projects) {
+        if (proj.is_package_project) continue;  // Skip synthetic find_package projects
 #if PROJ_SEPERATOR
         // Compute relative path to vcxproj
         std::string vcxproj_path;
@@ -1310,6 +1311,7 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
     // Project configuration platforms
     file << "\tGlobalSection(ProjectConfigurationPlatforms) = postSolution\n";
     for (const auto& proj : solution.projects) {
+        if (proj.is_package_project) continue;  // Skip synthetic find_package projects
         for (const auto& config : solution.configurations) {
             for (const auto& platform : solution.platforms) {
                 if (is_unix_platform(platform)) continue;  // Skip Unix configs for vcxproj
@@ -1335,6 +1337,7 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
 
         file << "\tGlobalSection(NestedProjects) = preSolution\n";
         for (const auto& proj : solution.projects) {
+            if (proj.is_package_project) continue;  // Skip synthetic find_package projects
             if (!proj.solution_folder.empty()) {
                 auto it = folder_uuid_map.find(proj.solution_folder);
                 if (it != folder_uuid_map.end())
@@ -1448,6 +1451,7 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
 
     // Projects
     for (const auto& proj : solution.projects) {
+        if (proj.is_package_project) continue;  // Skip synthetic find_package projects
         if (!proj.solution_folder.empty()) {
             auto it = folder_nodes.find(proj.solution_folder);
             if (it != folder_nodes.end()) {
@@ -1509,6 +1513,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
     bool already_logged = false;
 
     for (auto& proj : solution.projects) {
+        if (proj.is_package_project) continue;  // Skip synthetic find_package projects
 #ifndef NDEBUG
         std::cout << "[DEBUG] Processing project: " << proj.name << "\n";
 #endif
@@ -1574,6 +1579,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
 
     // 3. THIRD: Generate project files (now with correct toolsets)
     for (const auto& project : solution.projects) {
+        if (project.is_package_project) continue;  // Skip synthetic find_package projects
         fs::path vcxproj_path;
 
 #if PROJ_SEPERATOR

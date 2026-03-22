@@ -790,6 +790,51 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
         }
     }
 
+    // Phase 2.5: Create synthetic projects for found packages
+    // This allows target_link_libraries(PackageName) to automatically resolve
+    // includes, libs, and libdirs from find_package() results
+    for (const auto& [pkg_name, pkg_result] : solution.found_packages) {
+        // Skip if a real project with this name already exists
+        bool exists = false;
+        for (const auto& p : solution.projects) {
+            if (p.name == pkg_name) { exists = true; break; }
+        }
+        if (exists) continue;
+
+        Project pkg_project;
+        pkg_project.name = pkg_name;
+        pkg_project.is_package_project = true;
+
+        // Split semicolon-separated values into vectors
+        if (!pkg_result.include_dirs.empty()) {
+            pkg_project.public_includes = split(pkg_result.include_dirs, ';');
+        }
+        if (!pkg_result.libraries.empty()) {
+            pkg_project.public_libs = split(pkg_result.libraries, ';');
+        }
+
+        // Handle per-platform library directories
+        bool has_x86 = !pkg_result.library_dirs.empty();
+        bool has_x64 = !pkg_result.library_dirs_x64.empty();
+
+        if (has_x86 && has_x64) {
+            // Both architectures: use per-config libdirs
+            auto x86_dirs = split(pkg_result.library_dirs, ';');
+            auto x64_dirs = split(pkg_result.library_dirs_x64, ';');
+            for (const auto& config : solution.configurations) {
+                pkg_project.public_libdirs_per_config[config + "|Win32"] = x86_dirs;
+                pkg_project.public_libdirs_per_config[config + "|x64"] = x64_dirs;
+            }
+        } else if (has_x86) {
+            // Single architecture: use all-config libdirs
+            pkg_project.public_libdirs = split(pkg_result.library_dirs, ';');
+        } else if (has_x64) {
+            pkg_project.public_libdirs = split(pkg_result.library_dirs_x64, ';');
+        }
+
+        solution.projects.push_back(std::move(pkg_project));
+    }
+
     // Phase 3: Propagate public_includes, public_libs, and public_defines from dependencies
     // This must happen after all projects are parsed and defaults are applied
     propagate_target_link_libraries(solution);
@@ -3411,11 +3456,15 @@ void BuildscriptParser::parse_find_package(const std::string& line, ParseState& 
 
     std::string package_name = trim(tokens[0]);
     bool required = false;
+    bool no_propagate = false;
 
-    // Check for REQUIRED keyword
+    // Check for REQUIRED and NO_PROPAGATE keywords
     for (size_t i = 1; i < tokens.size(); ++i) {
-        if (trim(tokens[i]) == "REQUIRED") {
+        std::string t = trim(tokens[i]);
+        if (t == "REQUIRED") {
             required = true;
+        } else if (t == "NO_PROPAGATE") {
+            no_propagate = true;
         }
     }
 
@@ -3467,6 +3516,11 @@ void BuildscriptParser::parse_find_package(const std::string& line, ParseState& 
             state.variables[package_name + "_VERSION"] = result.version;
         }
         state.found_packages.insert(package_name);
+
+        // Store in solution for automatic propagation via target_link_libraries
+        if (!no_propagate && state.solution) {
+            state.solution->found_packages[package_name] = result;
+        }
 
         std::cout << "[find_package] Found " << package_name;
         if (!result.version.empty()) {

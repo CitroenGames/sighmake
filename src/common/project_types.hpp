@@ -2,6 +2,17 @@
 
 namespace vcxproj {
 
+// Result from package finding operations
+struct PackageFindResult {
+    bool found = false;
+    std::string include_dirs;      // Semicolon-separated list
+    std::string libraries;         // Semicolon-separated list
+    std::string library_dirs;      // Semicolon-separated list (default/x86)
+    std::string library_dirs_x64;  // x64 library path (optional, for DX9/DX10)
+    std::string version;           // Package version if detectable
+    std::string error_message;     // Error message if not found
+};
+
 // Constant for "all configurations"
 constexpr const char* ALL_CONFIGS = "*";
 
@@ -280,6 +291,9 @@ struct Project {
     std::map<std::string, std::vector<std::string>> public_libs_per_config;
     std::map<std::string, std::vector<std::string>> public_libdirs_per_config;
     std::map<std::string, std::vector<std::string>> public_defines_per_config;
+
+    // True for synthetic projects created from find_package() results
+    bool is_package_project = false;
 };
 
 struct SolutionFolder {
@@ -300,6 +314,10 @@ struct Solution {
     std::vector<std::string> solution_level_preprocessor_definitions;
     // Per-config solution-level defines (for bracket notation like defines[Win32])
     std::map<std::string, std::vector<std::string>> solution_level_preprocessor_definitions_per_config;
+
+    // Solution-wide found packages (from find_package())
+    // Used to create synthetic projects for automatic dependency propagation
+    std::map<std::string, PackageFindResult> found_packages;
 
     // Target toolset for .sln/.vcxproj generation (e.g., "v110", "v143")
     // Populated from buildscript toolset or parsed from .sln VisualStudioVersion header

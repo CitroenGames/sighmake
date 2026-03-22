@@ -783,6 +783,7 @@ bool MakefileGenerator::generate(Solution& solution, const std::string& output_d
 
     // Generate Makefiles for each project and configuration
     for (const auto& project : solution.projects) {
+        if (project.is_package_project) continue;  // Skip synthetic find_package projects
         // Generate a Makefile for each configuration
         for (const auto& [config_key, config] : project.configurations) {
             // Parse config key
@@ -848,6 +849,7 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
     // Collect unique config names (without platform), skipping Windows platforms
     std::set<std::string> configs;
     for (const auto& project : solution.projects) {
+        if (project.is_package_project) continue;  // Skip synthetic find_package projects
         for (const auto& [config_key, config] : project.configurations) {
             size_t pipe_pos = config_key.find('|');
             std::string config_name = (pipe_pos != std::string::npos)
@@ -889,6 +891,7 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
         out << " " << cfg;
     }
     for (const auto& proj : solution.projects) {
+        if (proj.is_package_project) continue;
         out << " " << proj.name;
     }
     out << "\n\n";
@@ -909,7 +912,7 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
             // Visit dependencies first
             for (const auto& dep : p->project_references) {
                 for (const auto& other : solution.projects) {
-                    if (other.name == dep.name) {
+                    if (other.name == dep.name && !other.is_package_project) {
                         visit(&other);
                         break;
                     }
@@ -919,6 +922,7 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
         };
 
         for (const auto& proj : solution.projects) {
+            if (proj.is_package_project) continue;
             visit(&proj);
         }
 
@@ -931,6 +935,7 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
 
     // Per-project targets (builds default config)
     for (const auto& proj : solution.projects) {
+        if (proj.is_package_project) continue;
         out << proj.name << ":\n";
         out << "\t$(MAKE) -f " << proj.name << "." << default_config << "\n\n";
     }
@@ -938,6 +943,7 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
     // Clean target
     out << "clean:\n";
     for (const auto& proj : solution.projects) {
+        if (proj.is_package_project) continue;
         for (const auto& cfg : configs) {
             out << "\t-$(MAKE) -f " << proj.name << "." << cfg << " clean\n";
         }
@@ -957,6 +963,7 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
         std::vector<InstallTarget> lib_targets;
 
         for (const auto& proj : solution.projects) {
+            if (proj.is_package_project) continue;
             for (const auto& [config_key, config] : proj.configurations) {
                 size_t pipe_pos = config_key.find('|');
                 std::string cfg_name = (pipe_pos != std::string::npos)

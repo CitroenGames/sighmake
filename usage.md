@@ -2168,31 +2168,19 @@ name = GameEngine
 configurations = Debug, Release
 platforms = x64
 
-[project:Engine]
-type = lib
-
-# Find required packages
+# Find packages once — available to all projects via target_link_libraries
 find_package(Vulkan REQUIRED)
 find_package(SDL2 REQUIRED)
 
+[project:Engine]
+type = lib
 sources = src/**/*.cpp
 headers = include/**/*.h
-
-# Use package variables
-includes = include, ${Vulkan_INCLUDE_DIRS}, ${SDL2_INCLUDE_DIRS}
-
-# Platform-specific libraries
-if(windows) {
-    libs = ${Vulkan_LIBRARIES}, ${SDL2_LIBRARIES}
-    libdirs = ${Vulkan_LIBRARY_DIRS}, ${SDL2_LIBRARY_DIRS}
-}
-
-if(linux) {
-    libs = vulkan, SDL2
-}
-
+includes = include
 public_includes = include
-public_libs = ${Vulkan_LIBRARIES}, ${SDL2_LIBRARIES}
+
+# Link packages by name — includes, libs, libdirs applied automatically
+target_link_libraries(Vulkan, SDL2)
 
 [project:Game]
 type = exe
@@ -2250,6 +2238,61 @@ When parsing a buildscript with find_package, you'll see:
   Include dirs: C:\Libraries\SDL2-2.30.0\include
   Libraries: SDL2.lib;SDL2main.lib
   Library dirs: C:\Libraries\SDL2-2.30.0\lib\x64
+```
+
+**Automatic Propagation via target_link_libraries:**
+
+By default, `find_package()` results propagate solution-wide. Once a package is found, any project can link against it by name using `target_link_libraries()` — the package's include directories, libraries, and library directories are applied automatically, just like project-to-project dependencies.
+
+```ini
+[solution]
+name = GameEngine
+configurations = Debug, Release
+platforms = x64
+
+# Find packages once at the solution level
+find_package(Vulkan REQUIRED)
+find_package(SDL2 REQUIRED)
+
+[project:Engine]
+type = lib
+sources = src/**/*.cpp
+headers = include/**/*.h
+public_includes = include
+
+# Link against found packages by name — includes, libs, and libdirs are automatic
+target_link_libraries(Vulkan, SDL2)
+
+[project:Game]
+type = exe
+sources = game/*.cpp
+
+# Engine's public properties AND Vulkan/SDL2 propagate transitively
+target_link_libraries(Engine)
+```
+
+This replaces the verbose manual approach of writing `includes = ${Vulkan_INCLUDE_DIRS}`, `libs = ${Vulkan_LIBRARIES}`, etc. in every project.
+
+Visibility keywords work with packages the same way as with projects:
+
+```ini
+target_link_libraries(
+    PUBLIC Vulkan       # Vulkan propagates to projects that depend on this one
+    PRIVATE SDL2        # SDL2 is used only by this project, not exposed to dependents
+)
+```
+
+**NO_PROPAGATE Keyword:**
+
+If you want to use the manual `${Variable}` approach instead of automatic propagation, add `NO_PROPAGATE`:
+
+```ini
+find_package(Vulkan REQUIRED NO_PROPAGATE)
+
+# Must manually use variables — target_link_libraries(Vulkan) won't auto-resolve
+includes = ${Vulkan_INCLUDE_DIRS}
+libs = ${Vulkan_LIBRARIES}
+libdirs = ${Vulkan_LIBRARY_DIRS}
 ```
 
 ### Configuration-Specific Library Exclusion

@@ -101,6 +101,7 @@ void write_project_cards(std::ofstream& out, const Solution& solution) {
     out << "<div class=\"project-cards\">\n";
 
     for (const auto& proj : solution.projects) {
+        if (proj.is_package_project) continue;  // Skip synthetic find_package projects
         std::string ptype = get_project_type(proj);
         std::string css_class = config_type_css_class(ptype);
 
