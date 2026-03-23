@@ -10,6 +10,7 @@ struct BuildOptions {
     std::string config;             // --config <cfg> (optional)
     std::string target;             // --target <tgt> (optional)
     bool clean_first = false;       // --clean-first (optional)
+    bool clean_only = false;        // --clean (optional, clean without building)
     int parallel = 0;               // --parallel <N> (optional, 0 = default)
 };
 

@@ -127,6 +127,8 @@ int main(int argc, char* argv[]) {
                 options.target = argv[++i];
             } else if (strcmp(argv[i], "--clean-first") == 0) {
                 options.clean_first = true;
+            } else if (strcmp(argv[i], "--clean") == 0) {
+                options.clean_only = true;
             } else if ((strcmp(argv[i], "--parallel") == 0 || strcmp(argv[i], "-j") == 0) && i + 1 < argc) {
                 options.parallel = std::atoi(argv[++i]);
             } else {

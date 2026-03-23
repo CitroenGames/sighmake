@@ -138,7 +138,7 @@ Perfect for quick prototyping! To customize configurations, define your own `[co
 
 ```
 sighmake <buildscript|CMakeLists.txt> [options]
-sighmake --build <dir> [--config <cfg>]
+sighmake --build <dir> [--config <cfg>] [--clean]
 sighmake --convert <solution.sln> [options]
 ```
 
@@ -152,6 +152,7 @@ sighmake --convert <solution.sln> [options]
 | `-b <dir>` | `--build <dir>` | Build using previously generated project files |
 | | `--config <cfg>` | Build configuration (with --build, e.g. Release) |
 | | `--target <tgt>` | Build specific target (with --build) |
+| | `--clean` | Clean generated build artifacts without building (with --build) |
 | | `--clean-first` | Clean before building (with --build) |
 | `-j <N>` | `--parallel <N>` | Parallel build jobs (with --build) |
 | | `--list-toolsets` | List all available Visual Studio toolsets |
@@ -253,6 +254,7 @@ sighmake --build . --config Release
 sighmake --build . --config Debug --parallel 8
 sighmake --build . --target MyApp
 sighmake --build . --clean-first
+sighmake --build . --clean
 ```
 
 sighmake detects which build system was generated (via a `.sighmake_cache` file written during generation) and invokes the correct tool:

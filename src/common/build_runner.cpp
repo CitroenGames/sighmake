@@ -90,7 +90,9 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
     cmd += " /p:Platform=" + platform;
 
     // Handle target
-    if (!options.target.empty()) {
+    if (options.clean_only) {
+        cmd += " /t:Clean";
+    } else if (!options.target.empty()) {
         cmd += " /t:" + options.target;
     } else if (options.clean_first) {
         cmd += " /t:Rebuild";
@@ -105,7 +107,7 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
 
     cmd += "\"";
 
-    std::cout << "Building: " << cache.solution_name << " [" << config << "|" << platform << "]\n";
+    std::cout << (options.clean_only ? "Cleaning: " : "Building: ") << cache.solution_name << " [" << config << "|" << platform << "]\n";
     std::cout << "MSBuild: " << msbuild_path << "\n" << std::endl;
 
     return std::system(cmd.c_str());
@@ -154,6 +156,13 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
 
     // Build make command
     std::string cmd = "make -C \"" + build_dir.string() + "\"";
+
+    // Clean only if requested
+    if (options.clean_only) {
+        std::string clean_cmd = cmd + " clean";
+        std::cout << "Cleaning: " << cache.solution_name << " [" << config << "]" << std::endl;
+        return std::system(clean_cmd.c_str());
+    }
 
     // Clean first if requested
     if (options.clean_first) {
