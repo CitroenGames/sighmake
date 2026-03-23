@@ -15,6 +15,12 @@ A flexible build system generator that converts buildscript files and CMakeLists
 - **Project dependencies** - Automatic dependency tracking with PUBLIC/PRIVATE/INTERFACE visibility
 - **File inclusion** - Share common settings across buildscripts
 - **Bidirectional conversion** - Convert Visual Studio solutions to buildscripts
+- **VPC conversion** - Convert Valve Project Creator files to buildscripts
+- **find_package() support** - Automatic package detection (Vulkan, OpenGL, SDL2/3, DirectX)
+- **Solution folders** - Organize projects into logical groups in Visual Studio
+- **Build integration** - Build generated projects directly with `--build`
+- **Dependency graph export** - Generate HTML dependency reports with `--export-deps`
+- **VS 2026 support** - Generates `.slnx` format for Visual Studio 2026
 
 ## Quick Start
 
@@ -98,6 +104,7 @@ make -f build/sighmake.Release
 ```
 sighmake <buildscript|CMakeLists.txt> [options]
 sighmake --convert <solution.sln> [options]
+sighmake --build <dir> [--config <cfg>]
 
 Options:
   -g, --generator <type>     Generator type (vcxproj, makefile)
@@ -105,6 +112,12 @@ Options:
   -c, --convert              Convert Visual Studio solution to buildscripts
       --list-toolsets        List available toolsets
   -l, --list                 List available generators
+      --export-deps          Export dependency report as HTML
+  -b, --build <dir>          Build using previously generated project files
+      --config <cfg>         Build configuration (e.g. Debug, Release)
+      --target <tgt>         Build specific target
+      --clean-first          Clean before building
+  -j, --parallel <N>         Parallel build jobs
   -h, --help                 Show help message
 ```
 
@@ -134,6 +147,23 @@ sighmake --convert solution.sln
 **Parse CMake file:**
 ```batch
 sighmake CMakeLists.txt -g vcxproj
+```
+
+**Build previously generated projects:**
+```bash
+sighmake --build . --config Release
+sighmake --build . --config Debug --target MyProject -j 4
+sighmake --build . --clean-first --config Release
+```
+
+**Export dependency graph as HTML:**
+```bash
+sighmake project.buildscript --export-deps
+```
+
+**Convert VPC files to buildscripts:**
+```bash
+sighmake --convert project.vpc
 ```
 
 ### Environment Variables
@@ -281,6 +311,39 @@ runtime_library[Release|Win32] = MultiThreaded
 # Per-configuration output directories
 outdir[Debug|x64] = bin/x64/Debug
 outdir[Release|x64] = bin/x64/Release
+```
+
+#### Package Detection
+
+Use `find_package()` to automatically detect and link system packages:
+
+```ini
+[project:MyProject]
+type = exe
+sources = src/*.cpp
+
+find_package(Vulkan REQUIRED)
+find_package(SDL3)
+find_package(OpenGL)
+```
+
+Supported packages include Vulkan, OpenGL, SDL2, SDL3, and DirectX.
+
+#### Solution Folders
+
+Organize projects into logical groups within the Visual Studio solution:
+
+```ini
+[solution]
+name = MyEngine
+configurations = Debug, Release
+folders = Engine, Tools, Tests
+
+[project:Renderer]
+solution_folder = Engine
+
+[project:AssetCompiler]
+solution_folder = Tools
 ```
 
 ### Wildcard Patterns
@@ -556,6 +619,16 @@ snakegame/
 - Transitive dependency propagation (SDL3 INTERFACE)
 - Multi-directory buildscript organization
 - Public includes for library API exposure
+
+## Editor Support
+
+### VS Code Extension
+
+A VS Code extension is included in `editors/vscode/` with:
+- Syntax highlighting for `.buildscript` files
+- Autocomplete for keywords and properties
+- Hover information
+- Code snippets
 
 ## Documentation
 
