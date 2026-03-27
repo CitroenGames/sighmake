@@ -1475,6 +1475,38 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
             return;
         }
 
+        // Special handling for NASM files with platform specifier
+        // e.g., nasm[x64] = file.asm should exclude other platforms
+        if ((setting == "nasm" || setting == "nasm_sources") &&
+            state.current_project != nullptr && config_key.find('|') == std::string::npos) {
+
+            Project& proj = *state.current_project;
+            proj.has_nasm_files = true;
+            std::string specified_platform = config_key;
+
+            auto entries = split(resolved_value, ',');
+            for (const auto& src : entries) {
+                auto [path, include] = parse_filename_with_condition(src);
+                if (path.empty() || !include) continue;
+
+                auto* file = find_or_create_source(path, state);
+                if (file) {
+                    file->type = FileType::NASM;
+
+                    // Mark all platforms OTHER than the specified one as excluded
+                    if (state.solution) {
+                        for (const auto& cfg_key : state.solution->get_config_keys()) {
+                            auto [cfg_config, cfg_platform] = parse_config_key(cfg_key);
+                            if (to_lower(cfg_platform) != to_lower(specified_platform)) {
+                                file->settings.excluded[cfg_key] = true;
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         // Apply setting to all matching config keys
         for (const auto& cfg_key : config_keys_to_apply) {
             // If we're in a file_properties() block, apply to all files in the group
@@ -1935,6 +1967,57 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
 
                 auto* file = find_or_create_source(expanded_path, state);
                 if (file) file->type = FileType::MASM;
+            }
+        }
+    // NASM assembly files
+    else if (key == "nasm" || key == "nasm_sources") {
+        auto entries = split(value, ',');
+
+        // Mark project as having NASM files
+        proj.has_nasm_files = true;
+
+        // Pass 1: Collect explicit files with conditions
+        std::map<std::string, bool> explicit_overrides;
+
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+
+            if (!is_wildcard_path(path) && !condition.empty()) {
+                std::string abs_path = resolve_path(path, state.base_path);
+                explicit_overrides[abs_path] = include;
+
+                if (include) {
+                    auto* file = find_or_create_source(path, state);
+                    if (file) file->type = FileType::NASM;
+                }
+            }
+        }
+
+        // Pass 2: Process all entries
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+
+            if (!is_wildcard_path(path) && !condition.empty()) continue;
+
+            if (!is_wildcard_path(path)) {
+                auto* file = find_or_create_source(path, state);
+                if (file) file->type = FileType::NASM;
+                continue;
+            }
+
+            if (!include) continue;
+
+            auto expanded = expand_wildcards(path, state.base_path);
+            for (const auto& expanded_path : expanded) {
+                std::string abs_path = resolve_path(expanded_path, state.base_path);
+
+                auto it = explicit_overrides.find(abs_path);
+                if (it != explicit_overrides.end()) continue;
+
+                auto* file = find_or_create_source(expanded_path, state);
+                if (file) file->type = FileType::NASM;
             }
         }
     } else if (key == "libs" || key == "libraries") {
@@ -2423,6 +2506,44 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             proj.configurations[config_key].generate_manifest = gm;
         }
     }
+    // NASM assembler settings (project-level → apply to all configs)
+    else if (key == "nasm_format" || key == "nasm_output_format") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].nasm.format = value;
+        }
+        proj.project_level_defaults.nasm.format = value;
+    } else if (key == "nasm_flags" || key == "nasm_options" || key == "nasm_additional_options") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            auto& opts = proj.configurations[config_key].nasm.additional_options;
+            if (!opts.empty()) opts += " ";
+            opts += value;
+        }
+        auto& def_opts = proj.project_level_defaults.nasm.additional_options;
+        if (!def_opts.empty()) def_opts += " ";
+        def_opts += value;
+    } else if (key == "nasm_includes" || key == "nasm_include_directories") {
+        auto dirs = split(value, ',');
+        std::vector<std::string> resolved_dirs;
+        for (const auto& dir : dirs) {
+            resolved_dirs.push_back(resolve_path(dir, state.base_path));
+        }
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            auto& inc = proj.configurations[config_key].nasm.include_directories;
+            inc.insert(inc.end(), resolved_dirs.begin(), resolved_dirs.end());
+        }
+        proj.project_level_defaults.nasm.include_directories.insert(
+            proj.project_level_defaults.nasm.include_directories.end(),
+            resolved_dirs.begin(), resolved_dirs.end());
+    } else if (key == "nasm_defines" || key == "nasm_preprocessor_definitions") {
+        auto defs = split(value, ',');
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            auto& nd = proj.configurations[config_key].nasm.preprocessor_definitions;
+            nd.insert(nd.end(), defs.begin(), defs.end());
+        }
+        proj.project_level_defaults.nasm.preprocessor_definitions.insert(
+            proj.project_level_defaults.nasm.preprocessor_definitions.end(),
+            defs.begin(), defs.end());
+    }
     // Resource compile settings
     else if (key == "resource_defines" || key == "resource_preprocessor_definitions") {
         auto defs = split(value, ',');
@@ -2774,6 +2895,22 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
         }
         cfg.resource_compile.additional_include_directories.insert(
             cfg.resource_compile.additional_include_directories.end(), resolved_dirs.begin(), resolved_dirs.end());
+    }
+    // NASM assembler settings
+    else if (key == "nasm_format" || key == "nasm_output_format") {
+        cfg.nasm.format = value;
+    } else if (key == "nasm_flags" || key == "nasm_options" || key == "nasm_additional_options") {
+        if (!cfg.nasm.additional_options.empty()) cfg.nasm.additional_options += " ";
+        cfg.nasm.additional_options += value;
+    } else if (key == "nasm_includes" || key == "nasm_include_directories") {
+        auto dirs = split(value, ',');
+        for (const auto& dir : dirs) {
+            cfg.nasm.include_directories.push_back(resolve_path(dir, state.base_path));
+        }
+    } else if (key == "nasm_defines" || key == "nasm_preprocessor_definitions") {
+        auto defs = split(value, ',');
+        cfg.nasm.preprocessor_definitions.insert(
+            cfg.nasm.preprocessor_definitions.end(), defs.begin(), defs.end());
     }
     // Xdcmake/Bscmake settings
     else if (key == "xdcmake_suppress_startup_banner") {

@@ -186,6 +186,7 @@ std::string VcxprojGenerator::get_file_type_name(FileType type) {
         case FileType::ClInclude: return "ClInclude";
         case FileType::CustomBuild: return "CustomBuild";
         case FileType::MASM: return "MASM";
+        case FileType::NASM: return "CustomBuild";   // NASM uses custom build rules
         case FileType::ObjCxx: return "ClCompile";  // Emit as ClCompile for cross-platform project listing
         case FileType::ResourceCompile: return "ResourceCompile";
         default: return "None";
@@ -1017,6 +1018,63 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                 }
             }
 
+            // NASM custom build rules (auto-generated)
+            if (type == FileType::NASM && src->custom_command.empty()) {
+                for (const auto& [cfg_key, cfg] : project.configurations) {
+                    std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg_key + "'";
+
+                    // Determine output format
+                    std::string fmt = cfg.nasm.format;
+                    if (fmt.empty()) {
+                        // Default based on platform
+                        auto [cfg_name, platform] = parse_config_key(cfg_key);
+                        if (is_windows_platform(platform)) {
+                            fmt = (to_lower(platform) == "win32" || to_lower(platform) == "x86") ? "win32" : "win64";
+                        } else {
+                            fmt = "elf64";
+                        }
+                    }
+
+                    // Determine output extension based on format
+                    std::string out_ext = (fmt == "bin") ? ".bin" : ".obj";
+
+                    // Build NASM command line
+                    std::string nasm_cmd = "nasm -f " + fmt;
+
+                    // Add include directories
+                    for (const auto& inc : cfg.nasm.include_directories) {
+                        std::string rel_inc = make_relative_path(inc, output_path);
+                        nasm_cmd += " -I\"" + rel_inc + "/\"";
+                    }
+
+                    // Add defines
+                    for (const auto& def : cfg.nasm.preprocessor_definitions) {
+                        nasm_cmd += " -D" + def;
+                    }
+
+                    // Add additional flags
+                    if (!cfg.nasm.additional_options.empty()) {
+                        nasm_cmd += " " + cfg.nasm.additional_options;
+                    }
+
+                    nasm_cmd += " -o \"$(IntDir)%(Filename)" + out_ext + "\" \"%(FullPath)\"";
+
+                    auto cmd_node = file_elem.append_child("Command");
+                    cmd_node.append_attribute("Condition") = condition.c_str();
+                    cmd_node.text() = nasm_cmd.c_str();
+
+                    auto msg_node = file_elem.append_child("Message");
+                    msg_node.append_attribute("Condition") = condition.c_str();
+                    std::string msg = "Assembling %(Filename)%(Extension) with NASM (-f " + fmt + ")";
+                    msg_node.text() = msg.c_str();
+
+                    auto out_node = file_elem.append_child("Outputs");
+                    out_node.append_attribute("Condition") = condition.c_str();
+                    std::string output = "$(IntDir)%(Filename)" + out_ext;
+                    out_node.text() = output.c_str();
+                }
+            }
+
             // Custom build tool
             if (type == FileType::CustomBuild) {
                 // Get directories for path adjustment
@@ -1153,7 +1211,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                         if (src.type == FileType::ClCompile ||
                             src.type == FileType::ObjCxx ||
                             src.type == FileType::ResourceCompile ||
-                            src.type == FileType::CustomBuild) {
+                            src.type == FileType::CustomBuild ||
+                            src.type == FileType::NASM) {
                             has_linkable_content = true;
                             break;
                         }

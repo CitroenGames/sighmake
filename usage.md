@@ -458,6 +458,7 @@ std = 20
 | `headers` | Header files (for IDE organization) | Yes |
 | `resources` | Resource files (.rc) | Yes |
 | `masm` | MASM assembly files (.asm, .masm) | Yes |
+| `nasm` | NASM assembly files (.asm, .nasm) | Yes |
 | `includes` | Include directories (comma-separated) | No |
 | `defines` | Preprocessor definitions (comma-separated) | No |
 
@@ -485,6 +486,66 @@ masm[x64] = {
 ```
 
 When using `masm[x64]`, the assembly files are automatically excluded from Win32 builds. This generates the proper `<MASM>` ItemGroup in the vcxproj and imports the required `masm.props` and `masm.targets` build customizations.
+
+**NASM Assembly Files:**
+
+For projects that need the NASM assembler (e.g., OS development, bootloaders, cross-platform assembly), use the `nasm` setting:
+
+```ini
+# Basic NASM usage
+nasm = boot/boot.asm, boot/stage2.asm
+
+# Platform-specific NASM files
+nasm[x64] = asm/trampoline64.asm
+
+# Multiple NASM files with block syntax
+nasm = {
+    src/arch/entry.asm
+    src/arch/interrupts.asm
+}
+```
+
+NASM files are emitted as `CustomBuild` items in the vcxproj with auto-generated build rules. On Windows, the default output format is `win64` (or `win32` for x86 platforms). On Linux/macOS Makefiles, the default is `elf64`.
+
+**NASM Configuration Settings:**
+
+Control NASM behavior with these settings (usable at project level or inside `[config:...]` sections):
+
+| Setting | Description | Example |
+|---------|-------------|---------|
+| `nasm_format` | Output format (`bin`, `elf64`, `elf32`, `win64`, `win32`, `macho64`, etc.) | `nasm_format = bin` |
+| `nasm_flags` | Additional NASM command-line flags | `nasm_flags = -w+all` |
+| `nasm_includes` | Include search directories (comma-separated) | `nasm_includes = boot/include` |
+| `nasm_defines` | Preprocessor definitions (comma-separated) | `nasm_defines = STAGE1, SECTOR_SIZE=512` |
+
+**Example — OS bootloader project:**
+
+```ini
+[project:Bootloader]
+type = exe
+nasm = boot/boot.asm, boot/stage2.asm
+nasm_format = bin
+nasm_flags = -w+all
+nasm_includes = boot/include
+nasm_defines = STAGE1
+
+# Kernel stub that links with C/C++ code
+[project:Kernel]
+type = exe
+sources = kernel/src/*.cpp
+nasm = kernel/asm/entry.asm
+nasm_format = elf64
+```
+
+**Per-configuration NASM settings:**
+
+```ini
+[config:Debug]
+nasm_defines = DEBUG_ASM
+
+[config:Release]
+nasm_flags = -O2
+```
 
 **Platform-specific defines with values:**
 
@@ -6351,6 +6412,7 @@ dir include\myheader.h
 | `headers` | Header files | File paths, supports wildcards | None |
 | `resources` | Resource files (.rc) | File paths, supports wildcards | None |
 | `masm` | MASM assembly files | File paths, supports wildcards | None |
+| `nasm` | NASM assembly files | File paths, supports wildcards | None |
 | `includes` | Include directories | Comma-separated paths | None |
 | `defines` | Preprocessor defines | Comma-separated defines | None |
 | `std` | C++ standard | `14`, `17`, `20`, `23` | Compiler default |
@@ -6409,6 +6471,17 @@ dir include\myheader.h
 | `libs` | Library dependencies | Comma-separated library files | None |
 | `libdirs` | Library search paths | Comma-separated paths | None |
 | `excluded_library` | Library included only in specified config | Library file path | None |
+
+#### NASM Assembler Settings
+
+| Setting | Description | Valid Values | Default |
+|---------|-------------|--------------|---------|
+| `nasm_format` | Output format | `bin`, `elf32`, `elf64`, `win32`, `win64`, `macho64`, etc. | `win64`/`win32` (vcxproj), `elf64` (Makefile) |
+| `nasm_flags` | Additional NASM flags | Raw flags string | None |
+| `nasm_includes` | NASM include directories | Comma-separated paths | None |
+| `nasm_defines` | NASM preprocessor definitions | Comma-separated defines | None |
+
+These settings can be used at both project level (applies to all configurations) and inside `[config:...]` sections.
 
 #### Per-File Settings
 

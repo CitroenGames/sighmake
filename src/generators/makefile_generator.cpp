@@ -452,6 +452,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     bool has_cpp_files = false;
     bool has_c_files = false;
     bool has_objcxx_files = false;
+    bool has_nasm_files = false;
     for (const auto& src : project.sources) {
         if (src.type == FileType::ClCompile) {
             std::string ext = fs::path(src.path).extension().string();
@@ -463,6 +464,8 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
             }
         } else if (src.type == FileType::ObjCxx) {
             has_objcxx_files = true;
+        } else if (src.type == FileType::NASM) {
+            has_nasm_files = true;
         }
     }
 
@@ -490,6 +493,9 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
             out << "CXX = g++\n";
 #endif
         }
+    }
+    if (has_nasm_files) {
+        out << "NASM = nasm\n";
     }
 
     // Compiler flags
@@ -594,6 +600,25 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
         out << "\n";
     }
 
+    if (has_nasm_files) {
+        // Build NASMFLAGS from config
+        std::string nasm_fmt = config.nasm.format;
+        if (nasm_fmt.empty()) nasm_fmt = "elf64";  // Default for Makefile (Linux)
+
+        std::string nasmflags = "-f " + nasm_fmt;
+        for (const auto& inc : config.nasm.include_directories) {
+            std::string rel_inc = fs::relative(inc, makefile_dir).string();
+            nasmflags += " -I" + rel_inc + "/";
+        }
+        for (const auto& def : config.nasm.preprocessor_definitions) {
+            nasmflags += " -D" + def;
+        }
+        if (!config.nasm.additional_options.empty()) {
+            nasmflags += " " + config.nasm.additional_options;
+        }
+        out << "NASMFLAGS = " << nasmflags << "\n";
+    }
+
     if (!ldflags.empty()) {
         out << "LDFLAGS = " << ldflags << "\n";
     }
@@ -636,7 +661,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     std::vector<bool> source_uses_pch; // Track which files use PCH
 
     for (const auto& src : project.sources) {
-        if (src.type == FileType::ClCompile || src.type == FileType::ObjCxx) {
+        if (src.type == FileType::ClCompile || src.type == FileType::ObjCxx || src.type == FileType::NASM) {
             // Check if excluded for this config
             auto excl_it = src.settings.excluded.find(config_key);
             if (excl_it != src.settings.excluded.end() && excl_it->second) {
@@ -733,6 +758,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
 
         std::string compiler;
         std::string flags;
+        bool is_nasm = false;
         if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") {
             compiler = "$(CXX)";
             flags = "$(CXXFLAGS)";
@@ -742,26 +768,35 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
         } else if (ext == ".mm" || ext == ".m") {
             compiler = "$(CXX)";
             flags = "$(OBJCXXFLAGS)";
+        } else if (ext == ".asm" || ext == ".nasm") {
+            compiler = "$(NASM)";
+            flags = "$(NASMFLAGS)";
+            is_nasm = true;
         } else {
             continue; // Skip unknown file types
         }
 
         // Write dependency line - add PCH dependency if file uses it
         out << obj << ": " << src;
-        if (uses_pch && has_pch) {
+        if (!is_nasm && uses_pch && has_pch) {
             out << " $(PCH_OUTPUT)";
         }
         out << "\n";
 
         out << "\t@mkdir -p $(dir $@)\n";
-        out << "\t" << compiler << " " << flags;
 
-        // Add -include flag to force PCH inclusion for files that use it
-        if (uses_pch && has_pch && !pch_include_base.empty()) {
-            out << " -include " << pch_include_base;
+        if (is_nasm) {
+            out << "\t" << compiler << " " << flags << " -o $@ $<\n\n";
+        } else {
+            out << "\t" << compiler << " " << flags;
+
+            // Add -include flag to force PCH inclusion for files that use it
+            if (uses_pch && has_pch && !pch_include_base.empty()) {
+                out << " -include " << pch_include_base;
+            }
+
+            out << " -MMD -MP -c -o $@ $<\n\n";
         }
-
-        out << " -MMD -MP -c -o $@ $<\n\n";
     }
 
     // Clean rule

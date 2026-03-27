@@ -1,34 +1,55 @@
 @echo off
 setlocal enabledelayedexpansion
 
-:: Check for administrator privileges
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    echo This installer requires administrator privileges.
-    echo Right-click and select "Run as administrator", or run from an elevated command prompt.
-    exit /b 1
-)
-
 cd /d "%~dp0"
 
 echo === sighmake installer ===
 echo.
 
-:: Check for cl.exe (MSVC compiler)
+:: Check for cl.exe (MSVC compiler) — auto-detect if not in a Developer Command Prompt
 where cl.exe >nul 2>&1
 if %errorlevel% neq 0 (
-    echo Error: cl.exe not found. Please run this from a Visual Studio
-    echo Developer Command Prompt, or run:
+    echo cl.exe not found on PATH. Searching for Visual Studio installation...
+
+    set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+    if not exist "!VSWHERE!" (
+        echo Error: vswhere.exe not found. Please install Visual Studio with the
+        echo "Desktop development with C++" workload.
+        exit /b 1
+    )
+
+    set "VSDEVCMD="
+    for /f "usebackq delims=" %%i in (`"!VSWHERE!" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do (
+        if "!VSDEVCMD!"=="" set "VSDEVCMD=%%i\Common7\Tools\VsDevCmd.bat"
+    )
+
+    if "!VSDEVCMD!"=="" (
+        echo Error: No Visual Studio installation with C++ tools found.
+        echo Please install Visual Studio with the "Desktop development with C++" workload.
+        exit /b 1
+    )
+
+    if not exist "!VSDEVCMD!" (
+        echo Error: VsDevCmd.bat not found at "!VSDEVCMD!"
+        exit /b 1
+    )
+
+    echo Found: "!VSDEVCMD!"
+    echo Initializing developer environment...
+    call "!VSDEVCMD!" -arch=amd64 -no_logo
+
+    where cl.exe >nul 2>&1
+    if %errorlevel% neq 0 (
+        echo Error: cl.exe still not found after initializing developer environment.
+        echo Try running this script from a Developer Command Prompt instead.
+        exit /b 1
+    )
     echo.
-    echo   "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
-    echo.
-    echo Then re-run this script.
-    exit /b 1
 )
 
 :: Determine install directory
 if "%SIGHMAKE_INSTALL_DIR%"=="" (
-    set "INSTALL_DIR=%ProgramFiles%\sighmake"
+    set "INSTALL_DIR=%LOCALAPPDATA%\sighmake"
 ) else (
     set "INSTALL_DIR=%SIGHMAKE_INSTALL_DIR%"
 )
@@ -135,16 +156,16 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: Add to system PATH if not already there
+:: Add to user PATH if not already there
 echo %PATH% | findstr /i /c:"%INSTALL_DIR%" >nul 2>&1
 if %errorlevel% neq 0 (
     echo.
-    echo       Adding %INSTALL_DIR% to system PATH...
-    for /f "usebackq tokens=2,*" %%A in (`reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul`) do set "SYS_PATH=%%B"
-    if defined SYS_PATH (
-        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH /t REG_EXPAND_SZ /d "!SYS_PATH!;%INSTALL_DIR%" /f >nul 2>&1
+    echo       Adding %INSTALL_DIR% to user PATH...
+    for /f "usebackq tokens=2,*" %%A in (`reg query "HKCU\Environment" /v PATH 2^>nul`) do set "USER_PATH=%%B"
+    if defined USER_PATH (
+        reg add "HKCU\Environment" /v PATH /t REG_EXPAND_SZ /d "!USER_PATH!;%INSTALL_DIR%" /f >nul 2>&1
     ) else (
-        reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH /t REG_EXPAND_SZ /d "%INSTALL_DIR%" /f >nul 2>&1
+        reg add "HKCU\Environment" /v PATH /t REG_EXPAND_SZ /d "%INSTALL_DIR%" /f >nul 2>&1
     )
     echo       NOTE: Restart your terminal for PATH changes to take effect.
 )

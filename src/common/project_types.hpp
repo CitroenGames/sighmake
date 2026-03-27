@@ -22,6 +22,7 @@ enum class FileType {
     ClInclude,      // .h, .hpp files
     CustomBuild,    // Files with custom build rules
     MASM,           // .asm, .masm files
+    NASM,           // .nasm files (or .asm via nasm key)
     None,           // Other files
     ObjCxx,         // .mm, .m files (Objective-C/C++)
     ResourceCompile // .rc files
@@ -158,6 +159,14 @@ struct ResourceCompileSettings {
     std::vector<std::string> additional_include_directories;
 };
 
+// NASM assembler settings
+struct NasmSettings {
+    std::string format;                             // "bin", "elf64", "elf32", "win32", "win64", "macho64", etc.
+    std::string additional_options;                  // Additional NASM flags (e.g., "-w+all")
+    std::vector<std::string> include_directories;    // NASM include search paths
+    std::vector<std::string> preprocessor_definitions; // NASM defines (-D)
+};
+
 // Manifest tool settings
 struct ManifestSettings {
     bool suppress_startup_banner = false;
@@ -199,6 +208,7 @@ struct Configuration {
     LinkSettings link;
     LibrarianSettings lib;
     ResourceCompileSettings resource_compile;
+    NasmSettings nasm;
 
     BuildEvent pre_build_event;
     BuildEvent pre_link_event;
@@ -268,6 +278,7 @@ struct Project {
     std::vector<LibraryFile> libraries;
     std::vector<ProjectDependency> project_references;  // Structured dependencies with visibility
     bool has_masm_files = false;                        // Track if project contains MASM files
+    bool has_nasm_files = false;                        // Track if project contains NASM files
 
     std::map<std::string, Configuration> configurations; // Key is "Config|Platform"
 
@@ -378,6 +389,8 @@ inline FileType get_file_type(const std::string& path) {
         return FileType::ResourceCompile;
     } else if (ext == ".asm" || ext == ".masm") {
         return FileType::MASM;
+    } else if (ext == ".nasm") {
+        return FileType::NASM;
     } else if (ext == ".mm" || ext == ".m") {
         return FileType::ObjCxx;
     }
