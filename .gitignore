@@ -38,3 +38,4 @@ Ankh.NoLoad
 !engine.vcxproj
 .DS_Store
 .sighmake_cache
+*.obj

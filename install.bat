@@ -37,6 +37,7 @@ if %errorlevel% neq 0 (
     echo Found: "!VSDEVCMD!"
     echo Initializing developer environment...
     call "!VSDEVCMD!" -arch=amd64 -no_logo
+    cd /d "%~dp0"
 
     where cl.exe >nul 2>&1
     if %errorlevel% neq 0 (
@@ -68,10 +69,10 @@ for /r src %%f in (*.cpp) do (
     set "SOURCES=!SOURCES! %%f"
 )
 
-cl.exe /nologo /std:c++17 /O2 /EHsc /W3 /Isrc\ /FI src\pch.h /Fe:sighmake_bootstrap.exe !SOURCES! /link /OUT:sighmake_bootstrap.exe >nul 2>&1
+cl.exe /nologo /std:c++17 /O2 /EHsc /W3 /I"%~dp0src" /FI "%~dp0src\pch.h" /Fe:sighmake_bootstrap.exe !SOURCES! /link /OUT:sighmake_bootstrap.exe >nul 2>&1
 if %errorlevel% neq 0 (
     echo       Compilation failed. Trying with verbose output...
-    cl.exe /std:c++17 /O2 /EHsc /W3 /Isrc\ /FI src\pch.h /Fe:sighmake_bootstrap.exe !SOURCES! /link /OUT:sighmake_bootstrap.exe
+    cl.exe /std:c++17 /O2 /EHsc /W3 /I"%~dp0src" /FI "%~dp0src\pch.h" /Fe:sighmake_bootstrap.exe !SOURCES! /link /OUT:sighmake_bootstrap.exe
     exit /b 1
 )
 echo       Bootstrap compilation successful.
