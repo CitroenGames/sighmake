@@ -1665,15 +1665,23 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
                                                ParseState& state) {
     if (!state.current_project) return;
 
-    Project& proj = *state.current_project;
-
     // Include directive within project context
     if (key == "include") {
         process_include(value, state);
         return;
     }
 
-    // Basic project settings
+    if (parse_project_basic_setting(key, value, state)) return;
+    if (parse_project_source_setting(key, value, state)) return;
+    if (parse_project_compiler_setting(key, value, state)) return;
+    if (parse_project_linker_setting(key, value, state)) return;
+    parse_project_misc_setting(key, value, state);
+}
+
+bool BuildscriptParser::parse_project_basic_setting(const std::string& key, const std::string& value,
+                                                     ParseState& state) {
+    Project& proj = *state.current_project;
+
     if (key == "name") {
         proj.name = value;
     } else if (key == "project_name") {
@@ -1763,9 +1771,18 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             proj.configurations[config_key].int_dir = resolved_dir;
         }
         proj.project_level_defaults.int_dir = resolved_dir;
+    } else {
+        return false;
     }
+    return true;
+}
+
+bool BuildscriptParser::parse_project_source_setting(const std::string& key, const std::string& value,
+                                                      ParseState& state) {
+    Project& proj = *state.current_project;
+
     // Source files - with platform-conditional override support
-    else if (key == "sources" || key == "src" || key == "files") {
+    if (key == "sources" || key == "src" || key == "files") {
         auto entries = split(value, ',');
 
         // Pass 1: Collect explicit files with conditions (non-wildcards with conditions)
@@ -1969,6 +1986,7 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
                 if (file) file->type = FileType::MASM;
             }
         }
+    }
     // NASM assembly files
     else if (key == "nasm" || key == "nasm_sources") {
         auto entries = split(value, ',');
@@ -2042,9 +2060,18 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
                 }
             }
         }
+    } else {
+        return false;
     }
+    return true;
+}
+
+bool BuildscriptParser::parse_project_compiler_setting(const std::string& key, const std::string& value,
+                                                        ParseState& state) {
+    Project& proj = *state.current_project;
+
     // Compiler settings (apply to all configs)
-    else if (key == "includes" || key == "include_dirs" || key == "additional_include_directories") {
+    if (key == "includes" || key == "include_dirs" || key == "additional_include_directories") {
         auto dirs = split(value, ',');
         std::vector<std::string> resolved_dirs;
         for (const auto& dir : dirs) {
@@ -2313,9 +2340,18 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.pch.output = value;
         }
+    } else {
+        return false;
     }
+    return true;
+}
+
+bool BuildscriptParser::parse_project_linker_setting(const std::string& key, const std::string& value,
+                                                      ParseState& state) {
+    Project& proj = *state.current_project;
+
     // Linker settings
-    else if (key == "ldflags" || key == "linker_flags" || key == "link_options") {
+    if (key == "ldflags" || key == "linker_flags" || key == "link_options") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             auto& opts = proj.configurations[config_key].link.additional_options;
             if (!opts.empty()) opts += " ";
@@ -2472,9 +2508,18 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
             auto& lib_deps = proj.configurations[config_key].lib.additional_dependencies;
             lib_deps.insert(lib_deps.end(), deps.begin(), deps.end());
         }
+    } else {
+        return false;
     }
+    return true;
+}
+
+bool BuildscriptParser::parse_project_misc_setting(const std::string& key, const std::string& value,
+                                                    ParseState& state) {
+    Project& proj = *state.current_project;
+
     // ResourceCompile settings
-    else if (key == "rc_culture" || key == "resource_culture") {
+    if (key == "rc_culture" || key == "resource_culture") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].resource_compile.culture = value;
         }
@@ -2617,7 +2662,10 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
                 proj.project_references.push_back(ProjectDependency(trimmed_name));
             }
         }
+    } else {
+        return false;
     }
+    return true;
 }
 
 void BuildscriptParser::parse_file_setting(const std::string& file_path, const std::string& setting,

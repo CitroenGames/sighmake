@@ -1,52 +1,50 @@
 @echo off
+
+:: If cl.exe is already available, skip straight to the main installer
+where cl.exe >nul 2>&1
+if %errorlevel% equ 0 goto :main
+
+:: Not in a Developer Command Prompt — find one and relaunch
+echo cl.exe not found on PATH. Searching for Visual Studio installation...
+
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if not exist "%VSWHERE%" (
+    echo Error: vswhere.exe not found. Please install Visual Studio with the
+    echo "Desktop development with C++" workload.
+    exit /b 1
+)
+
+set "VSDEVCMD="
+for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do (
+    if not defined VSDEVCMD set "VSDEVCMD=%%i\Common7\Tools\VsDevCmd.bat"
+)
+
+if not defined VSDEVCMD (
+    echo Error: No Visual Studio installation with C++ tools found.
+    echo Please install Visual Studio with the "Desktop development with C++" workload.
+    exit /b 1
+)
+
+if not exist "%VSDEVCMD%" (
+    echo Error: VsDevCmd.bat not found at "%VSDEVCMD%"
+    exit /b 1
+)
+
+echo Found: "%VSDEVCMD%"
+echo Relaunching inside Developer Command Prompt...
+echo.
+
+:: Re-invoke this script inside the developer environment
+cmd /s /c ""%VSDEVCMD%" -arch=amd64 -no_logo && "%~f0" %*"
+exit /b %errorlevel%
+
+:main
 setlocal enabledelayedexpansion
 
 cd /d "%~dp0"
 
 echo === sighmake installer ===
 echo.
-
-:: Check for cl.exe (MSVC compiler) — auto-detect if not in a Developer Command Prompt
-where cl.exe >nul 2>&1
-if %errorlevel% neq 0 (
-    echo cl.exe not found on PATH. Searching for Visual Studio installation...
-
-    set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-    if not exist "!VSWHERE!" (
-        echo Error: vswhere.exe not found. Please install Visual Studio with the
-        echo "Desktop development with C++" workload.
-        exit /b 1
-    )
-
-    set "VSDEVCMD="
-    for /f "usebackq delims=" %%i in (`"!VSWHERE!" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do (
-        if "!VSDEVCMD!"=="" set "VSDEVCMD=%%i\Common7\Tools\VsDevCmd.bat"
-    )
-
-    if "!VSDEVCMD!"=="" (
-        echo Error: No Visual Studio installation with C++ tools found.
-        echo Please install Visual Studio with the "Desktop development with C++" workload.
-        exit /b 1
-    )
-
-    if not exist "!VSDEVCMD!" (
-        echo Error: VsDevCmd.bat not found at "!VSDEVCMD!"
-        exit /b 1
-    )
-
-    echo Found: "!VSDEVCMD!"
-    echo Initializing developer environment...
-    call "!VSDEVCMD!" -arch=amd64 -no_logo
-    cd /d "%~dp0"
-
-    where cl.exe >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo Error: cl.exe still not found after initializing developer environment.
-        echo Try running this script from a Developer Command Prompt instead.
-        exit /b 1
-    )
-    echo.
-)
 
 :: Determine install directory
 if "%SIGHMAKE_INSTALL_DIR%"=="" (
@@ -55,124 +53,53 @@ if "%SIGHMAKE_INSTALL_DIR%"=="" (
     set "INSTALL_DIR=%SIGHMAKE_INSTALL_DIR%"
 )
 
-echo Platform:        Windows
-echo Compiler:        MSVC ^(cl.exe^)
 echo Install dir:     %INSTALL_DIR%
 echo.
 
-:: Step 1: Bootstrap — compile sighmake from source
-echo [1/4] Compiling sighmake from source...
+:: Step 1: Compile
+echo [1/3] Compiling...
 
-:: Collect all .cpp files
 set "SOURCES="
 for /r src %%f in (*.cpp) do (
     set "SOURCES=!SOURCES! %%f"
 )
 
-cl.exe /nologo /std:c++17 /O2 /EHsc /W3 /I"%~dp0src" /FI "%~dp0src\pch.h" /Fe:sighmake_bootstrap.exe !SOURCES! /link /OUT:sighmake_bootstrap.exe >nul 2>&1
+cl.exe /nologo /std:c++17 /O2 /EHsc /W3 /MP /I"%~dp0src" /FI "%~dp0src\pch.h" /Fe:sighmake.exe !SOURCES! /link /OUT:sighmake.exe advapi32.lib >nul 2>&1
 if %errorlevel% neq 0 (
     echo       Compilation failed. Trying with verbose output...
-    cl.exe /std:c++17 /O2 /EHsc /W3 /I"%~dp0src" /FI "%~dp0src\pch.h" /Fe:sighmake_bootstrap.exe !SOURCES! /link /OUT:sighmake_bootstrap.exe
+    cl.exe /std:c++17 /O2 /EHsc /W3 /MP /I"%~dp0src" /FI "%~dp0src\pch.h" /Fe:sighmake.exe !SOURCES! /link /OUT:sighmake.exe advapi32.lib
     exit /b 1
 )
-echo       Bootstrap compilation successful.
+echo       OK
 echo.
 
-:: Step 2: Generate Visual Studio solution
-echo [2/4] Generating Visual Studio solution...
-sighmake_bootstrap.exe sighmake.buildscript
-if %errorlevel% neq 0 (
-    echo       Generation failed.
-    del /q sighmake_bootstrap.exe 2>nul
-    exit /b 1
-)
-del /q sighmake_bootstrap.exe 2>nul
-del /q *.obj 2>nul
-echo.
-
-:: Step 3: Build Release
-echo [3/4] Building Release...
-
-:: Find MSBuild
-set "MSBUILD="
-for /f "usebackq delims=" %%i in (`where msbuild.exe 2^>nul`) do (
-    if "!MSBUILD!"=="" set "MSBUILD=%%i"
-)
-
-if "!MSBUILD!"=="" (
-    :: Try vswhere
-    for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe 2^>nul`) do (
-        if "!MSBUILD!"=="" set "MSBUILD=%%i"
-    )
-)
-
-if "!MSBUILD!"=="" (
-    echo       Error: MSBuild not found.
-    exit /b 1
-)
-
-:: Find the .sln file
-set "SLN_FILE="
-for %%f in (*.sln) do (
-    if "!SLN_FILE!"=="" set "SLN_FILE=%%f"
-)
-
-if "!SLN_FILE!"=="" (
-    echo       Error: No .sln file found.
-    exit /b 1
-)
-
-"!MSBUILD!" "!SLN_FILE!" /p:Configuration=Release /p:Platform=x64 /m /nologo /v:minimal
-if %errorlevel% neq 0 (
-    echo       Build failed.
-    exit /b 1
-)
-echo.
-
-:: Step 4: Install
-echo [4/4] Installing to %INSTALL_DIR%...
-
-:: Find the built binary
-set "BUILT_BIN="
-for /r build\bin %%f in (sighmake.exe) do (
-    if "!BUILT_BIN!"=="" set "BUILT_BIN=%%f"
-)
-
-if "!BUILT_BIN!"=="" (
-    :: Also check root output dirs
-    for /r bin %%f in (sighmake.exe) do (
-        if "!BUILT_BIN!"=="" set "BUILT_BIN=%%f"
-    )
-)
-
-if "!BUILT_BIN!"=="" (
-    echo       Error: Built binary not found.
-    exit /b 1
-)
+:: Step 2: Install
+echo [2/3] Installing to %INSTALL_DIR%...
 
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
-copy /y "!BUILT_BIN!" "%INSTALL_DIR%\sighmake.exe" >nul
+copy /y sighmake.exe "%INSTALL_DIR%\sighmake.exe" >nul
 if %errorlevel% neq 0 (
     echo       Failed to copy binary.
     exit /b 1
 )
+del /q sighmake.exe 2>nul
+del /q *.obj 2>nul
+echo       OK
+echo.
 
-:: Add to user PATH if not already there
-echo %PATH% | findstr /i /c:"%INSTALL_DIR%" >nul 2>&1
-if %errorlevel% neq 0 (
-    echo.
-    echo       Adding %INSTALL_DIR% to user PATH...
-    for /f "usebackq tokens=2,*" %%A in (`reg query "HKCU\Environment" /v PATH 2^>nul`) do set "USER_PATH=%%B"
-    if defined USER_PATH (
-        reg add "HKCU\Environment" /v PATH /t REG_EXPAND_SZ /d "!USER_PATH!;%INSTALL_DIR%" /f >nul 2>&1
-    ) else (
-        reg add "HKCU\Environment" /v PATH /t REG_EXPAND_SZ /d "%INSTALL_DIR%" /f >nul 2>&1
-    )
-    echo       NOTE: Restart your terminal for PATH changes to take effect.
+:: Step 3: Add to PATH
+echo [3/3] Updating PATH...
+
+powershell -NoProfile -Command "try{$d='%INSTALL_DIR%';$p=[Environment]::GetEnvironmentVariable('Path','User');if($p -and ($p.Split(';')-contains $d)){exit 0}if($p){$n=$p+';'+$d}else{$n=$d};[Environment]::SetEnvironmentVariable('Path',$n,'User');exit 1}catch{Write-Error $_;exit 2}"
+if !errorlevel! equ 1 (
+    echo       Added %INSTALL_DIR% to user PATH.
+) else if !errorlevel! equ 2 (
+    echo       Warning: Failed to add to PATH. Add %INSTALL_DIR% to your PATH manually.
+) else (
+    echo       Already in PATH.
 )
 
 echo.
-echo sighmake installed to %INSTALL_DIR%\sighmake.exe
-echo Run 'sighmake --help' to get started.
+echo Done. Open a new terminal and run 'sighmake --help' to get started.
 
 endlocal
