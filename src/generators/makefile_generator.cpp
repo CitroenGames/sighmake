@@ -404,6 +404,8 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     if (target_ext.empty()) {
         if (config.config_type == "Application") {
             target_ext = "";  // No extension for executables on Linux
+        } else if (config.config_type == "Driver") {
+            target_ext = ".sys";
         } else if (config.config_type == "DynamicLibrary") {
 #ifdef __APPLE__
             target_ext = ".dylib";
@@ -504,7 +506,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     std::string ldlibs = get_linker_libs(config);
 
     // Add project reference outputs (.a files) to link line, including transitive PUBLIC deps
-    if (config.config_type == "Application" || config.config_type == "DynamicLibrary") {
+    if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
         // Collect all project .a files by traversing the dependency tree
         std::vector<std::string> dep_archives;
         std::set<std::string> visited_deps;
@@ -719,7 +721,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     out << "$(TARGET): $(OBJS)\n";
     out << "\t@mkdir -p $(dir $@)\n";
 
-    if (config.config_type == "Application" || config.config_type == "DynamicLibrary") {
+    if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
         // Link executable or shared library
         std::string compiler = has_cpp_files ? "$(CXX)" : "$(CC)";
         if (config.config_type == "DynamicLibrary") {
@@ -734,7 +736,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
 
     // Strip debug symbols for Release builds (executables and shared libraries only)
     // On Linux, debug symbols are embedded in the binary unlike Windows .pdb files
-    if (config.config_type == "Application" || config.config_type == "DynamicLibrary") {
+    if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
         std::string config_name = config_key;
         size_t pipe_pos = config_name.find('|');
         if (pipe_pos != std::string::npos) {

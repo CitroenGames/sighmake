@@ -587,7 +587,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             cl.append_child("PrecompiledHeaderOutputFile").text() = cfg.cl_compile.pch.output.c_str();
 
         // Link settings
-        if (cfg.config_type == "Application" || cfg.config_type == "DynamicLibrary") {
+        if (cfg.config_type == "Application" || cfg.config_type == "DynamicLibrary" || cfg.config_type == "Driver") {
             auto link = item_def.append_child("Link");
             if (!cfg.link.sub_system.empty())
                 link.append_child("SubSystem").text() = cfg.link.sub_system.c_str();

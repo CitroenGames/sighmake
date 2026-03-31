@@ -1278,6 +1278,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         if (first_cfg.config_type == "Application") out << "exe\n";
         else if (first_cfg.config_type == "StaticLibrary") out << "lib\n";
         else if (first_cfg.config_type == "DynamicLibrary") out << "dll\n";
+        else if (first_cfg.config_type == "Driver") out << "sys\n";
         else out << first_cfg.config_type << "\n";
     }
 

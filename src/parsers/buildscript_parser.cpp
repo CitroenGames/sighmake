@@ -1700,6 +1700,8 @@ bool BuildscriptParser::parse_project_basic_setting(const std::string& key, cons
             config_type = "StaticLibrary";
         } else if (value == "dll" || value == "shared" || value == "dynamiclib" || value == "DynamicLibrary") {
             config_type = "DynamicLibrary";
+        } else if (value == "sys" || value == "driver" || value == "Driver") {
+            config_type = "Driver";
         } else if (value == "interface" || value == "header-only" || value == "Utility") {
             config_type = "Utility";
         } else {

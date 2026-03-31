@@ -436,7 +436,7 @@ headers = include/*.h
 
 | Setting | Description | Valid Values | Default |
 |---------|-------------|--------------|---------|
-| `type` | Project type | `exe`, `lib`, `dll` | Required |
+| `type` | Project type | `exe`, `lib`, `dll`, `sys` | Required |
 | `target_name` | Output file name (without extension) | Any string | Project name |
 | `target_ext` | Output file extension | `.exe`, `.dll`, `.lib`, etc. | Based on type |
 | `std` | C++ standard version | `14`, `17`, `20`, `23` | Compiler default |
@@ -690,7 +690,7 @@ multiprocessor = true
 
 | Setting | Description | Valid Values |
 |---------|-------------|--------------|
-| `subsystem` | Subsystem type | `Console`, `Windows` |
+| `subsystem` | Subsystem type | `Console`, `Windows`, `Native` |
 | `generate_debug_info` | Generate debug information | `true`, `false` |
 | `link_incremental` | Incremental linking | `true`, `false` |
 
@@ -1358,7 +1358,7 @@ subsystem = Console
 
 ## 7. Project Types
 
-sighmake supports three project types: executables, static libraries, and dynamic libraries.
+sighmake supports four project types: executables, static libraries, dynamic libraries, and kernel-mode drivers.
 
 ### Executable (exe)
 
@@ -1375,6 +1375,7 @@ subsystem = Console
 **Subsystem options:**
 - `Console` - Console application (shows command prompt)
 - `Windows` - GUI application (no console window)
+- `Native` - Kernel-mode or native application (no Win32 subsystem)
 
 **Full example:**
 ```ini
@@ -1550,17 +1551,65 @@ libdirs[Release] = output/Release
 subsystem = Console
 ```
 
+### Kernel-Mode Driver (sys)
+
+Produces a kernel-mode driver (.sys on Windows). Drivers use the Native subsystem and link against kernel-mode libraries instead of the user-mode CRT.
+
+**Basic syntax:**
+```ini
+[project:MyDriver]
+type = sys
+sources = driver.c pnp.c power.c
+subsystem = Native
+entry_point = DriverEntry
+```
+
+**Full example:**
+```ini
+[solution]
+name = MyDriver
+configurations = Debug, Release
+platforms = x64
+
+[project:MyDriver]
+type = sys
+sources = src/driver.c, src/pnp.c, src/power.c
+headers = inc/*.h
+includes = inc, ../public/ddk
+std = 17
+defines = _KERNEL_MODE;NTDDI_VERSION=0x05010000;_WIN32_WINNT=0x0501
+subsystem = Native
+entry_point = DriverEntry
+
+# Kernel drivers don't use user-mode CRT
+ignore_libs = msvcrt.lib, libcmt.lib
+libs = ntoskrnl.lib, hal.lib
+
+# Output settings
+target_name = mydriver
+target_ext = .sys
+outdir[Debug] = bin/Debug
+outdir[Release] = bin/Release
+```
+
+**Key settings for drivers:**
+- `subsystem = Native` - Required for kernel-mode drivers
+- `entry_point = DriverEntry` - Standard kernel driver entry point
+- `ignore_libs` - Exclude user-mode CRT libraries
+- `libs` - Link against kernel libraries (ntoskrnl.lib, hal.lib, etc.)
+- `defines` - Kernel-mode defines like `_KERNEL_MODE`, `NTDDI_VERSION`, `_WIN32_WINNT`
+
 ### Type Comparison
 
-| Feature | exe | lib | dll |
-|---------|-----|-----|-----|
-| Produces | Executable | Static library | Dynamic library |
-| Extension (Windows) | .exe | .lib | .dll |
-| Extension (Linux) | (none) | .a | .so |
-| Linked at | N/A | Compile time | Runtime |
-| Export macros needed | No | No | Yes |
-| Multiple instances | Each exe is separate | Compiled into each exe | Shared in memory |
-| Update without recompile | No | No | Yes |
+| Feature | exe | lib | dll | sys |
+|---------|-----|-----|-----|-----|
+| Produces | Executable | Static library | Dynamic library | Kernel driver |
+| Extension (Windows) | .exe | .lib | .dll | .sys |
+| Extension (Linux) | (none) | .a | .so | .sys |
+| Linked at | N/A | Compile time | Runtime | Boot/load time |
+| Export macros needed | No | No | Yes | No |
+| Multiple instances | Each exe is separate | Compiled into each exe | Shared in memory | Loaded by kernel |
+| Update without recompile | No | No | Yes | No |
 
 ### Choosing a Project Type
 
@@ -1580,6 +1629,12 @@ subsystem = Console
 - Need to update library without recompiling applications
 - Sharing code between multiple executables
 - Creating a COM component
+
+**Use `sys` when:**
+- Building a Windows kernel-mode driver
+- Building a file system filter or minifilter
+- Building a bus, USB, SCSI, or network driver
+- Targeting the Native subsystem
 
 ---
 
@@ -6407,7 +6462,7 @@ dir include\myheader.h
 
 | Setting | Description | Valid Values | Default |
 |---------|-------------|--------------|---------|
-| `type` | Project type | `exe`, `lib`, `dll` | Required |
+| `type` | Project type | `exe`, `lib`, `dll`, `sys` | Required |
 | `sources` | Source files | File paths, supports wildcards | Required |
 | `headers` | Header files | File paths, supports wildcards | None |
 | `resources` | Resource files (.rc) | File paths, supports wildcards | None |
@@ -6417,7 +6472,7 @@ dir include\myheader.h
 | `defines` | Preprocessor defines | Comma-separated defines | None |
 | `std` | C++ standard | `14`, `17`, `20`, `23` | Compiler default |
 | `target_name` | Output file name | String | Project name |
-| `target_ext` | Output file extension | `.exe`, `.lib`, `.dll` | Based on type |
+| `target_ext` | Output file extension | `.exe`, `.lib`, `.dll`, `.sys` | Based on type |
 | `outdir` | Output directory | Path | Platform default |
 | `intdir` | Intermediate directory | Path | Platform default |
 
@@ -6464,7 +6519,7 @@ dir include\myheader.h
 
 | Setting | Description | Valid Values | Default |
 |---------|-------------|--------------|---------|
-| `subsystem` | Subsystem type | `Console`, `Windows` | `Console` |
+| `subsystem` | Subsystem type | `Console`, `Windows`, `Native` | `Console` |
 | `generate_debug_info` | Generate debug info | `true`, `false` | Config dependent |
 | `link_incremental` | Incremental linking | `true`, `false` | Config dependent |
 | `depends` | Project dependencies | Comma-separated project names | None |
