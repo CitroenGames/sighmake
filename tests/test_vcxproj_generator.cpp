@@ -14,9 +14,34 @@ struct GeneratedProject {
     fs::path sln_path;  // .sln or .slnx
     Solution solution;
 
+    GeneratedProject() = default;
+    GeneratedProject(const GeneratedProject&) = delete;
+    GeneratedProject& operator=(const GeneratedProject&) = delete;
+    GeneratedProject(GeneratedProject&& other) noexcept
+        : temp_dir(std::move(other.temp_dir)),
+          vcxproj_path(std::move(other.vcxproj_path)),
+          sln_path(std::move(other.sln_path)),
+          solution(std::move(other.solution)) {
+        other.temp_dir.clear();
+    }
+    GeneratedProject& operator=(GeneratedProject&& other) noexcept {
+        if (this != &other) {
+            std::error_code ec;
+            if (!temp_dir.empty()) fs::remove_all(temp_dir, ec);
+            temp_dir = std::move(other.temp_dir);
+            vcxproj_path = std::move(other.vcxproj_path);
+            sln_path = std::move(other.sln_path);
+            solution = std::move(other.solution);
+            other.temp_dir.clear();
+        }
+        return *this;
+    }
+
     ~GeneratedProject() {
-        std::error_code ec;
-        fs::remove_all(temp_dir, ec);
+        if (!temp_dir.empty()) {
+            std::error_code ec;
+            fs::remove_all(temp_dir, ec);
+        }
     }
 };
 
@@ -402,6 +427,75 @@ type = dll
         }
     }
     CHECK(config_type == "DynamicLibrary");
+}
+
+// ============================================================================
+// Driver (sys) type
+// ============================================================================
+
+TEST_CASE("VcxprojGenerator handles Driver type", "[vcxproj_generator]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:MyDriver]
+type = sys
+)");
+
+    REQUIRE(fs::exists(gen.vcxproj_path));
+    pugi::xml_document doc;
+    doc.load_file(gen.vcxproj_path.string().c_str());
+
+    std::string config_type;
+    for (auto& pg : doc.child("Project").children("PropertyGroup")) {
+        auto ct = pg.child("ConfigurationType");
+        if (!ct.empty()) {
+            config_type = ct.text().as_string();
+            break;
+        }
+    }
+    CHECK(config_type == "Driver");
+}
+
+TEST_CASE("VcxprojGenerator Driver type emits Link section", "[vcxproj_generator]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:MyDriver]
+type = sys
+subsystem = Native
+entry_point = DriverEntry
+)");
+
+    REQUIRE(fs::exists(gen.vcxproj_path));
+    pugi::xml_document doc;
+    doc.load_file(gen.vcxproj_path.string().c_str());
+
+    bool found_link = false;
+    bool found_subsystem = false;
+    bool found_entry_point = false;
+    for (auto& idg : doc.child("Project").children("ItemDefinitionGroup")) {
+        auto link = idg.child("Link");
+        if (!link.empty()) {
+            found_link = true;
+            auto sub = link.child("SubSystem");
+            if (!sub.empty() && std::string(sub.text().as_string()) == "Native") {
+                found_subsystem = true;
+            }
+            auto ep = link.child("EntryPointSymbol");
+            if (!ep.empty() && std::string(ep.text().as_string()) == "DriverEntry") {
+                found_entry_point = true;
+            }
+        }
+    }
+    CHECK(found_link);
+    CHECK(found_subsystem);
+    CHECK(found_entry_point);
 }
 
 // ============================================================================
@@ -1150,6 +1244,187 @@ depends = LibA
         }
         CHECK(found_ref);
     }
+
+    fs::remove_all(temp_dir, ec);
+}
+
+TEST_CASE("VcxprojGenerator emits IgnoreAllDefaultLibraries", "[vcxproj_generator]") {
+    auto result = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = Win32
+
+[project:MyDriver]
+type = sys
+sources = main.cpp
+ignore_all_default_libraries = true
+)");
+    REQUIRE(!result.vcxproj_path.empty());
+    pugi::xml_document doc;
+    doc.load_file(result.vcxproj_path.string().c_str());
+
+    bool found = false;
+    for (auto& idg : doc.child("Project").children("ItemDefinitionGroup")) {
+        auto link = idg.child("Link");
+        if (link) {
+            auto node = link.child("IgnoreAllDefaultLibraries");
+            if (node) {
+                CHECK(std::string(node.text().as_string()) == "true");
+                found = true;
+            }
+        }
+    }
+    CHECK(found);
+}
+
+TEST_CASE("VcxprojGenerator emits ModuleDefinitionFile", "[vcxproj_generator]") {
+    auto result = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = Win32
+
+[project:MyDLL]
+type = dll
+sources = main.cpp
+module_def = exports.def
+)");
+    REQUIRE(!result.vcxproj_path.empty());
+    pugi::xml_document doc;
+    doc.load_file(result.vcxproj_path.string().c_str());
+
+    bool found = false;
+    for (auto& idg : doc.child("Project").children("ItemDefinitionGroup")) {
+        auto link = idg.child("Link");
+        if (link) {
+            auto node = link.child("ModuleDefinitionFile");
+            if (node) {
+                std::string val = node.text().as_string();
+                CHECK(val.find("exports.def") != std::string::npos);
+                found = true;
+            }
+        }
+    }
+    CHECK(found);
+}
+
+TEST_CASE("VcxprojGenerator emits MessageCompile items", "[vcxproj_generator]") {
+    // Create a dummy .mc file
+    auto temp_dir = fs::temp_directory_path() / "sighmake_test_mc";
+    std::error_code ec;
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir);
+    std::ofstream(temp_dir / "main.cpp") << "int main() { return 0; }";
+    std::ofstream(temp_dir / "errors.mc") << "; mc file";
+
+    BuildscriptParser parser;
+    auto solution = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:MyProj]
+type = exe
+sources = main.cpp
+mc = errors.mc
+mc_header_dir = $(IntDir)
+)", temp_dir.string());
+
+    VcxprojGenerator generator;
+    generator.generate(solution, temp_dir.string());
+
+    // Find vcxproj
+    fs::path vcxproj_path;
+    for (auto& entry : fs::directory_iterator(temp_dir)) {
+        if (entry.path().extension() == ".vcxproj") {
+            vcxproj_path = entry.path();
+            break;
+        }
+    }
+    REQUIRE(!vcxproj_path.empty());
+
+    pugi::xml_document doc;
+    doc.load_file(vcxproj_path.string().c_str());
+
+    // Check for MessageCompile item
+    bool found_mc = false;
+    for (auto& ig : doc.child("Project").children("ItemGroup")) {
+        for (auto& mc : ig.children("MessageCompile")) {
+            found_mc = true;
+        }
+    }
+    CHECK(found_mc);
+
+    // Check for MessageCompile settings in ItemDefinitionGroup
+    bool found_mc_settings = false;
+    for (auto& idg : doc.child("Project").children("ItemDefinitionGroup")) {
+        auto mc = idg.child("MessageCompile");
+        if (mc) {
+            found_mc_settings = true;
+        }
+    }
+    CHECK(found_mc_settings);
+
+    fs::remove_all(temp_dir, ec);
+}
+
+TEST_CASE("VcxprojGenerator emits Midl items", "[vcxproj_generator]") {
+    auto temp_dir = fs::temp_directory_path() / "sighmake_test_idl";
+    std::error_code ec;
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir);
+    std::ofstream(temp_dir / "main.cpp") << "int main() { return 0; }";
+    std::ofstream(temp_dir / "iface.idl") << "// idl file";
+
+    BuildscriptParser parser;
+    auto solution = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:MyProj]
+type = dll
+sources = main.cpp
+idl = iface.idl
+midl_flags = -Oicf
+)", temp_dir.string());
+
+    VcxprojGenerator generator;
+    generator.generate(solution, temp_dir.string());
+
+    fs::path vcxproj_path;
+    for (auto& entry : fs::directory_iterator(temp_dir)) {
+        if (entry.path().extension() == ".vcxproj") {
+            vcxproj_path = entry.path();
+            break;
+        }
+    }
+    REQUIRE(!vcxproj_path.empty());
+
+    pugi::xml_document doc;
+    doc.load_file(vcxproj_path.string().c_str());
+
+    // Check for Midl item
+    bool found_idl = false;
+    for (auto& ig : doc.child("Project").children("ItemGroup")) {
+        for (auto& midl : ig.children("Midl")) {
+            found_idl = true;
+        }
+    }
+    CHECK(found_idl);
+
+    // Check for Midl settings in ItemDefinitionGroup
+    bool found_midl_settings = false;
+    for (auto& idg : doc.child("Project").children("ItemDefinitionGroup")) {
+        auto midl = idg.child("Midl");
+        if (midl) {
+            found_midl_settings = true;
+        }
+    }
+    CHECK(found_midl_settings);
 
     fs::remove_all(temp_dir, ec);
 }

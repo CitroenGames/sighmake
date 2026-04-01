@@ -22,6 +22,8 @@ enum class FileType {
     ClInclude,      // .h, .hpp files
     CustomBuild,    // Files with custom build rules
     MASM,           // .asm, .masm files
+    MessageCompile, // .mc files (Message Compiler)
+    Midl,           // .idl files (MIDL compiler)
     NASM,           // .nasm files (or .asm via nasm key)
     None,           // Other files
     ObjCxx,         // .mm, .m files (Objective-C/C++)
@@ -118,12 +120,14 @@ struct LinkSettings {
     std::vector<std::string> additional_dependencies;
     std::vector<std::string> additional_library_directories;
     std::vector<std::string> ignore_specific_default_libraries;
+    bool ignore_all_default_libraries = false;
     bool generate_debug_info = false;
     std::string program_database_file;                  // Custom .pdb file path
     std::string sub_system;                             // "Console", "Windows"
     bool optimize_references = false;
     bool enable_comdat_folding = false;
     std::string base_address;                           // DLL base address
+    std::string module_definition_file;                 // .def file for DLL exports
     std::string target_machine;                         // "MachineX86", "MachineX64"
     std::string error_reporting;                        // "PromptImmediately", "QueueForNextLogin", "SendErrorReport", "NoErrorReport"
     bool image_has_safe_exception_handlers = false;
@@ -165,6 +169,27 @@ struct NasmSettings {
     std::string additional_options;                  // Additional NASM flags (e.g., "-w+all")
     std::vector<std::string> include_directories;    // NASM include search paths
     std::vector<std::string> preprocessor_definitions; // NASM defines (-D)
+};
+
+// Message Compiler settings
+struct MessageCompileSettings {
+    std::string header_file_path;                    // -h: header output directory
+    std::string rc_file_path;                        // -r: rc output directory
+    std::string additional_options;                   // Additional mc.exe flags
+};
+
+// MIDL compiler settings
+struct MidlSettings {
+    std::string output_directory;                    // /out: output directory
+    std::string header_file_name;                    // /h: output header file
+    std::string type_library_name;                   // /tlb: output type library
+    std::string dlldata_file_name;                   // /dlldata: output dlldata file
+    std::string interface_identifier_file_name;      // /iid: output IID file
+    std::string proxy_file_name;                     // /proxy: output proxy file
+    std::vector<std::string> preprocessor_definitions;
+    std::string additional_options;
+    std::string default_char_type;                   // "Signed", "Unsigned"
+    std::string target_environment;                  // "Win32", "Win64"
 };
 
 // Manifest tool settings
@@ -209,6 +234,8 @@ struct Configuration {
     LibrarianSettings lib;
     ResourceCompileSettings resource_compile;
     NasmSettings nasm;
+    MessageCompileSettings mc;
+    MidlSettings midl;
 
     BuildEvent pre_build_event;
     BuildEvent pre_link_event;
@@ -279,6 +306,9 @@ struct Project {
     std::vector<ProjectDependency> project_references;  // Structured dependencies with visibility
     bool has_masm_files = false;                        // Track if project contains MASM files
     bool has_nasm_files = false;                        // Track if project contains NASM files
+    bool has_mc_files = false;                          // Track if project contains MC files
+    bool has_idl_files = false;                         // Track if project contains IDL files
+    bool is_kernel_mode = false;                        // True for sys and sys_lib project types
 
     std::map<std::string, Configuration> configurations; // Key is "Config|Platform"
 
@@ -391,6 +421,10 @@ inline FileType get_file_type(const std::string& path) {
         return FileType::MASM;
     } else if (ext == ".nasm") {
         return FileType::NASM;
+    } else if (ext == ".mc") {
+        return FileType::MessageCompile;
+    } else if (ext == ".idl") {
+        return FileType::Midl;
     } else if (ext == ".mm" || ext == ".m") {
         return FileType::ObjCxx;
     }

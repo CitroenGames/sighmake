@@ -186,6 +186,8 @@ std::string VcxprojGenerator::get_file_type_name(FileType type) {
         case FileType::ClInclude: return "ClInclude";
         case FileType::CustomBuild: return "CustomBuild";
         case FileType::MASM: return "MASM";
+        case FileType::MessageCompile: return "MessageCompile";
+        case FileType::Midl: return "Midl";
         case FileType::NASM: return "CustomBuild";   // NASM uses custom build rules
         case FileType::ObjCxx: return "ClCompile";  // Emit as ClCompile for cross-platform project listing
         case FileType::ResourceCompile: return "ResourceCompile";
@@ -634,6 +636,11 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             if (!cfg.link.ignore_specific_default_libraries.empty())
                 link.append_child("IgnoreSpecificDefaultLibraries").text() =
                     join_vector(cfg.link.ignore_specific_default_libraries, ";").c_str();
+            if (cfg.link.ignore_all_default_libraries)
+                link.append_child("IgnoreAllDefaultLibraries").text() = "true";
+            if (!cfg.link.module_definition_file.empty())
+                link.append_child("ModuleDefinitionFile").text() =
+                    make_relative_path(cfg.link.module_definition_file, output_path).c_str();
             if (!cfg.link.additional_options.empty())
                 link.append_child("AdditionalOptions").text() = cfg.link.additional_options.c_str();
             if (cfg.link.enable_comdat_folding)
@@ -723,6 +730,46 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             bscmake.append_child("SuppressStartupBanner").text() = "true";
         if (!cfg.bscmake.output_file.empty())
             bscmake.append_child("OutputFile").text() = cfg.bscmake.output_file.c_str();
+
+        // Message Compiler settings
+        if (project.has_mc_files) {
+            auto mc = item_def.append_child("MessageCompile");
+            if (!cfg.mc.header_file_path.empty())
+                mc.append_child("HeaderFilePath").text() =
+                    make_relative_path(cfg.mc.header_file_path, output_path).c_str();
+            if (!cfg.mc.rc_file_path.empty())
+                mc.append_child("RCFilePath").text() =
+                    make_relative_path(cfg.mc.rc_file_path, output_path).c_str();
+            if (!cfg.mc.additional_options.empty())
+                mc.append_child("AdditionalOptions").text() = cfg.mc.additional_options.c_str();
+        }
+
+        // MIDL compiler settings
+        if (project.has_idl_files) {
+            auto midl = item_def.append_child("Midl");
+            if (!cfg.midl.output_directory.empty())
+                midl.append_child("OutputDirectory").text() =
+                    make_relative_path(cfg.midl.output_directory, output_path).c_str();
+            if (!cfg.midl.header_file_name.empty())
+                midl.append_child("HeaderFileName").text() = cfg.midl.header_file_name.c_str();
+            if (!cfg.midl.type_library_name.empty())
+                midl.append_child("TypeLibraryName").text() = cfg.midl.type_library_name.c_str();
+            if (!cfg.midl.dlldata_file_name.empty())
+                midl.append_child("DllDataFileName").text() = cfg.midl.dlldata_file_name.c_str();
+            if (!cfg.midl.interface_identifier_file_name.empty())
+                midl.append_child("InterfaceIdentifierFileName").text() = cfg.midl.interface_identifier_file_name.c_str();
+            if (!cfg.midl.proxy_file_name.empty())
+                midl.append_child("ProxyFileName").text() = cfg.midl.proxy_file_name.c_str();
+            if (!cfg.midl.preprocessor_definitions.empty())
+                midl.append_child("PreprocessorDefinitions").text() =
+                    join_vector(cfg.midl.preprocessor_definitions, ";").c_str();
+            if (!cfg.midl.additional_options.empty())
+                midl.append_child("AdditionalOptions").text() = cfg.midl.additional_options.c_str();
+            if (!cfg.midl.default_char_type.empty())
+                midl.append_child("DefaultCharType").text() = cfg.midl.default_char_type.c_str();
+            if (!cfg.midl.target_environment.empty())
+                midl.append_child("TargetEnvironment").text() = cfg.midl.target_environment.c_str();
+        }
 
         // Build events (don't call unescape_newlines - commands already have real newlines from buildscript_parser)
         if (!cfg.pre_build_event.command.empty()) {

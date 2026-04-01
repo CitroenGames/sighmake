@@ -76,6 +76,15 @@ TEST_CASE("BuildscriptWriter writes project type dll", "[buildscript_writer]") {
     CHECK(result.content.find("type = dll") != std::string::npos);
 }
 
+TEST_CASE("BuildscriptWriter writes project type sys", "[buildscript_writer]") {
+    Project proj;
+    proj.name = "MyDriver";
+    proj.configurations["Debug|Win32"].config_type = "Driver";
+
+    auto result = write_project(proj);
+    CHECK(result.content.find("type = sys") != std::string::npos);
+}
+
 TEST_CASE("BuildscriptWriter writes sources", "[buildscript_writer]") {
     Project proj;
     proj.name = "App";

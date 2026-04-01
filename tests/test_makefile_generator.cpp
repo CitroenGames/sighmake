@@ -258,6 +258,44 @@ sources = main.cpp
 }
 
 // ============================================================================
+// Driver (sys) type
+// ============================================================================
+
+TEST_CASE("MakefileGenerator driver produces linked binary", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:MyDriver]
+type = sys
+sources = main.cpp
+)");
+    if (!result.content.empty()) {
+        // Driver should produce a linked binary like Application, not ar rcs like StaticLibrary
+        CHECK(result.content.find("ar rcs") == std::string::npos);
+        CHECK(result.content.find("-o $@") != std::string::npos);
+    }
+}
+
+TEST_CASE("MakefileGenerator driver target has .sys extension", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:MyDriver]
+type = sys
+sources = main.cpp
+)");
+    if (!result.content.empty()) {
+        CHECK(result.content.find(".sys") != std::string::npos);
+    }
+}
+
+// ============================================================================
 // Include and link flags
 // ============================================================================
 
@@ -606,5 +644,76 @@ sources = main.cpp
     if (!result.content.empty()) {
         // Release defaults have optimize_references and enable_comdat_folding
         CHECK(result.content.find("--gc-sections") != std::string::npos);
+    }
+}
+
+TEST_CASE("MakefileGenerator emits base_address in linker flags", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = dll
+sources = main.cpp
+base_address = 0x10000000
+)");
+    if (!result.content.empty()) {
+        CHECK(result.content.find("--image-base=0x10000000") != std::string::npos);
+    }
+}
+
+TEST_CASE("MakefileGenerator emits -nodefaultlibs for ignore_all_default_libraries", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = exe
+sources = main.cpp
+ignore_all_default_libraries = true
+)");
+    if (!result.content.empty()) {
+        CHECK(result.content.find("-nodefaultlibs") != std::string::npos);
+    }
+}
+
+TEST_CASE("MakefileGenerator emits version-script for module_def", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = dll
+sources = main.cpp
+module_def = exports.def
+)");
+    if (!result.content.empty()) {
+        CHECK(result.content.find("--version-script=") != std::string::npos);
+    }
+}
+
+TEST_CASE("MakefileGenerator emits prebuild and postbuild events", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = exe
+sources = main.cpp
+prebuild = echo prebuild_step
+postbuild = echo postbuild_step
+)");
+    if (!result.content.empty()) {
+        CHECK(result.content.find("prebuild_step") != std::string::npos);
+        CHECK(result.content.find("postbuild_step") != std::string::npos);
+        CHECK(result.content.find("prebuild") != std::string::npos);
     }
 }

@@ -141,6 +141,59 @@ type = dll
     CHECK(cfg.config_type == "DynamicLibrary");
 }
 
+TEST_CASE("Parse project type sys", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:MyDriver]
+type = sys
+)");
+    auto& cfg = sol.projects[0].configurations["Debug|Win32"];
+    CHECK(cfg.config_type == "Driver");
+}
+
+TEST_CASE("Parse project type driver alias", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:MyDriver]
+type = driver
+)");
+    auto& cfg = sol.projects[0].configurations["Debug|Win32"];
+    CHECK(cfg.config_type == "Driver");
+}
+
+TEST_CASE("Parse sys project with kernel-mode settings", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:MyDriver]
+type = sys
+subsystem = Native
+entry_point = DriverEntry
+defines = _KERNEL_MODE
+)");
+    REQUIRE(sol.projects.size() == 1);
+    auto& cfg = sol.projects[0].configurations["Debug|Win32"];
+    CHECK(cfg.config_type == "Driver");
+    CHECK(cfg.link.sub_system == "Native");
+    CHECK(cfg.link.entry_point_symbol == "DriverEntry");
+    auto& defs = sol.projects[0].project_level_preprocessor_definitions;
+    CHECK(std::find(defs.begin(), defs.end(), "_KERNEL_MODE") != defs.end());
+}
+
 TEST_CASE("Parse C++ standard", "[buildscript_parser]") {
     BuildscriptParser parser;
     auto sol = parser.parse_string(R"(
@@ -2247,4 +2300,188 @@ cflags = /wd4668
     CHECK(rel_w32.cl_compile.optimization == "MaxSpeed");
     CHECK(rel_w32.cl_compile.runtime_library == "MultiThreaded");
     CHECK(rel_w32.cl_compile.additional_options == "/wd4668");
+}
+
+TEST_CASE("Parser handles ignore_all_default_libraries", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:MyDriver]
+type = sys
+ignore_all_default_libraries = true
+)");
+    REQUIRE(sol.projects.size() == 1);
+    auto& cfg = sol.projects[0].configurations["Debug|Win32"];
+    CHECK(cfg.link.ignore_all_default_libraries == true);
+}
+
+TEST_CASE("Parser handles ignore_all_default_libraries per-config", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = Win32
+
+[project:MyDriver]
+type = sys
+
+[config:Release|Win32]
+ignore_all_default_libraries = true
+)");
+    REQUIRE(sol.projects.size() == 1);
+    CHECK(sol.projects[0].configurations["Release|Win32"].link.ignore_all_default_libraries == true);
+    CHECK(sol.projects[0].configurations["Debug|Win32"].link.ignore_all_default_libraries == false);
+}
+
+TEST_CASE("Parser handles module_def", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:MyDLL]
+type = dll
+module_def = exports.def
+)");
+    REQUIRE(sol.projects.size() == 1);
+    auto& cfg = sol.projects[0].configurations["Debug|Win32"];
+    CHECK(cfg.link.module_definition_file.find("exports.def") != std::string::npos);
+}
+
+TEST_CASE("Parser handles sys_lib type", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:WdmSec]
+type = sys_lib
+)");
+    REQUIRE(sol.projects.size() == 1);
+    auto& proj = sol.projects[0];
+    auto& cfg = proj.configurations["Debug|Win32"];
+    CHECK(cfg.config_type == "StaticLibrary");
+    CHECK(proj.is_kernel_mode == true);
+    CHECK(cfg.cl_compile.exception_handling == "false");
+    CHECK(cfg.cl_compile.runtime_type_info == false);
+    CHECK(cfg.cl_compile.buffer_security_check == false);
+}
+
+TEST_CASE("Parser handles mc source files", "[buildscript_parser]") {
+    auto temp_dir = std::filesystem::temp_directory_path() / "sighmake_test_mc_parse";
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+    std::filesystem::create_directories(temp_dir);
+    std::ofstream(temp_dir / "errors.mc") << "; mc file";
+
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:MyProj]
+type = exe
+mc = errors.mc
+mc_header_dir = $(IntDir)
+)", temp_dir.string());
+
+    REQUIRE(sol.projects.size() == 1);
+    CHECK(sol.projects[0].has_mc_files == true);
+
+    bool found_mc = false;
+    for (const auto& src : sol.projects[0].sources) {
+        if (src.type == FileType::MessageCompile) {
+            found_mc = true;
+        }
+    }
+    CHECK(found_mc);
+
+    std::filesystem::remove_all(temp_dir, ec);
+}
+
+TEST_CASE("Parser handles idl source files", "[buildscript_parser]") {
+    auto temp_dir = std::filesystem::temp_directory_path() / "sighmake_test_idl_parse";
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+    std::filesystem::create_directories(temp_dir);
+    std::ofstream(temp_dir / "iface.idl") << "// idl";
+
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:MyProj]
+type = dll
+idl = iface.idl
+midl_flags = -Oicf
+)", temp_dir.string());
+
+    REQUIRE(sol.projects.size() == 1);
+    CHECK(sol.projects[0].has_idl_files == true);
+
+    bool found_idl = false;
+    for (const auto& src : sol.projects[0].sources) {
+        if (src.type == FileType::Midl) {
+            found_idl = true;
+        }
+    }
+    CHECK(found_idl);
+
+    auto& cfg = sol.projects[0].configurations["Debug|Win32"];
+    CHECK(cfg.midl.additional_options.find("-Oicf") != std::string::npos);
+
+    std::filesystem::remove_all(temp_dir, ec);
+}
+
+TEST_CASE("Parser handles custom_build() single-line syntax", "[buildscript_parser]") {
+    auto temp_dir = std::filesystem::temp_directory_path() / "sighmake_test_cb_parse";
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+    std::filesystem::create_directories(temp_dir);
+    std::ofstream(temp_dir / "msg.mc") << "; mc file";
+
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:MyProj]
+type = exe
+custom_build(msg.mc, command = mc %(FullPath), outputs = msg.h, description = Compiling message file)
+)", temp_dir.string());
+
+    REQUIRE(sol.projects.size() == 1);
+
+    bool found_custom = false;
+    for (const auto& src : sol.projects[0].sources) {
+        if (src.type == FileType::CustomBuild) {
+            found_custom = true;
+            // Check that custom_command is set for at least one config
+            CHECK(!src.custom_command.empty());
+        }
+    }
+    CHECK(found_custom);
+
+    std::filesystem::remove_all(temp_dir, ec);
+}
+
+TEST_CASE("get_file_type recognizes .mc and .idl extensions", "[project_types]") {
+    CHECK(get_file_type("file.mc") == FileType::MessageCompile);
+    CHECK(get_file_type("file.idl") == FileType::Midl);
 }

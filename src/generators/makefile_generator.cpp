@@ -338,6 +338,28 @@ std::string MakefileGenerator::get_linker_flags(const Configuration& config, con
 #endif
     }
 
+    // Base address
+    if (!config.link.base_address.empty()) {
+#ifndef __APPLE__
+        ss << "-Wl,--image-base=" << config.link.base_address << " ";
+#endif
+    }
+
+    // Module definition file (.def)
+    if (!config.link.module_definition_file.empty()) {
+        std::string def_path = compute_relative_path(config.link.module_definition_file, makefile_dir);
+#ifdef __APPLE__
+        ss << "-Wl,-exported_symbols_list," << def_path << " ";
+#else
+        ss << "-Wl,--version-script=" << def_path << " ";
+#endif
+    }
+
+    // Ignore all default libraries
+    if (config.link.ignore_all_default_libraries) {
+        ss << "-nodefaultlibs ";
+    }
+
     return ss.str();
 }
 
@@ -704,7 +726,18 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     out << "\n\n";
 
     // Phony targets
-    out << ".PHONY: all clean\n\n";
+    if (!config.pre_build_event.command.empty()) {
+        out << ".PHONY: all clean prebuild\n\n";
+    } else {
+        out << ".PHONY: all clean\n\n";
+    }
+
+    // Pre-build event
+    if (!config.pre_build_event.command.empty()) {
+        out << "# Pre-build event\n";
+        out << "prebuild:\n";
+        out << "\t" << config.pre_build_event.command << "\n\n";
+    }
 
     // Default target
     out << "all: $(TARGET)\n\n";
@@ -718,8 +751,17 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     }
 
     // Link rule
-    out << "$(TARGET): $(OBJS)\n";
+    if (!config.pre_build_event.command.empty()) {
+        out << "$(TARGET): prebuild $(OBJS)\n";
+    } else {
+        out << "$(TARGET): $(OBJS)\n";
+    }
     out << "\t@mkdir -p $(dir $@)\n";
+
+    // Pre-link event
+    if (!config.pre_link_event.command.empty()) {
+        out << "\t" << config.pre_link_event.command << "\n";
+    }
 
     if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
         // Link executable or shared library
@@ -732,6 +774,11 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     } else if (config.config_type == "StaticLibrary") {
         // Create static library
         out << "\tar rcs $@ $^\n";
+    }
+
+    // Post-build event
+    if (!config.post_build_event.command.empty()) {
+        out << "\t" << config.post_build_event.command << "\n";
     }
 
     // Strip debug symbols for Release builds (executables and shared libraries only)

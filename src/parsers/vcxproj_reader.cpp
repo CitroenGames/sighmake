@@ -546,6 +546,8 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             READ_VECTOR("AdditionalDependencies", additional_dependencies);
             READ_VECTOR("AdditionalLibraryDirectories", additional_library_directories);
             READ_VECTOR("IgnoreSpecificDefaultLibraries", ignore_specific_default_libraries);
+            READ_BOOL("IgnoreAllDefaultLibraries", ignore_all_default_libraries);
+            READ_TEXT("ModuleDefinitionFile", module_definition_file);
             READ_BOOL("GenerateDebugInformation", generate_debug_info);
             READ_TEXT("ProgramDatabaseFile", program_database_file);
             READ_TEXT("SubSystem", sub_system);
@@ -624,6 +626,46 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             }
         }
 
+        // MessageCompile settings
+        if (auto mc = item_def.child("MessageCompile")) {
+            if (auto n = mc.child("HeaderFilePath"))
+                cfg.mc.header_file_path = n.text().as_string();
+            if (auto n = mc.child("RCFilePath"))
+                cfg.mc.rc_file_path = n.text().as_string();
+            if (auto n = mc.child("AdditionalOptions"))
+                cfg.mc.additional_options = n.text().as_string();
+        }
+
+        // Midl settings
+        if (auto midl = item_def.child("Midl")) {
+            if (auto n = midl.child("OutputDirectory"))
+                cfg.midl.output_directory = n.text().as_string();
+            if (auto n = midl.child("HeaderFileName"))
+                cfg.midl.header_file_name = n.text().as_string();
+            if (auto n = midl.child("TypeLibraryName"))
+                cfg.midl.type_library_name = n.text().as_string();
+            if (auto n = midl.child("DllDataFileName"))
+                cfg.midl.dlldata_file_name = n.text().as_string();
+            if (auto n = midl.child("InterfaceIdentifierFileName"))
+                cfg.midl.interface_identifier_file_name = n.text().as_string();
+            if (auto n = midl.child("ProxyFileName"))
+                cfg.midl.proxy_file_name = n.text().as_string();
+            if (auto n = midl.child("PreprocessorDefinitions")) {
+                std::string val = n.text().as_string();
+                std::istringstream ss(val);
+                std::string item;
+                while (std::getline(ss, item, ';')) {
+                    if (!item.empty()) cfg.midl.preprocessor_definitions.push_back(item);
+                }
+            }
+            if (auto n = midl.child("AdditionalOptions"))
+                cfg.midl.additional_options = n.text().as_string();
+            if (auto n = midl.child("DefaultCharType"))
+                cfg.midl.default_char_type = n.text().as_string();
+            if (auto n = midl.child("TargetEnvironment"))
+                cfg.midl.target_environment = n.text().as_string();
+        }
+
         // Manifest settings
         if (auto manifest = item_def.child("Manifest")) {
             if (auto n = manifest.child("SuppressStartupBanner"))
@@ -682,6 +724,7 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             std::string elem_name = file_elem.name();
             if (elem_name != "ClCompile" && elem_name != "ClInclude" &&
                 elem_name != "ResourceCompile" && elem_name != "CustomBuild" &&
+                elem_name != "MessageCompile" && elem_name != "Midl" &&
                 elem_name != "None") {
                 continue;
             }
@@ -693,6 +736,14 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             else if (elem_name == "ClInclude") src.type = FileType::ClInclude;
             else if (elem_name == "ResourceCompile") src.type = FileType::ResourceCompile;
             else if (elem_name == "CustomBuild") src.type = FileType::CustomBuild;
+            else if (elem_name == "MessageCompile") {
+                src.type = FileType::MessageCompile;
+                project.has_mc_files = true;
+            }
+            else if (elem_name == "Midl") {
+                src.type = FileType::Midl;
+                project.has_idl_files = true;
+            }
             else src.type = FileType::None;
 
             // Parse per-file settings
@@ -1276,6 +1327,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         auto& first_cfg = project.configurations.begin()->second;
         out << "type = ";
         if (first_cfg.config_type == "Application") out << "exe\n";
+        else if (first_cfg.config_type == "StaticLibrary" && project.is_kernel_mode) out << "sys_lib\n";
         else if (first_cfg.config_type == "StaticLibrary") out << "lib\n";
         else if (first_cfg.config_type == "DynamicLibrary") out << "dll\n";
         else if (first_cfg.config_type == "Driver") out << "sys\n";
@@ -1283,7 +1335,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
     }
 
     // Source files
-    std::vector<std::string> cpp_files, h_files, rc_files;
+    std::vector<std::string> cpp_files, h_files, rc_files, masm_files, nasm_files, mc_files, idl_files;
     for (const auto& src : project.sources) {
         if (src.type == FileType::ClCompile) {
             cpp_files.push_back(src.path);
@@ -1291,6 +1343,14 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             h_files.push_back(src.path);
         } else if (src.type == FileType::ResourceCompile) {
             rc_files.push_back(src.path);
+        } else if (src.type == FileType::MASM) {
+            masm_files.push_back(src.path);
+        } else if (src.type == FileType::NASM) {
+            nasm_files.push_back(src.path);
+        } else if (src.type == FileType::MessageCompile) {
+            mc_files.push_back(src.path);
+        } else if (src.type == FileType::Midl) {
+            idl_files.push_back(src.path);
         }
     }
 
@@ -1302,6 +1362,18 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
     }
     if (!rc_files.empty()) {
         out << "resources = " << join_vector(rc_files, ", ") << "\n";
+    }
+    if (!masm_files.empty()) {
+        out << "masm = " << join_vector(masm_files, ", ") << "\n";
+    }
+    if (!nasm_files.empty()) {
+        out << "nasm = " << join_vector(nasm_files, ", ") << "\n";
+    }
+    if (!mc_files.empty()) {
+        out << "mc = " << join_vector(mc_files, ", ") << "\n";
+    }
+    if (!idl_files.empty()) {
+        out << "idl = " << join_vector(idl_files, ", ") << "\n";
     }
 
     // Project references - write as target_link_libraries for clarity
@@ -1468,6 +1540,10 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             out << "fixed_base_address = true\n";
         if (link.large_address_aware)
             out << "large_address_aware = true\n";
+        if (link.ignore_all_default_libraries)
+            out << "ignore_all_default_libraries = true\n";
+        if (!link.module_definition_file.empty())
+            out << "module_def = " << link.module_definition_file << "\n";
 
         // Librarian settings (for static libraries)
         if (!libsettings.output_file.empty())
@@ -1700,6 +1776,36 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             out << "rc_defines = " << join_vector(cfg.resource_compile.preprocessor_definitions, ", ") << "\n";
         if (!cfg.resource_compile.additional_include_directories.empty())
             out << "rc_includes = " << join_vector(cfg.resource_compile.additional_include_directories, ", ") << "\n";
+
+        // Message Compiler settings
+        if (!cfg.mc.header_file_path.empty())
+            out << "mc_header_dir = " << cfg.mc.header_file_path << "\n";
+        if (!cfg.mc.rc_file_path.empty())
+            out << "mc_rc_dir = " << cfg.mc.rc_file_path << "\n";
+        if (!cfg.mc.additional_options.empty())
+            out << "mc_flags = " << cfg.mc.additional_options << "\n";
+
+        // MIDL compiler settings
+        if (!cfg.midl.output_directory.empty())
+            out << "midl_output_dir = " << cfg.midl.output_directory << "\n";
+        if (!cfg.midl.header_file_name.empty())
+            out << "midl_header = " << cfg.midl.header_file_name << "\n";
+        if (!cfg.midl.type_library_name.empty())
+            out << "midl_type_library = " << cfg.midl.type_library_name << "\n";
+        if (!cfg.midl.dlldata_file_name.empty())
+            out << "midl_dlldata = " << cfg.midl.dlldata_file_name << "\n";
+        if (!cfg.midl.interface_identifier_file_name.empty())
+            out << "midl_iid = " << cfg.midl.interface_identifier_file_name << "\n";
+        if (!cfg.midl.proxy_file_name.empty())
+            out << "midl_proxy = " << cfg.midl.proxy_file_name << "\n";
+        if (!cfg.midl.preprocessor_definitions.empty())
+            out << "midl_defines = " << join_vector(cfg.midl.preprocessor_definitions, ", ") << "\n";
+        if (!cfg.midl.additional_options.empty())
+            out << "midl_flags = " << cfg.midl.additional_options << "\n";
+        if (!cfg.midl.default_char_type.empty())
+            out << "midl_default_char_type = " << cfg.midl.default_char_type << "\n";
+        if (!cfg.midl.target_environment.empty())
+            out << "midl_target_environment = " << cfg.midl.target_environment << "\n";
 
         // Manifest settings
         if (cfg.manifest.suppress_startup_banner)
