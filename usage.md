@@ -459,6 +459,8 @@ std = 20
 | `resources` | Resource files (.rc) | Yes |
 | `masm` | MASM assembly files (.asm, .masm) | Yes |
 | `nasm` | NASM assembly files (.asm, .nasm) | Yes |
+| `mc` | Message Compiler files (.mc) | Yes |
+| `idl` | IDL/MIDL files (.idl) | Yes |
 | `includes` | Include directories (comma-separated) | No |
 | `defines` | Preprocessor definitions (comma-separated) | No |
 
@@ -545,6 +547,85 @@ nasm_defines = DEBUG_ASM
 
 [config:Release]
 nasm_flags = -O2
+```
+
+**Message Compiler (.mc) Files:**
+
+For Windows message table compilation, use the `mc` setting. MC files are compiled by `mc.exe` to produce `.h` and `.rc` files:
+
+```ini
+# Basic MC usage
+mc = src/errlog.mc, src/events.mc
+
+# With configuration
+mc = errors.mc
+mc_header_dir = $(IntDir)
+mc_rc_dir = $(IntDir)
+```
+
+MC files are emitted as native `<MessageCompile>` items in the vcxproj with proper build rules.
+
+**MC Configuration Settings:**
+
+| Setting | Description | Example |
+|---------|-------------|---------|
+| `mc_header_dir` | Directory for generated .h files | `mc_header_dir = $(IntDir)` |
+| `mc_rc_dir` | Directory for generated .rc files | `mc_rc_dir = $(IntDir)` |
+| `mc_flags` | Additional mc.exe flags | `mc_flags = -u` |
+
+**IDL/MIDL Compiler (.idl) Files:**
+
+For COM interface definition files, use the `idl` setting. IDL files are compiled by MIDL to produce `.h`, `_i.c`, `_p.c`, and `.tlb` files:
+
+```ini
+# Basic IDL usage
+idl = src/MyInterface.idl
+
+# With configuration
+idl = src/MyInterface.idl
+midl_flags = -Oicf -robust
+midl_output_dir = $(IntDir)
+```
+
+IDL files are emitted as native `<Midl>` items in the vcxproj.
+
+**MIDL Configuration Settings:**
+
+| Setting | Description | Example |
+|---------|-------------|---------|
+| `midl_output_dir` | Output directory for generated files | `midl_output_dir = $(IntDir)` |
+| `midl_header` | Output header file name | `midl_header = MyInterface.h` |
+| `midl_type_library` | Output type library name | `midl_type_library = MyLib.tlb` |
+| `midl_iid` | Output IID file name | `midl_iid = MyInterface_i.c` |
+| `midl_proxy` | Output proxy file name | `midl_proxy = MyInterface_p.c` |
+| `midl_dlldata` | Output dlldata file name | `midl_dlldata = dlldata.c` |
+| `midl_flags` | Additional MIDL flags | `midl_flags = -Oicf -robust` |
+| `midl_defines` | MIDL preprocessor definitions | `midl_defines = _WIN32_WINNT=0x0600` |
+| `midl_default_char_type` | Default char type | `Signed`, `Unsigned` |
+| `midl_target_environment` | Target environment | `Win32`, `Win64` |
+
+**Custom Build Rules:**
+
+For files that need custom build commands (e.g., code generators, specialized compilers), use `custom_build()`:
+
+```ini
+# Single-line syntax
+custom_build(src/messages.mc, command = mc -h $(IntDir) -r $(IntDir) %(FullPath), outputs = $(IntDir)/messages.h, description = Compiling message table)
+
+# Multi-line syntax
+custom_build(src/schema.xsd,
+    command = xsd.exe /c /language:CS %(FullPath)
+    outputs = %(Filename).cs
+    description = Generating code from %(Filename)
+)
+```
+
+You can also set custom build properties on individual files using the per-file syntax:
+
+```ini
+src/generated.txt:custom_command = python gen.py %(FullPath)
+src/generated.txt:custom_outputs = $(IntDir)/generated.h
+src/generated.txt:custom_message = Generating header
 ```
 
 **Platform-specific defines with values:**
@@ -693,6 +774,10 @@ multiprocessor = true
 | `subsystem` | Subsystem type | `Console`, `Windows`, `Native` |
 | `generate_debug_info` | Generate debug information | `true`, `false` |
 | `link_incremental` | Incremental linking | `true`, `false` |
+| `ignore_all_default_libraries` | Ignore all default libraries (`/NODEFAULTLIB`) | `true`, `false` |
+| `module_def` | Module definition file for DLL exports | Path to `.def` file |
+| `base_address` | Preferred DLL load base address | Hex address (e.g., `0x10000000`) |
+| `entry_point` | Entry point symbol | Function name |
 
 **Example:**
 ```ini
@@ -701,6 +786,13 @@ generate_debug_info[Debug] = true
 generate_debug_info[Release] = true
 link_incremental[Debug] = true
 link_incremental[Release] = false
+
+# DLL with export definition file
+module_def = exports.def
+base_address = 0x10000000
+
+# Kernel driver — no default libraries
+ignore_all_default_libraries = true
 ```
 
 ---
@@ -1599,17 +1691,35 @@ outdir[Release] = bin/Release
 - `libs` - Link against kernel libraries (ntoskrnl.lib, hal.lib, etc.)
 - `defines` - Kernel-mode defines like `_KERNEL_MODE`, `NTDDI_VERSION`, `_WIN32_WINNT`
 
+### Kernel-Mode Static Library (sys_lib)
+
+Produces a static library compiled with kernel-mode settings. This is for code that will be linked into kernel drivers but is built as a reusable `.lib`. Exception handling, RTTI, and buffer security checks are automatically disabled.
+
+**Basic syntax:**
+```ini
+[project:WdmSec]
+type = sys_lib
+sources = src/*.c
+includes = inc, ../public/ddk
+defines = _KERNEL_MODE
+```
+
+The `sys_lib` type maps to `StaticLibrary` internally but auto-applies:
+- `exception_handling = false`
+- `rtti = false`
+- `buffer_security_check = false`
+
 ### Type Comparison
 
-| Feature | exe | lib | dll | sys |
-|---------|-----|-----|-----|-----|
-| Produces | Executable | Static library | Dynamic library | Kernel driver |
-| Extension (Windows) | .exe | .lib | .dll | .sys |
-| Extension (Linux) | (none) | .a | .so | .sys |
-| Linked at | N/A | Compile time | Runtime | Boot/load time |
-| Export macros needed | No | No | Yes | No |
-| Multiple instances | Each exe is separate | Compiled into each exe | Shared in memory | Loaded by kernel |
-| Update without recompile | No | No | Yes | No |
+| Feature | exe | lib | dll | sys | sys_lib |
+|---------|-----|-----|-----|-----|---------|
+| Produces | Executable | Static library | Dynamic library | Kernel driver | Kernel-mode static library |
+| Extension (Windows) | .exe | .lib | .dll | .sys | .lib |
+| Extension (Linux) | (none) | .a | .so | .sys | .a |
+| Linked at | N/A | Compile time | Runtime | Boot/load time | Compile time (into drivers) |
+| Export macros needed | No | No | Yes | No | No |
+| Multiple instances | Each exe is separate | Compiled into each exe | Shared in memory | Loaded by kernel | Compiled into each driver |
+| Update without recompile | No | No | Yes | No | No |
 
 ### Choosing a Project Type
 
@@ -1635,6 +1745,11 @@ outdir[Release] = bin/Release
 - Building a file system filter or minifilter
 - Building a bus, USB, SCSI, or network driver
 - Targeting the Native subsystem
+
+**Use `sys_lib` when:**
+- Building a static library for kernel-mode code
+- Creating reusable code that will be linked into drivers
+- Need automatic kernel-mode compiler flags (no exceptions, no RTTI)
 
 ---
 
@@ -6462,12 +6577,14 @@ dir include\myheader.h
 
 | Setting | Description | Valid Values | Default |
 |---------|-------------|--------------|---------|
-| `type` | Project type | `exe`, `lib`, `dll`, `sys` | Required |
+| `type` | Project type | `exe`, `lib`, `dll`, `sys`, `sys_lib` | Required |
 | `sources` | Source files | File paths, supports wildcards | Required |
 | `headers` | Header files | File paths, supports wildcards | None |
 | `resources` | Resource files (.rc) | File paths, supports wildcards | None |
 | `masm` | MASM assembly files | File paths, supports wildcards | None |
 | `nasm` | NASM assembly files | File paths, supports wildcards | None |
+| `mc` | Message Compiler files (.mc) | File paths, supports wildcards | None |
+| `idl` | IDL/MIDL files (.idl) | File paths, supports wildcards | None |
 | `includes` | Include directories | Comma-separated paths | None |
 | `defines` | Preprocessor defines | Comma-separated defines | None |
 | `std` | C++ standard | `14`, `17`, `20`, `23` | Compiler default |
@@ -6526,6 +6643,11 @@ dir include\myheader.h
 | `libs` | Library dependencies | Comma-separated library files | None |
 | `libdirs` | Library search paths | Comma-separated paths | None |
 | `excluded_library` | Library included only in specified config | Library file path | None |
+| `ignore_all_default_libraries` | Ignore all default libraries | `true`, `false` | `false` |
+| `ignore_libs` | Ignore specific default libraries | Comma-separated library names | None |
+| `module_def` | Module definition file (.def) | File path | None |
+| `base_address` | Preferred DLL load base address | Hex address | None |
+| `entry_point` | Entry point symbol | Function name | Default CRT entry |
 
 #### NASM Assembler Settings
 
@@ -6537,6 +6659,31 @@ dir include\myheader.h
 | `nasm_defines` | NASM preprocessor definitions | Comma-separated defines | None |
 
 These settings can be used at both project level (applies to all configurations) and inside `[config:...]` sections.
+
+#### Message Compiler Settings
+
+| Setting | Description | Valid Values | Default |
+|---------|-------------|--------------|---------|
+| `mc_header_dir` | Output directory for generated .h files | Path | None |
+| `mc_rc_dir` | Output directory for generated .rc files | Path | None |
+| `mc_flags` | Additional mc.exe flags | Raw flags string | None |
+
+#### MIDL Compiler Settings
+
+| Setting | Description | Valid Values | Default |
+|---------|-------------|--------------|---------|
+| `midl_output_dir` | Output directory for generated files | Path | None |
+| `midl_header` | Output header file name | Filename | None |
+| `midl_type_library` | Output type library name (.tlb) | Filename | None |
+| `midl_iid` | Output IID file name (_i.c) | Filename | None |
+| `midl_proxy` | Output proxy file name (_p.c) | Filename | None |
+| `midl_dlldata` | Output dlldata file name | Filename | None |
+| `midl_flags` | Additional MIDL flags | Raw flags string | None |
+| `midl_defines` | MIDL preprocessor definitions | Comma-separated defines | None |
+| `midl_default_char_type` | Default char type | `Signed`, `Unsigned` | None |
+| `midl_target_environment` | Target environment | `Win32`, `Win64` | None |
+
+These settings can be used at both project level and inside `[config:...]` sections.
 
 #### Per-File Settings
 
