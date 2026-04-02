@@ -1,19 +1,28 @@
 # sighmake
 
-A flexible build system generator that converts buildscript files and CMakeLists.txt into Visual Studio project files (.vcxproj and .sln) and Makefiles. Designed for simplicity and cross-platform development.
+A flexible build system generator that converts buildscript files and CMakeLists.txt into Visual Studio project files (.vcxproj, .sln, .slnx) and Makefiles. Designed for simplicity and cross-platform development.
 
 ## Features
 
 - **Simple, readable buildscript format** - Human-friendly INI-style syntax
 - **CMake support** - Parse CMakeLists.txt files and generate project files
-- **Multiple generators** - Visual Studio projects (.vcxproj/.sln) and Makefiles
-- **Cross-platform** - Windows (MSVC) and Linux (GCC/Clang) support
+- **Multiple generators** - Visual Studio projects (.vcxproj/.sln/.slnx) and Makefiles
+- **Cross-platform** - Windows (MSVC), Linux (GCC), and macOS (Clang) support
 - **C and C++ language support** - First-class support for both C and C++ projects with appropriate standards
+- **Build command** - Build generated projects directly with `sighmake --build` (like `cmake --build`)
 - **Configuration-specific settings** - Per-config compiler options, optimization, etc.
+- **Configuration templates** - Inherit settings from base configurations with `Template:` syntax
+- **Conditional compilation blocks** - `if(Windows)`, `if(Linux)`, `if(macOS)` platform conditionals
 - **Per-file compiler settings** - Customize compilation flags for individual files
 - **Wildcard support** - Use glob patterns for source files (*.cpp, **/*.cpp)
+- **Platform-specific source files** - Inline conditions like `file.cpp [windows]`
 - **Project dependencies** - Automatic dependency tracking with PUBLIC/PRIVATE/INTERFACE visibility
+- **find_package()** - Locate external SDKs (Vulkan, SDL2, SDL3, DirectX, OpenGL)
 - **File inclusion** - Share common settings across buildscripts
+- **Solution folders** - Organize projects in Visual Studio Solution Explorer
+- **Dependency export** - Generate HTML dependency reports with `--export-deps`
+- **Assembly support** - MASM and NASM assembler integration
+- **Kernel-mode drivers** - Build Windows kernel drivers (sys) and kernel-mode static libraries (sys_lib)
 - **Bidirectional conversion** - Convert Visual Studio solutions to buildscripts
 
 ## Quick Start
@@ -22,6 +31,9 @@ A flexible build system generator that converts buildscript files and CMakeLists
 ```batch
 # Generate Visual Studio project from buildscript
 sighmake project.buildscript
+
+# Build directly
+sighmake --build . --config Release
 
 # Generate from CMakeLists.txt
 sighmake CMakeLists.txt
@@ -35,9 +47,29 @@ sighmake project.buildscript -t msvc2022
 # Generate Makefiles (default on Linux)
 ./sighmake project.buildscript
 
-# Build the generated Makefile
-make -f build/ProjectName.Release
+# Build directly
+./sighmake --build . --config Release
+
+# Or build manually
+make -C build Release
 ```
+
+### Even Simpler: Auto-Populated Configurations
+
+If you don't define any `[config:...]` sections, sighmake automatically provides Debug and Release configurations with sensible defaults:
+
+```ini
+[solution]
+name = MyApp
+
+[project:MyApp]
+type = exe
+sources = src/*.cpp
+includes = include
+std = 17
+```
+
+This minimal buildscript automatically gets optimized Debug and Release configurations.
 
 ## Installation
 
@@ -97,12 +129,20 @@ make -f build/sighmake.Release
 
 ```
 sighmake <buildscript|CMakeLists.txt> [options]
+sighmake --build <dir> [--config <cfg>] [--clean]
 sighmake --convert <solution.sln> [options]
 
 Options:
   -g, --generator <type>     Generator type (vcxproj, makefile)
   -t, --toolset <name>       Default toolset (msvc2022, msvc2019, etc)
+  -b, --build <dir>          Build using previously generated project files
+      --config <cfg>         Build configuration (with --build, e.g. Release)
+      --target <tgt>         Build specific target (with --build)
+      --clean                Clean build artifacts (with --build)
+      --clean-first          Clean before building (with --build)
+  -j, --parallel <N>         Parallel build jobs (with --build)
   -c, --convert              Convert Visual Studio solution to buildscripts
+      --export-deps          Export project dependency report as HTML
       --list-toolsets        List available toolsets
   -l, --list                 List available generators
   -h, --help                 Show help message
@@ -115,6 +155,11 @@ Options:
 sighmake project.buildscript -g vcxproj
 ```
 
+**Build directly (like cmake --build):**
+```bash
+sighmake --build . --config Release --parallel 8
+```
+
 **Generate with specific toolset:**
 ```batch
 sighmake project.buildscript -t msvc2019
@@ -125,10 +170,14 @@ sighmake project.buildscript -t msvc2019
 sighmake --convert solution.sln
 ```
 
+**Export dependency report:**
+```batch
+sighmake project.buildscript --export-deps
+```
+
 **Generate Makefiles:**
 ```bash
 ./sighmake project.buildscript -g makefile
-# Output: build/ProjectName.Debug, build/ProjectName.Release
 ```
 
 **Parse CMake file:**
@@ -175,7 +224,27 @@ std = 17
 name = MySolution              # Solution name
 configurations = Debug, Release # Build configurations
 platforms = Win32, x64         # Target platforms
+defines = COMMON_DEFINE        # Defines for all projects (supports bracket notation)
 ```
+
+**Platform filtering by generator:**
+- **vcxproj generator**: Only includes Win32, x64, ARM, ARM64 platforms
+- **makefile generator**: Only includes non-Windows platforms like Linux, macOS, Darwin
+
+This allows a single buildscript to define both Windows and Unix configurations:
+```ini
+platforms = x64, Linux
+```
+
+### Project Types
+
+| Type | Description | Extension (Win) | Extension (Linux) |
+|------|-------------|-----------------|-------------------|
+| `exe` | Executable | .exe | (none) |
+| `lib` | Static library | .lib | .a |
+| `dll` | Dynamic library | .dll | .so |
+| `sys` | Kernel-mode driver | .sys | .sys |
+| `sys_lib` | Kernel-mode static library | .lib | .a |
 
 ### Project Settings
 
@@ -183,12 +252,24 @@ platforms = Win32, x64         # Target platforms
 
 ```ini
 [project:ProjectName]
-type = exe                      # Project type: exe, lib, dll
+type = exe                      # Project type: exe, lib, dll, sys, sys_lib
 sources = src/*.cpp             # Source files (supports wildcards)
 headers = include/*.h           # Header files
 includes = include, external    # Include directories
 defines = MYDEFINE              # Preprocessor definitions
 std = 17                        # C++ standard (14, 17, 20, 23)
+```
+
+#### Source Organization
+
+```ini
+sources = src/*.cpp             # Source files
+headers = include/*.h           # Header files
+resources = res/*.rc            # Resource files (.rc)
+masm = asm/*.asm                # MASM assembly files
+nasm = asm/*.asm                # NASM assembly files
+mc = src/events.mc              # Message Compiler files
+idl = src/MyInterface.idl       # IDL/MIDL files
 ```
 
 #### C Language Projects
@@ -210,10 +291,6 @@ public_includes = include
 - Projects with `.cpp` files are detected as C++ projects
 - Explicitly set `language = C` or `language = C++` to override
 
-**Compiler behavior:**
-- **MSVC**: C projects compile with `/TC` flag, C++ with `/TP`
-- **GCC/Clang**: C projects use `gcc`, C++ projects use `g++`
-
 #### Dependencies and Libraries
 
 Dependencies support CMake-style visibility (PUBLIC, PRIVATE, INTERFACE):
@@ -232,6 +309,26 @@ libs = user32.lib, gdi32.lib   # Library dependencies
 libdirs = lib, external/lib    # Library search directories
 ```
 
+#### find_package()
+
+Locate external SDKs and libraries on your system:
+
+```ini
+find_package(Vulkan REQUIRED)
+find_package(SDL2)
+
+includes = include, ${Vulkan_INCLUDE_DIRS}
+libs = ${Vulkan_LIBRARIES}
+```
+
+Supported packages: `Vulkan`, `OpenGL`, `SDL2`, `SDL3`, `DirectX9`, `DirectX10`, `DirectX11`, `DirectX12`
+
+Packages can also propagate automatically via `target_link_libraries()`:
+```ini
+find_package(Vulkan REQUIRED)
+target_link_libraries(Vulkan)  # Includes, libs, libdirs applied automatically
+```
+
 #### Compiler Settings
 
 ```ini
@@ -243,14 +340,23 @@ rtti = true                    # Runtime type information
 optimization = MaxSpeed        # Disabled, MinSize, MaxSpeed, Full
 runtime_library = MultiThreaded # MultiThreaded, MultiThreadedDebug, etc.
 debug_info = ProgramDatabase   # None, ProgramDatabase, EditAndContinue
+floating_point = Fast          # Precise, Fast, Strict
+whole_program_optimization = true  # /GL + /LTCG
+compile_as = CompileAsC        # Force compilation language
+cflags = /wd4668               # Additional compiler flags
 ```
 
 #### Linker Settings
 
 ```ini
-subsystem = Console            # Console, Windows
+subsystem = Console            # Console, Windows, Native
 generate_debug_info = true     # Generate debug information
 link_incremental = false       # Incremental linking
+module_def = exports.def       # Module definition file for DLL exports
+base_address = 0x10000000      # Preferred DLL load base address
+entry_point = DriverEntry      # Entry point symbol
+ignore_all_default_libraries = true  # /NODEFAULTLIB
+ldflags = /MANIFEST            # Additional linker flags
 ```
 
 #### Output Settings
@@ -269,18 +375,73 @@ Use `[Config|Platform]` syntax to specify settings per configuration:
 ```ini
 [project:MyProject]
 # Per-configuration optimization
-optimization[Debug|Win32] = Disabled
-optimization[Debug|x64] = Disabled
-optimization[Release|Win32] = MaxSpeed
-optimization[Release|x64] = MaxSpeed
+optimization[Debug] = Disabled
+optimization[Release] = MaxSpeed
 
-# Per-configuration runtime library
+# Per-platform defines
+defines[Win32] = WIN32, _WINDOWS
+defines[x64] = WIN64, _WIN64
+
+# Per-configuration AND platform
 runtime_library[Debug|Win32] = MultiThreadedDebug
-runtime_library[Release|Win32] = MultiThreaded
+runtime_library[Release|x64] = MultiThreaded
 
-# Per-configuration output directories
-outdir[Debug|x64] = bin/x64/Debug
-outdir[Release|x64] = bin/x64/Release
+# Wildcard: applies to ALL configurations and platforms
+pch[*] = Use
+```
+
+### Configuration Templates
+
+Create new configurations that inherit all settings from a base:
+
+```ini
+[config:Release]
+optimization = MaxSpeed
+runtime_library = MultiThreaded
+defines = NDEBUG
+
+# Test inherits from Release, overrides defines
+[config:Test] : Template:Release
+defines = NDEBUG, ENABLE_TESTING
+```
+
+### Conditional Compilation Blocks
+
+Use `if(Platform)` syntax for platform-specific settings:
+
+```ini
+[project:MyApp]
+type = exe
+sources = src/**/*.cpp
+
+if(Windows) {
+    subsystem = Windows
+    libs = user32.lib, gdi32.lib
+}
+
+if(Linux) {
+    libs = pthread, dl
+}
+
+if(macOS) {
+    libs = -framework Metal, -framework Cocoa
+}
+```
+
+Supported conditions: `if(Windows)`, `if(Linux)`, `if(macOS)`, `if(unix)`, `if(Win32)`, `if(x64)`, `if(!Windows)`, etc.
+
+### Platform-Specific Source Files
+
+Conditionally include source files with inline conditions:
+
+```ini
+sources = {
+    src/**/*.cpp
+    src/platform/win_impl.cpp [windows]
+    src/platform/linux_impl.cpp [linux]
+    src/platform/mac_impl.mm [osx]
+    src/platform/posix_impl.cpp [!windows]
+}
 ```
 
 ### Wildcard Patterns
@@ -304,10 +465,12 @@ pch.cpp:pch_header = pch.h
 
 # Per-file defines
 utils.cpp:defines = EXTRA_DEFINE
-utils.cpp:defines[Debug|Win32] = DEBUG_UTILS
 
 # Per-file optimization
 slow_file.cpp:optimization = Disabled
+
+# Exclude file from build
+debug_helpers.cpp:excluded[Release] = true
 ```
 
 ### File Inclusion
@@ -323,13 +486,46 @@ sources = src/*.cpp
 include = common_settings.buildscript
 ```
 
-**common_settings.buildscript:**
+### Solution Folders
+
+Organize projects in Visual Studio Solution Explorer:
+
 ```ini
-# Common compiler settings
-std = 17
-warning_level = Level3
-multiprocessor = true
-defines = _CRT_SECURE_NO_WARNINGS
+folder("Engine") {
+    include = engine/core.buildscript
+    include = engine/renderer.buildscript
+}
+
+folder("Tools") {
+    include = tools/editor.buildscript
+}
+```
+
+### Custom Build Rules
+
+For files that need custom build commands:
+
+```ini
+custom_build(src/schema.xsd,
+    command = xsd.exe /c /language:CS %(FullPath)
+    outputs = %(Filename).cs
+    description = Generating code from %(Filename)
+)
+```
+
+### Assembly Support
+
+**MASM (x64):**
+```ini
+masm[x64] = getstackptr64.masm
+```
+
+**NASM:**
+```ini
+nasm = boot/boot.asm
+nasm_format = bin
+nasm_flags = -w+all
+nasm_includes = boot/include
 ```
 
 ### Multi-Project Example
@@ -449,7 +645,7 @@ subsystem = Console
 Generate and build:
 ```batch
 sighmake myapp.buildscript
-# Open MyApp.sln in Visual Studio and build
+sighmake --build . --config Release
 ```
 
 ### Cross-Platform Project
@@ -459,7 +655,7 @@ sighmake myapp.buildscript
 [solution]
 name = MyProject
 configurations = Debug, Release
-platforms = Win32, x64
+platforms = x64, Linux
 
 [project:MyProject]
 type = exe
@@ -467,37 +663,19 @@ sources = src/**/*.cpp
 headers = include/**/*.h
 includes = include
 std = 17
-
-# Windows-specific
-subsystem[Win32] = Console
-subsystem[x64] = Console
-
-# Output directories
-outdir[Debug|x64] = bin/Debug
-outdir[Release|x64] = bin/Release
+subsystem = Console
 ```
 
 **Build on Windows:**
 ```batch
 sighmake myproject.buildscript -g vcxproj
-# Build in Visual Studio
+sighmake --build . --config Release
 ```
 
 **Build on Linux:**
 ```bash
 ./sighmake myproject.buildscript -g makefile
-make -f build/MyProject.Release
-```
-
-### Multi-Configuration Build
-
-```batch
-# Generate project
-sighmake project.buildscript
-
-# Build specific configurations using MSBuild
-msbuild project.sln /p:Configuration=Debug /p:Platform=x64
-msbuild project.sln /p:Configuration=Release /p:Platform=x64
+./sighmake --build . --config Release
 ```
 
 ## Tips and Best Practices
@@ -508,6 +686,8 @@ msbuild project.sln /p:Configuration=Release /p:Platform=x64
 4. **Version control** - Commit .buildscript files, not generated .vcxproj/.sln files
 5. **Automate generation** - Add sighmake to your build scripts or CI pipeline
 6. **Configuration-specific settings** - Use `[Config|Platform]` for fine-grained control
+7. **Use `target_link_libraries()`** for automatic dependency management
+8. **Use `find_package()`** for external SDK discovery
 
 ## Troubleshooting
 
@@ -567,6 +747,10 @@ For comprehensive documentation on all features, see [usage.md](usage.md):
 - Build events
 - Toolset configuration
 - CMake support
+- Assembly support (MASM, NASM)
+- Kernel-mode driver support
+- find_package() for external SDKs
+- CI/CD integration
 - And much more
 
 ## License
