@@ -300,12 +300,12 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
     }
 
     // Function-level linking (allows linker to remove unused functions)
-    if (config.cl_compile.function_level_linking) {
+    if (config.cl_compile.function_level_linking.value_or(false)) {
         ss << "-ffunction-sections ";
     }
 
     // Data sections (allows linker to remove unused data)
-    if (config.link.enable_comdat_folding || config.link.optimize_references) {
+    if (config.link.enable_comdat_folding.value_or(false) || config.link.optimize_references.value_or(false)) {
         ss << "-fdata-sections ";
     }
 
@@ -330,7 +330,7 @@ std::string MakefileGenerator::get_linker_flags(const Configuration& config, con
     }
 
     // Garbage collection of unused sections (equivalent to MSVC optimize_references + enable_comdat_folding)
-    if (config.link.optimize_references || config.link.enable_comdat_folding) {
+    if (config.link.optimize_references.value_or(false) || config.link.enable_comdat_folding.value_or(false)) {
 #ifdef __APPLE__
         ss << "-Wl,-dead_strip ";
 #else
@@ -519,7 +519,8 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
         }
     }
     if (has_nasm_files) {
-        out << "NASM = nasm\n";
+        std::string nasm_exe = config.nasm.path.empty() ? "nasm" : config.nasm.path;
+        out << "NASM = " << nasm_exe << "\n";
     }
 
     // Compiler flags

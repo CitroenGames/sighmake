@@ -124,6 +124,8 @@ private:
     // Parse configuration-specific settings (returns true if key was handled)
     bool parse_config_setting(const std::string& key, const std::string& value,
                               const std::string& config_key, ParseState& state);
+    bool parse_config_setting_aux(const std::string& key, const std::string& value,
+                                  const std::string& config_key, ParseState& state);
 
     // Apply template configuration settings to derived configuration
     void apply_template(Project& project, const std::string& derived_key,

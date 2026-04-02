@@ -72,7 +72,7 @@ struct LibraryFile {
 struct ClCompileSettings {
     std::string optimization;                           // "Disabled", "MaxSpeed", "MinSpace", "Full"
     std::string inline_function_expansion;              // "Default", "Disabled", "OnlyExplicitInline", "AnySuitable"
-    bool intrinsic_functions = false;
+    std::optional<bool> intrinsic_functions;
     std::string favor_size_or_speed;                    // "Neither", "Speed", "Size"
     std::vector<std::string> additional_include_directories;
     std::vector<std::string> preprocessor_definitions;
@@ -83,7 +83,7 @@ struct ClCompileSettings {
     std::string basic_runtime_checks;                   // "Default", "StackFrameRuntimeCheck", "UninitVariables", "EnableFastChecks"
     std::string runtime_library;                        // "MultiThreaded", "MultiThreadedDebug", etc.
     bool buffer_security_check = true;
-    bool function_level_linking = false;
+    std::optional<bool> function_level_linking;
     std::string enhanced_instruction_set;               // "NotSet", "StreamingSIMDExtensions2", "AdvancedVectorExtensions2"
     std::string floating_point_model;                   // "Precise", "Fast", "Strict"
     bool force_conformance_in_for_loop_scope = true;
@@ -124,8 +124,8 @@ struct LinkSettings {
     bool generate_debug_info = false;
     std::string program_database_file;                  // Custom .pdb file path
     std::string sub_system;                             // "Console", "Windows"
-    bool optimize_references = false;
-    bool enable_comdat_folding = false;
+    std::optional<bool> optimize_references;
+    std::optional<bool> enable_comdat_folding;
     std::string base_address;                           // DLL base address
     std::string module_definition_file;                 // .def file for DLL exports
     std::string target_machine;                         // "MachineX86", "MachineX64"
@@ -137,6 +137,7 @@ struct LinkSettings {
     bool generate_map_file = false;                     // Generate .map file
     std::string map_file_name;                          // Custom .map file path
     bool fixed_base_address = false;                    // FixedBaseAddress
+    std::optional<bool> randomized_base_address;        // RandomizedBaseAddress (/DYNAMICBASE)
     bool large_address_aware = false;                   // LargeAddressAware
 };
 
@@ -165,6 +166,7 @@ struct ResourceCompileSettings {
 
 // NASM assembler settings
 struct NasmSettings {
+    std::string path;                               // Custom path to nasm executable
     std::string format;                             // "bin", "elf64", "elf32", "win32", "win64", "macho64", etc.
     std::string additional_options;                  // Additional NASM flags (e.g., "-w+all")
     std::vector<std::string> include_directories;    // NASM include search paths
@@ -447,6 +449,12 @@ inline std::string to_lower(const std::string& str) {
     std::transform(result.begin(), result.end(), result.begin(),
                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return result;
+}
+
+// Normalize platform name (e.g., "x86" -> "Win32" for Visual Studio compatibility)
+inline std::string normalize_platform(const std::string& platform) {
+    if (to_lower(platform) == "x86") return "Win32";
+    return platform;
 }
 
 // Check if platform is a Windows platform (for vcxproj generator)

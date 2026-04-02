@@ -27,15 +27,28 @@ static std::string unescape_newlines(const std::string& str) {
     result.reserve(str.length());
 
     for (size_t i = 0; i < str.length(); ++i) {
-        if (i + 1 < str.length() && str[i] == '\\' && str[i + 1] == 'n') {
-            result += '\n';
-            ++i; // Skip the 'n'
+        if (i + 1 < str.length() && str[i] == '\x01') {
+            if (str[i + 1] == 'n') {
+                result += '\n';
+                ++i;
+            } else if (str[i + 1] == '\\') {
+                result += '\\';
+                ++i;
+            } else {
+                result += str[i];
+            }
         } else {
             result += str[i];
         }
     }
 
     return result;
+}
+
+// Map buildscript warning_level values to MSBuild WarningLevel enum values
+static std::string map_warning_level(const std::string& level) {
+    if (level == "Level0") return "TurnOffAllWarnings";
+    return level; // Level1-Level4 are already valid MSBuild values
 }
 
 // Adjust relative file paths in a custom build command
@@ -484,7 +497,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
         if (!cfg.cl_compile.debug_information_format.empty())
             cl.append_child("DebugInformationFormat").text() = cfg.cl_compile.debug_information_format.c_str();
         if (!cfg.cl_compile.warning_level.empty())
-            cl.append_child("WarningLevel").text() = cfg.cl_compile.warning_level.c_str();
+            cl.append_child("WarningLevel").text() = map_warning_level(cfg.cl_compile.warning_level).c_str();
         if (!cfg.cl_compile.disable_specific_warnings.empty())
             cl.append_child("DisableSpecificWarnings").text() =
                 join_vector(cfg.cl_compile.disable_specific_warnings, ";").c_str();
@@ -519,9 +532,9 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
         if (!additional_opts.empty())
             cl.append_child("AdditionalOptions").text() = additional_opts.c_str();
 
-        if (cfg.cl_compile.function_level_linking)
+        if (cfg.cl_compile.function_level_linking.value_or(false))
             cl.append_child("FunctionLevelLinking").text() = "true";
-        if (cfg.cl_compile.intrinsic_functions)
+        if (cfg.cl_compile.intrinsic_functions.value_or(false))
             cl.append_child("IntrinsicFunctions").text() = "true";
         // Always write RuntimeTypeInfo explicitly
         if (cfg.cl_compile.runtime_type_info)
@@ -643,9 +656,9 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                     make_relative_path(cfg.link.module_definition_file, output_path).c_str();
             if (!cfg.link.additional_options.empty())
                 link.append_child("AdditionalOptions").text() = cfg.link.additional_options.c_str();
-            if (cfg.link.enable_comdat_folding)
+            if (cfg.link.enable_comdat_folding.value_or(false))
                 link.append_child("EnableCOMDATFolding").text() = "true";
-            if (cfg.link.optimize_references)
+            if (cfg.link.optimize_references.value_or(false))
                 link.append_child("OptimizeReferences").text() = "true";
 
             // New linker settings
@@ -663,6 +676,14 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                 link.append_child("MapFileName").text() = cfg.link.map_file_name.c_str();
             if (cfg.link.fixed_base_address)
                 link.append_child("FixedBaseAddress").text() = "true";
+            // Write RandomizedBaseAddress if explicitly set, or auto-suppress when FIXED is requested
+            if (cfg.link.randomized_base_address.has_value()) {
+                link.append_child("RandomizedBaseAddress").text() =
+                    cfg.link.randomized_base_address.value() ? "true" : "false";
+            } else if (cfg.link.fixed_base_address ||
+                       cfg.link.additional_options.find("/FIXED") != std::string::npos) {
+                link.append_child("RandomizedBaseAddress").text() = "false";
+            }
             if (cfg.link.large_address_aware)
                 link.append_child("LargeAddressAware").text() = "true";
             if (!cfg.link.base_address.empty())
@@ -921,7 +942,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                         std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg + "'";
                         auto node = file_elem.append_child("AdditionalOptions");
                         node.append_attribute("Condition") = condition.c_str();
-                        node.text() = join_vector(options, " ").c_str();
+                        node.text() = (join_vector(options, " ") + " %(AdditionalOptions)").c_str();
                     }
                 }
             }
@@ -1086,7 +1107,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                     std::string out_ext = (fmt == "bin") ? ".bin" : ".obj";
 
                     // Build NASM command line
-                    std::string nasm_cmd = "nasm -f " + fmt;
+                    std::string nasm_exe = cfg.nasm.path.empty() ? "nasm" : "\"" + cfg.nasm.path + "\"";
+                    std::string nasm_cmd = nasm_exe + " -f " + fmt;
 
                     // Add include directories
                     for (const auto& inc : cfg.nasm.include_directories) {

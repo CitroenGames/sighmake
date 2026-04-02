@@ -565,6 +565,12 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             READ_BOOL("FixedBaseAddress", fixed_base_address);
             READ_BOOL("LargeAddressAware", large_address_aware);
 
+            // For RandomizedBaseAddress, need manual handling since it's std::optional<bool>
+            if (auto rba_node = link.child("RandomizedBaseAddress")) {
+                std::string val = rba_node.text().as_string();
+                cfg.link.randomized_base_address = (val == "true");
+            }
+
             #undef READ_TEXT
             #undef READ_BOOL
             #undef READ_VECTOR
@@ -1460,8 +1466,11 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             }
             out << "std = " << std_value << "\n";
         }
-        if (!cl.warning_level.empty())
-            out << "warning_level = " << cl.warning_level << "\n";
+        if (!cl.warning_level.empty()) {
+            std::string wl = cl.warning_level;
+            if (wl == "TurnOffAllWarnings") wl = "Level0";
+            out << "warning_level = " << wl << "\n";
+        }
         if (!cl.exception_handling.empty())
             out << "exceptions = " << cl.exception_handling << "\n";
         if (!cl.runtime_type_info)
@@ -1538,6 +1547,8 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             out << "map_file_name = " << link.map_file_name << "\n";
         if (link.fixed_base_address)
             out << "fixed_base_address = true\n";
+        if (link.randomized_base_address.has_value() && !link.randomized_base_address.value())
+            out << "randomized_base_address = false\n";
         if (link.large_address_aware)
             out << "large_address_aware = true\n";
         if (link.ignore_all_default_libraries)
@@ -1733,9 +1744,9 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             out << "favor = " << cfg.cl_compile.favor_size_or_speed << "\n";
         if (!cfg.cl_compile.inline_function_expansion.empty())
             out << "inline_expansion = " << cfg.cl_compile.inline_function_expansion << "\n";
-        if (cfg.cl_compile.intrinsic_functions)
+        if (cfg.cl_compile.intrinsic_functions.value_or(false))
             out << "intrinsic_functions = true\n";
-        if (cfg.cl_compile.function_level_linking)
+        if (cfg.cl_compile.function_level_linking.value_or(false))
             out << "function_level_linking = true\n";
 
         // Write config-specific libraries (only additional dependencies, not excluded libs)

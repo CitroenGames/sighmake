@@ -40,7 +40,7 @@ std::string BuildscriptParser::trim(const std::string& str) {
 std::string unescape_value(const std::string& str) {
     std::string result;
     for (size_t i = 0; i < str.size(); ++i) {
-        if (str[i] == '\\' && i + 1 < str.size()) {
+        if (str[i] == '\x01' && i + 1 < str.size()) {
             if (str[i + 1] == 'n') {
                 result += '\n';
                 ++i;
@@ -88,9 +88,9 @@ std::string preprocess_multiline(const std::string& content) {
                 // Escape newlines in accumulated value
                 for (char c : multiline_accumulator) {
                     if (c == '\n') {
-                        processed_content += "\\n";
+                        processed_content += "\x01n";
                     } else if (c == '\\') {
-                        processed_content += "\\\\";
+                        processed_content += "\x01\\";
                     } else {
                         processed_content += c;
                     }
@@ -163,9 +163,9 @@ std::string preprocess_multiline(const std::string& content) {
                     processed_content += multiline_prefix;
                     for (char c : multiline_accumulator) {
                         if (c == '\n') {
-                            processed_content += "\\n";
+                            processed_content += "\x01n";
                         } else if (c == '\\') {
-                            processed_content += "\\\\";
+                            processed_content += "\x01\\";
                         } else {
                             processed_content += c;
                         }
@@ -639,6 +639,10 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 cfg.link.additional_library_directories = defs.link.additional_library_directories;
             if (cfg.link.additional_options.empty() && !defs.link.additional_options.empty())
                 cfg.link.additional_options = defs.link.additional_options;
+            if (!cfg.link.fixed_base_address && defs.link.fixed_base_address)
+                cfg.link.fixed_base_address = defs.link.fixed_base_address;
+            if (!cfg.link.randomized_base_address.has_value() && defs.link.randomized_base_address.has_value())
+                cfg.link.randomized_base_address = defs.link.randomized_base_address;
         }
     }
 
@@ -676,10 +680,14 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                     if (cfg.cl_compile.debug_information_format.empty()) {
                         cfg.cl_compile.debug_information_format = "ProgramDatabase";
                     }
-                    cfg.cl_compile.function_level_linking = true;
-                    cfg.cl_compile.intrinsic_functions = true;
-                    cfg.link.enable_comdat_folding = true;
-                    cfg.link.optimize_references = true;
+                    if (!cfg.cl_compile.function_level_linking.has_value())
+                        cfg.cl_compile.function_level_linking = true;
+                    if (!cfg.cl_compile.intrinsic_functions.has_value())
+                        cfg.cl_compile.intrinsic_functions = true;
+                    if (!cfg.link.enable_comdat_folding.has_value())
+                        cfg.link.enable_comdat_folding = true;
+                    if (!cfg.link.optimize_references.has_value())
+                        cfg.link.optimize_references = true;
                     cfg.link.generate_debug_info = true;  // Even Release should have debug symbols
                 }
             }
@@ -735,10 +743,14 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
             if (config == "Debug") {
                 cfg.link.generate_debug_info = true;
             } else {
-                cfg.cl_compile.function_level_linking = true;
-                cfg.cl_compile.intrinsic_functions = true;
-                cfg.link.enable_comdat_folding = true;
-                cfg.link.optimize_references = true;
+                if (!cfg.cl_compile.function_level_linking.has_value())
+                    cfg.cl_compile.function_level_linking = true;
+                if (!cfg.cl_compile.intrinsic_functions.has_value())
+                    cfg.cl_compile.intrinsic_functions = true;
+                if (!cfg.link.enable_comdat_folding.has_value())
+                    cfg.link.enable_comdat_folding = true;
+                if (!cfg.link.optimize_references.has_value())
+                    cfg.link.optimize_references = true;
             }
 
             // Don't automatically add library ignore lists - preserve what's in the buildscript
@@ -1411,6 +1423,7 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
             std::string platform = state.current_config.substr(pipe_pos + 1);
             if (!config.empty() && !platform.empty()) {
                 state.discovered_configs.insert(config);
+                platform = normalize_platform(platform);
                 state.discovered_platforms.insert(platform);
                 state.explicitly_defined_config_keys.insert(state.current_config);
 
@@ -1737,6 +1750,9 @@ void BuildscriptParser::parse_solution_setting(const std::string& key, const std
         state.solution->configurations = split(value, ',');
     } else if (key == "platforms") {
         state.solution->platforms = split(value, ',');
+        for (auto& p : state.solution->platforms) {
+            p = normalize_platform(p);
+        }
     } else if (key == "defines" || key == "preprocessor" || key == "preprocessor_definitions") {
         auto defs = split(value, ',');
         state.solution->solution_level_preprocessor_definitions.insert(
@@ -2665,6 +2681,13 @@ bool BuildscriptParser::parse_project_linker_setting(const std::string& key, con
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].link.fixed_base_address = val;
         }
+        proj.project_level_defaults.link.fixed_base_address = val;
+    } else if (key == "randomized_base_address" || key == "dynamic_base") {
+        bool val = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.randomized_base_address = val;
+        }
+        proj.project_level_defaults.link.randomized_base_address = val;
     } else if (key == "large_address_aware") {
         bool val = (value == "true" || value == "yes" || value == "1");
         for (const auto& config_key : state.solution->get_config_keys()) {
@@ -2742,7 +2765,12 @@ bool BuildscriptParser::parse_project_misc_setting(const std::string& key, const
         }
     }
     // NASM assembler settings (project-level → apply to all configs)
-    else if (key == "nasm_format" || key == "nasm_output_format") {
+    else if (key == "nasm_path") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].nasm.path = value;
+        }
+        proj.project_level_defaults.nasm.path = value;
+    } else if (key == "nasm_format" || key == "nasm_output_format") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].nasm.format = value;
         }
@@ -3180,9 +3208,24 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.link.ignore_all_default_libraries = (value == "true" || value == "yes" || value == "1");
     } else if (key == "module_def" || key == "module_definition_file" || key == "def_file") {
         cfg.link.module_definition_file = value;
+    } else if (key == "fixed_base_address") {
+        cfg.link.fixed_base_address = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "randomized_base_address" || key == "dynamic_base") {
+        cfg.link.randomized_base_address = (value == "true" || value == "yes" || value == "1");
+    } else {
+        return parse_config_setting_aux(key, value, config_key, state);
     }
+    return true;
+}
+
+bool BuildscriptParser::parse_config_setting_aux(const std::string& key, const std::string& value,
+                                                  const std::string& config_key, ParseState& state) {
+    if (!state.current_project) return false;
+
+    auto& cfg = state.current_project->configurations[config_key];
+
     // Librarian settings (for static libraries)
-    else if (key == "lib_output_file") {
+    if (key == "lib_output_file") {
         cfg.lib.output_file = normalize_path(value);
     } else if (key == "lib_suppress_startup_banner") {
         cfg.lib.suppress_startup_banner = (value == "true" || value == "yes" || value == "1");
@@ -3223,7 +3266,9 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
             cfg.resource_compile.additional_include_directories.end(), resolved_dirs.begin(), resolved_dirs.end());
     }
     // NASM assembler settings
-    else if (key == "nasm_format" || key == "nasm_output_format") {
+    else if (key == "nasm_path") {
+        cfg.nasm.path = value;
+    } else if (key == "nasm_format" || key == "nasm_output_format") {
         cfg.nasm.format = value;
     } else if (key == "nasm_flags" || key == "nasm_options" || key == "nasm_additional_options") {
         if (!cfg.nasm.additional_options.empty()) cfg.nasm.additional_options += " ";
@@ -3441,7 +3486,7 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
     if (d_cl.optimization.empty()) d_cl.optimization = t_cl.optimization;
     if (d_cl.inline_function_expansion.empty())
         d_cl.inline_function_expansion = t_cl.inline_function_expansion;
-    if (!d_cl.intrinsic_functions && t_cl.intrinsic_functions)
+    if (!d_cl.intrinsic_functions.has_value() && t_cl.intrinsic_functions.has_value())
         d_cl.intrinsic_functions = t_cl.intrinsic_functions;
     if (d_cl.favor_size_or_speed.empty()) d_cl.favor_size_or_speed = t_cl.favor_size_or_speed;
 
@@ -3462,7 +3507,7 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
     if (d_cl.runtime_library.empty()) d_cl.runtime_library = t_cl.runtime_library;
     if (!d_cl.buffer_security_check && t_cl.buffer_security_check)
         d_cl.buffer_security_check = t_cl.buffer_security_check;
-    if (!d_cl.function_level_linking && t_cl.function_level_linking)
+    if (!d_cl.function_level_linking.has_value() && t_cl.function_level_linking.has_value())
         d_cl.function_level_linking = t_cl.function_level_linking;
     if (d_cl.enhanced_instruction_set.empty())
         d_cl.enhanced_instruction_set = t_cl.enhanced_instruction_set;
@@ -3526,9 +3571,9 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
     if (d_link.program_database_file.empty())
         d_link.program_database_file = t_link.program_database_file;
     if (d_link.sub_system.empty()) d_link.sub_system = t_link.sub_system;
-    if (!d_link.optimize_references && t_link.optimize_references)
+    if (!d_link.optimize_references.has_value() && t_link.optimize_references.has_value())
         d_link.optimize_references = t_link.optimize_references;
-    if (!d_link.enable_comdat_folding && t_link.enable_comdat_folding)
+    if (!d_link.enable_comdat_folding.has_value() && t_link.enable_comdat_folding.has_value())
         d_link.enable_comdat_folding = t_link.enable_comdat_folding;
     if (d_link.base_address.empty()) d_link.base_address = t_link.base_address;
     if (d_link.target_machine.empty()) d_link.target_machine = t_link.target_machine;
@@ -3543,6 +3588,8 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
     if (d_link.map_file_name.empty()) d_link.map_file_name = t_link.map_file_name;
     if (!d_link.fixed_base_address && t_link.fixed_base_address)
         d_link.fixed_base_address = t_link.fixed_base_address;
+    if (!d_link.randomized_base_address.has_value() && t_link.randomized_base_address.has_value())
+        d_link.randomized_base_address = t_link.randomized_base_address;
     if (!d_link.large_address_aware && t_link.large_address_aware)
         d_link.large_address_aware = t_link.large_address_aware;
     if (!d_link.ignore_all_default_libraries && t_link.ignore_all_default_libraries)
@@ -3574,6 +3621,7 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
         d_rc.additional_include_directories = t_rc.additional_include_directories;
 
     // NASM settings
+    if (derived.nasm.path.empty()) derived.nasm.path = tmpl.nasm.path;
     if (derived.nasm.format.empty()) derived.nasm.format = tmpl.nasm.format;
     if (derived.nasm.additional_options.empty()) derived.nasm.additional_options = tmpl.nasm.additional_options;
     if (derived.nasm.include_directories.empty()) derived.nasm.include_directories = tmpl.nasm.include_directories;
