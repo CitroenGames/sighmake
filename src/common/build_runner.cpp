@@ -188,6 +188,85 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
     return std::system(cmd.c_str());
 }
 
+int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,
+                            const std::string& cache_dir) {
+    // Verify build directory exists
+    fs::path build_dir = fs::path(cache_dir) / cache.build_dir;
+    if (!fs::exists(build_dir)) {
+        // Create build directory and run cmake configure first
+        try {
+            fs::create_directories(build_dir);
+        } catch (const std::exception& e) {
+            std::cerr << "Error: Failed to create build directory: " << e.what() << "\n";
+            return 1;
+        }
+
+        // Configure
+        std::string configure_cmd = "cmake -S \"" + cache_dir + "\" -B \"" + build_dir.string() + "\"";
+        std::cout << "Configuring CMake project...\n";
+        int ret = std::system(configure_cmd.c_str());
+        if (ret != 0) {
+            std::cerr << "Error: CMake configuration failed\n";
+            return ret;
+        }
+    }
+
+    // Determine configuration
+    std::string config = options.config;
+    if (config.empty()) {
+        if (!cache.configurations.empty()) {
+            bool has_debug = false;
+            for (const auto& c : cache.configurations) {
+                if (c == "Debug") { has_debug = true; break; }
+            }
+            config = has_debug ? "Debug" : cache.configurations[0];
+        } else {
+            config = "Debug";
+        }
+    } else {
+        // Validate
+        bool found = false;
+        for (const auto& c : cache.configurations) {
+            if (c == config) { found = true; break; }
+        }
+        if (!found && !cache.configurations.empty()) {
+            std::cerr << "Error: Configuration '" << config << "' not available.\n";
+            std::cerr << "  Available: ";
+            for (size_t i = 0; i < cache.configurations.size(); i++) {
+                if (i > 0) std::cerr << ", ";
+                std::cerr << cache.configurations[i];
+            }
+            std::cerr << "\n";
+            return 1;
+        }
+    }
+
+    // Build cmake --build command
+    std::string cmd = "cmake --build \"" + build_dir.string() + "\" --config " + config;
+
+    if (options.clean_only) {
+        cmd += " --target clean";
+        std::cout << "Cleaning: " << cache.solution_name << " [" << config << "]" << std::endl;
+        return std::system(cmd.c_str());
+    }
+
+    if (options.clean_first) {
+        cmd += " --clean-first";
+    }
+
+    if (!options.target.empty()) {
+        cmd += " --target " + options.target;
+    }
+
+    if (options.parallel > 0) {
+        cmd += " -j " + std::to_string(options.parallel);
+    }
+
+    std::cout << "Building: " << cache.solution_name << " [" << config << "]" << std::endl;
+
+    return std::system(cmd.c_str());
+}
+
 int BuildRunner::run(const BuildOptions& options) {
     // Verify directory exists
     if (!fs::exists(options.directory)) {
@@ -214,6 +293,8 @@ int BuildRunner::run(const BuildOptions& options) {
         return run_msbuild(*cache, options, cache_dir);
     } else if (cache->generator == "makefile") {
         return run_make(*cache, options, cache_dir);
+    } else if (cache->generator == "cmake") {
+        return run_cmake(*cache, options, cache_dir);
     } else {
         std::cerr << "Error: Unknown generator '" << cache->generator << "' in cache file.\n";
         return 1;

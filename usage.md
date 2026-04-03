@@ -147,6 +147,7 @@ sighmake --convert <solution.sln> [options]
 | Option | Long Form | Description |
 |--------|-----------|-------------|
 | `-g <type>` | `--generator <type>` | Specify generator type (vcxproj, makefile) |
+| `-D <NAME>=<VALUE>` | | Define a variable for use in buildscripts as `${NAME}` |
 | `-t <name>` | `--toolset <name>` | Specify default toolset (msvc2022, msvc2019, etc.) |
 | `-c` | `--convert` | Convert Visual Studio solution to buildscripts |
 | `-b <dir>` | `--build <dir>` | Build using previously generated project files |
@@ -207,6 +208,40 @@ sighmake --list-toolsets
 ```
 
 Available toolsets: `msvc2026`, `msvc2022`, `msvc2019`, `msvc2017`, `msvc2015`, `msvc2013`, `msvc2012`, `msvc2010`
+
+### Variable Definitions (-D)
+
+Define variables on the command line that can be referenced in buildscripts using `${NAME}` syntax. This is useful for injecting machine-specific paths (such as SDK or engine install locations) without hardcoding them in buildscripts.
+
+**Define a variable:**
+```batch
+sighmake game.buildscript -D ENGINE_PATH=C:/Users/John/Garden
+```
+
+**Define multiple variables:**
+```batch
+sighmake game.buildscript -D ENGINE_PATH=C:/Garden -D SDL_DIR=C:/SDL2
+```
+
+**Use variables in buildscripts:**
+```ini
+[solution]
+name = MyGame
+include = ${ENGINE_PATH}/Engine/Engine.buildscript
+
+[project:MyGame]
+type = dll
+sources = src/**/*.cpp
+includes = ${ENGINE_PATH}/Engine/src
+libs = ${SDL_DIR}/lib/SDL2.lib
+libdirs = ${SDL_DIR}/lib
+defines = ENGINE_ROOT="${ENGINE_PATH}"
+target_link_libraries(PRIVATE Engine)
+```
+
+Variables work in any value field — `include`, `sources`, `libs`, `libdirs`, `includes`, `defines`, and all other string settings. Undefined variables resolve to an empty string.
+
+Variables defined with `-D` can also be overridden by `find_package()` if the same name is used, matching CMake's behavior.
 
 ### Solution Conversion
 

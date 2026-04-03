@@ -29,6 +29,10 @@ private:
     static int run_make(const BuildCache& cache, const BuildOptions& options,
                         const std::string& cache_dir);
 
+    // Invoke cmake --build on a CMake build directory
+    static int run_cmake(const BuildCache& cache, const BuildOptions& options,
+                         const std::string& cache_dir);
+
     // Find MSBuild.exe given VS installation path
     static std::string find_msbuild(const std::string& vs_installation_path);
 };

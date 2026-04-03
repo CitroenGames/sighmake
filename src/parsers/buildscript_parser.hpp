@@ -8,10 +8,13 @@ namespace vcxproj {
 class BuildscriptParser {
 public:
     BuildscriptParser() = default;
-    
+
+    // Set variables from command-line -D definitions (before calling parse())
+    void set_variables(const std::map<std::string, std::string>& vars);
+
     // Parse a buildscript file and return a Solution
     Solution parse(const std::string& filepath);
-    
+
     // Parse from string content
     Solution parse_string(const std::string& content, const std::string& base_path = ".");
     
@@ -183,6 +186,9 @@ private:
 
     // Helper to resolve a path relative to base_path and return absolute path
     static std::string resolve_path(const std::string& path, const std::string& base_path);
+
+    // Variables provided via set_variables() before parsing
+    std::map<std::string, std::string> initial_variables_;
 };
 
 } // namespace vcxproj

@@ -2485,3 +2485,88 @@ TEST_CASE("get_file_type recognizes .mc and .idl extensions", "[project_types]")
     CHECK(get_file_type("file.mc") == FileType::MessageCompile);
     CHECK(get_file_type("file.idl") == FileType::Midl);
 }
+
+// ============================================================================
+// CLI variable definitions (-D)
+// ============================================================================
+
+TEST_CASE("set_variables substitutes ${VAR} in string fields", "[variables]") {
+    BuildscriptParser parser;
+    parser.set_variables({{"MY_LIB", "mylib.lib"}, {"MY_DEFINE", "CUSTOM_FLAG"}, {"MY_DEF2", "EXTRA"}});
+
+    std::string input = R"(
+[solution]
+name = TestVars
+configurations = Debug
+platforms = x64
+
+[project:TestProj]
+type = exe
+sources = main.cpp
+libs = ${MY_LIB}
+defines = ${MY_DEFINE}, ${MY_DEF2}
+)";
+
+    Solution sol = parser.parse_string(input);
+    REQUIRE(sol.projects.size() == 1);
+    const auto& proj = sol.projects[0];
+
+    auto it = proj.configurations.find("Debug|x64");
+    REQUIRE(it != proj.configurations.end());
+    const auto& cfg = it->second;
+
+    // System lib (no path separator) goes to additional_dependencies
+    CHECK(contains(cfg.link.additional_dependencies, "mylib.lib"));
+    CHECK(contains(cfg.cl_compile.preprocessor_definitions, "CUSTOM_FLAG"));
+    CHECK(contains(cfg.cl_compile.preprocessor_definitions, "EXTRA"));
+}
+
+TEST_CASE("undefined variables resolve to empty string", "[variables]") {
+    BuildscriptParser parser;
+
+    std::string input = R"(
+[solution]
+name = TestUndef
+configurations = Debug
+platforms = x64
+
+[project:TestProj]
+type = exe
+sources = main.cpp
+defines = PREFIX_${UNDEFINED_VAR}_SUFFIX
+)";
+
+    Solution sol = parser.parse_string(input);
+    REQUIRE(sol.projects.size() == 1);
+    const auto& proj = sol.projects[0];
+
+    auto it = proj.configurations.find("Debug|x64");
+    REQUIRE(it != proj.configurations.end());
+    // ${UNDEFINED_VAR} resolves to empty, so result is "PREFIX__SUFFIX"
+    CHECK(contains(it->second.cl_compile.preprocessor_definitions, "PREFIX__SUFFIX"));
+}
+
+TEST_CASE("set_variables works with multiple variables in one value", "[variables]") {
+    BuildscriptParser parser;
+    parser.set_variables({{"PREFIX", "MY"}, {"SUFFIX", "APP"}});
+
+    std::string input = R"(
+[solution]
+name = TestMulti
+configurations = Debug
+platforms = x64
+
+[project:TestProj]
+type = exe
+sources = main.cpp
+defines = ${PREFIX}_${SUFFIX}_DEFINE
+)";
+
+    Solution sol = parser.parse_string(input);
+    REQUIRE(sol.projects.size() == 1);
+    const auto& proj = sol.projects[0];
+
+    auto it = proj.configurations.find("Debug|x64");
+    REQUIRE(it != proj.configurations.end());
+    CHECK(contains(it->second.cl_compile.preprocessor_definitions, "MY_APP_DEFINE"));
+}

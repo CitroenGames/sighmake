@@ -6,6 +6,7 @@
 #include "generators/vcxproj_generator.hpp"
 #include "generators/makefile_generator.hpp"
 #include "generators/deps_exporter.hpp"
+#include "generators/cmake_generator.hpp"
 #include "parsers/vcxproj_reader.hpp"
 #include "common/toolset_registry.hpp"
 #include "common/build_runner.hpp"
@@ -13,34 +14,45 @@
 namespace fs = std::filesystem;
 
 void print_usage(const char* program_name) {
-    std::cout << "sighmake - Build system generator\n\n";
+    std::cout << "sighmake - Build system generator for C++ projects\n\n";
     std::cout << "Usage:\n";
-    std::cout << "  " << program_name << " <buildscript|CMakeLists.txt> [options]\n";
-    std::cout << "  " << program_name << " --build <dir> [--config <cfg>]\n";
+    std::cout << "  " << program_name << " <input-file> [options]\n";
+    std::cout << "  " << program_name << " --build <dir> [build-options]\n";
     std::cout << "  " << program_name << " --convert <solution.sln> [options]\n";
     std::cout << "  " << program_name << " convert vpc <file.vpc> [options]\n\n";
-    std::cout << "Options:\n";
-    std::cout << "  -g, --generator <type>     Generator type (default: vcxproj)\n";
-    std::cout << "  -c, --convert              Convert Visual Studio solution to buildscripts\n";
+    std::cout << "Input formats:\n";
+    std::cout << "  .buildscript               Sighmake buildscript (INI-style)\n";
+    std::cout << "  CMakeLists.txt / .cmake    CMake project files\n\n";
+    std::cout << "Generation options:\n";
+    std::cout << "  -g, --generator <type>     Generator type (vcxproj, cmake, makefile)\n";
+    std::cout << "  -D <NAME>=<VALUE>          Define a variable for ${NAME} substitution\n";
     std::cout << "  -t, --toolset <name>       Default toolset (msvc2022, msvc2019, etc)\n";
-    std::cout << "      --list-toolsets        List available toolsets\n";
-    std::cout << "      --export-deps          Export dependency report as HTML\n";
-    std::cout << "  -l, --list                 List available generators\n";
-    std::cout << "  -h, --help                 Show this help message\n\n";
+    std::cout << "      --export-deps          Export dependency report as HTML\n\n";
     std::cout << "Build options:\n";
     std::cout << "  -b, --build <dir>          Build using previously generated project files\n";
     std::cout << "      --config <cfg>         Build configuration (e.g. Debug, Release)\n";
     std::cout << "      --target <tgt>         Build specific target\n";
+    std::cout << "      --clean                Clean build artifacts without building\n";
     std::cout << "      --clean-first          Clean before building\n";
     std::cout << "  -j, --parallel <N>         Parallel build jobs\n\n";
-    std::cout << "Commands:\n";
-    std::cout << "  convert vpc <file.vpc>     Convert VPC file to buildscript format\n\n";
+    std::cout << "Conversion:\n";
+    std::cout << "  -c, --convert              Convert Visual Studio .sln to buildscripts\n";
+    std::cout << "  convert vpc <file.vpc>     Convert Valve VPC file to buildscript\n\n";
+    std::cout << "Info:\n";
+    std::cout << "      --list-toolsets        List available toolsets\n";
+    std::cout << "  -l, --list                 List available generators\n";
+    std::cout << "  -h, --help                 Show this help message\n\n";
     std::cout << "Examples:\n";
+    std::cout << "  " << program_name << " project.buildscript\n";
+    std::cout << "  " << program_name << " project.buildscript -g cmake\n";
     std::cout << "  " << program_name << " project.buildscript -t msvc2022\n";
-    std::cout << "  " << program_name << " --build . --config Release\n";
+    std::cout << "  " << program_name << " project.buildscript -D ENGINE=C:/Engine\n";
     std::cout << "  " << program_name << " CMakeLists.txt -g makefile\n";
+    std::cout << "  " << program_name << " --build . --config Release -j 8\n";
     std::cout << "  " << program_name << " --convert solution.sln\n";
-    std::cout << "  " << program_name << " convert vpc project.vpc\n";
+    std::cout << "  " << program_name << " convert vpc project.vpc\n\n";
+    std::cout << "Environment variables:\n";
+    std::cout << "  SIGHMAKE_DEFAULT_TOOLSET   Default toolset when -t is not specified\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -150,6 +162,7 @@ int main(int argc, char* argv[]) {
     std::string default_toolset;
     bool convert_mode = false;
     bool export_deps = false;
+    std::map<std::string, std::string> cli_variables;
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -199,6 +212,20 @@ int main(int argc, char* argv[]) {
             }
         } else if (strcmp(argv[i], "--export-deps") == 0) {
             export_deps = true;
+        } else if (strcmp(argv[i], "-D") == 0) {
+            if (i + 1 < argc) {
+                std::string def = argv[++i];
+                size_t eq = def.find('=');
+                if (eq != std::string::npos && eq > 0) {
+                    cli_variables[def.substr(0, eq)] = def.substr(eq + 1);
+                } else {
+                    std::cerr << "Error: -D requires NAME=VALUE format\n";
+                    return 1;
+                }
+            } else {
+                std::cerr << "Error: -D requires an argument\n";
+                return 1;
+            }
         } else if (buildscript_path.empty()) {
             buildscript_path = argv[i];
         } else {
@@ -301,6 +328,9 @@ int main(int argc, char* argv[]) {
         } else {
             std::cout << "Parsing buildscript: " << buildscript_path << "\n";
             vcxproj::BuildscriptParser parser;
+            if (!cli_variables.empty()) {
+                parser.set_variables(cli_variables);
+            }
             solution = parser.parse(buildscript_path);
         }
 

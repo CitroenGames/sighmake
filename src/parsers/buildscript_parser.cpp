@@ -417,6 +417,10 @@ SourceFile* BuildscriptParser::find_or_create_source(const std::string& path, Pa
     return &src;
 }
 
+void BuildscriptParser::set_variables(const std::map<std::string, std::string>& vars) {
+    initial_variables_ = vars;
+}
+
 Solution BuildscriptParser::parse(const std::string& filepath) {
     std::ifstream file(filepath);
     if (!file.is_open()) {
@@ -448,6 +452,7 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
     ParseState state;
     state.solution = &solution;
     state.base_path = base_path;
+    state.variables = initial_variables_;
 
     // Pre-process content to handle multiline values (""")
     std::string processed_content = preprocess_multiline(content);
