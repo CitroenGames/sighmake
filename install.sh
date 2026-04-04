@@ -23,32 +23,15 @@ echo "Compiler:        $CXX"
 echo "Install prefix:  $PREFIX"
 echo
 
-# Step 1: Bootstrap — compile sighmake from source
-echo "[1/4] Compiling sighmake from source..."
+# Step 1: Compile
+echo "[1/2] Compiling..."
 SOURCES=$(find src -name '*.cpp' | tr '\n' ' ')
-SIGHMAKE="./sighmake_bootstrap"
-$CXX -std=c++17 -O2 -Wall -Isrc/ -include src/pch.h -o "$SIGHMAKE" $SOURCES
-echo "      Bootstrap compilation successful."
+$CXX -std=c++17 -O2 -Wall -Isrc/ -include src/pch.h -o sighmake $SOURCES
+echo "      OK"
 echo
 
-# Step 2: Generate Makefiles
-echo "[2/4] Generating Makefiles..."
-$SIGHMAKE sighmake.buildscript
-rm -f "$SIGHMAKE"
-echo
-
-# Step 3: Build Release
-echo "[3/4] Building Release..."
-make -C build Release
-echo
-
-# Step 4: Install
-echo "[4/4] Installing to $PREFIX/bin..."
-BUILT_BIN=$(find build/bin/Release -type f -perm +111 2>/dev/null | head -1)
-if [ -z "$BUILT_BIN" ]; then
-    echo "Error: no binary found in build/bin/Release"
-    exit 1
-fi
+# Step 2: Install
+echo "[2/2] Installing to $PREFIX/bin..."
 
 # Check if we can write to the install directory
 NEED_SUDO=false
@@ -64,11 +47,13 @@ fi
 if [ "$NEED_SUDO" = true ]; then
     echo "      Need elevated permissions for $PREFIX/bin"
     sudo install -d "$PREFIX/bin"
-    sudo install -m 755 "$BUILT_BIN" "$PREFIX/bin/sighmake"
+    sudo install -m 755 sighmake "$PREFIX/bin/sighmake"
 else
     install -d "$PREFIX/bin"
-    install -m 755 "$BUILT_BIN" "$PREFIX/bin/sighmake"
+    install -m 755 sighmake "$PREFIX/bin/sighmake"
 fi
+
+rm -f sighmake
 
 echo
 echo "sighmake installed to $PREFIX/bin/sighmake"
