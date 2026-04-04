@@ -1380,10 +1380,13 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
             fs::path sln_path(output_path);
             try {
                 vcxproj_path = fs::relative(proj_path, sln_path.parent_path()).string();
-                // Convert to backslashes for Windows
                 std::replace(vcxproj_path.begin(), vcxproj_path.end(), '/', '\\');
             } catch (...) {
-                vcxproj_path = proj.name + GENERATED_VCXPROJ;
+                // fallback below
+            }
+            if (vcxproj_path.empty()) {
+                vcxproj_path = fs::absolute(proj_path).string();
+                std::replace(vcxproj_path.begin(), vcxproj_path.end(), '/', '\\');
             }
         } else {
             vcxproj_path = proj.name + GENERATED_VCXPROJ;
@@ -1521,7 +1524,11 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
                 vcxproj_path = fs::relative(proj_path, sln_path.parent_path()).string();
                 std::replace(vcxproj_path.begin(), vcxproj_path.end(), '/', '\\');
             } catch (...) {
-                vcxproj_path = proj.name + GENERATED_VCXPROJ;
+                // fallback below
+            }
+            if (vcxproj_path.empty()) {
+                vcxproj_path = fs::absolute(proj_path).string();
+                std::replace(vcxproj_path.begin(), vcxproj_path.end(), '/', '\\');
             }
         } else {
             vcxproj_path = proj.name + GENERATED_VCXPROJ;
@@ -1552,7 +1559,11 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
                             dep_path = fs::relative(dep_proj_path, sln_path.parent_path()).string();
                             std::replace(dep_path.begin(), dep_path.end(), '/', '\\');
                         } catch (...) {
-                            dep_path = dep_proj.name + GENERATED_VCXPROJ;
+                            // fallback below
+                        }
+                        if (dep_path.empty()) {
+                            dep_path = fs::absolute(dep_proj_path).string();
+                            std::replace(dep_path.begin(), dep_path.end(), '/', '\\');
                         }
                     } else {
                         dep_path = dep_proj.name + GENERATED_VCXPROJ;
