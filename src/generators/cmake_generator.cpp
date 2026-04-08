@@ -630,20 +630,22 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
     }
 
     // Collect project dependencies grouped by visibility
-    std::vector<std::string> public_deps;
-    std::vector<std::string> private_deps;
-    std::vector<std::string> interface_deps;
+    // Each entry is (name, whole_archive)
+    std::vector<std::pair<std::string, bool>> public_deps;
+    std::vector<std::pair<std::string, bool>> private_deps;
+    std::vector<std::pair<std::string, bool>> interface_deps;
 
     for (const auto& dep : project.project_references) {
+        auto entry = std::make_pair(dep.name, dep.whole_archive);
         switch (dep.visibility) {
             case DependencyVisibility::PUBLIC:
-                public_deps.push_back(dep.name);
+                public_deps.push_back(entry);
                 break;
             case DependencyVisibility::PRIVATE:
-                private_deps.push_back(dep.name);
+                private_deps.push_back(entry);
                 break;
             case DependencyVisibility::INTERFACE:
-                interface_deps.push_back(dep.name);
+                interface_deps.push_back(entry);
                 break;
         }
     }
@@ -709,20 +711,32 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
 
     if (!public_deps.empty()) {
         out << "    PUBLIC\n";
-        for (const auto& d : public_deps) {
-            out << "        " << d << "\n";
+        for (const auto& [name, wa] : public_deps) {
+            if (wa) {
+                out << "        $<LINK_LIBRARY:WHOLE_ARCHIVE," << name << ">\n";
+            } else {
+                out << "        " << name << "\n";
+            }
         }
     }
     if (!private_deps.empty()) {
         out << "    PRIVATE\n";
-        for (const auto& d : private_deps) {
-            out << "        " << d << "\n";
+        for (const auto& [name, wa] : private_deps) {
+            if (wa) {
+                out << "        $<LINK_LIBRARY:WHOLE_ARCHIVE," << name << ">\n";
+            } else {
+                out << "        " << name << "\n";
+            }
         }
     }
     if (!interface_deps.empty()) {
         out << "    INTERFACE\n";
-        for (const auto& d : interface_deps) {
-            out << "        " << d << "\n";
+        for (const auto& [name, wa] : interface_deps) {
+            if (wa) {
+                out << "        $<LINK_LIBRARY:WHOLE_ARCHIVE," << name << ">\n";
+            } else {
+                out << "        " << name << "\n";
+            }
         }
     }
 

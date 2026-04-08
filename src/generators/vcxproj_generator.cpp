@@ -654,8 +654,36 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             if (!cfg.link.module_definition_file.empty())
                 link.append_child("ModuleDefinitionFile").text() =
                     make_relative_path(cfg.link.module_definition_file, output_path).c_str();
-            if (!cfg.link.additional_options.empty())
-                link.append_child("AdditionalOptions").text() = cfg.link.additional_options.c_str();
+            {
+                // Build whole-archive linker flags for dependencies marked WHOLE_ARCHIVE
+                std::string whole_archive_opts;
+                for (const auto& dep : project.project_references) {
+                    if (!dep.whole_archive) continue;
+                    // Find the dependency project to determine its output library name
+                    for (const auto& sol_proj : solution.projects) {
+                        if (sol_proj.name == dep.name) {
+                            std::string lib_name;
+                            auto dep_cfg_it = sol_proj.configurations.find(config_key);
+                            if (dep_cfg_it != sol_proj.configurations.end() && !dep_cfg_it->second.target_name.empty()) {
+                                lib_name = dep_cfg_it->second.target_name;
+                            } else {
+                                lib_name = sol_proj.name;
+                            }
+                            if (!whole_archive_opts.empty()) whole_archive_opts += " ";
+                            whole_archive_opts += "/WHOLEARCHIVE:" + lib_name;
+                            break;
+                        }
+                    }
+                }
+                // Combine existing additional_options with whole-archive flags
+                std::string combined_options = cfg.link.additional_options;
+                if (!whole_archive_opts.empty()) {
+                    if (!combined_options.empty()) combined_options += " ";
+                    combined_options += whole_archive_opts;
+                }
+                if (!combined_options.empty())
+                    link.append_child("AdditionalOptions").text() = combined_options.c_str();
+            }
             if (cfg.link.enable_comdat_folding.value_or(false))
                 link.append_child("EnableCOMDATFolding").text() = "true";
             if (cfg.link.optimize_references.value_or(false))

@@ -263,11 +263,13 @@ enum class DependencyVisibility {
 struct ProjectDependency {
     std::string name;                          // Name of the dependent project
     DependencyVisibility visibility = DependencyVisibility::PUBLIC;  // Default for backward compat
+    bool whole_archive = false;                // Link with whole-archive semantics (include all .obj files)
 
     // Constructors for convenience
     ProjectDependency() = default;
-    ProjectDependency(const std::string& n, DependencyVisibility v = DependencyVisibility::PUBLIC)
-        : name(n), visibility(v) {}
+    ProjectDependency(const std::string& n, DependencyVisibility v = DependencyVisibility::PUBLIC,
+                      bool wa = false)
+        : name(n), visibility(v), whole_archive(wa) {}
 };
 
 // Helper to parse visibility keyword to enum

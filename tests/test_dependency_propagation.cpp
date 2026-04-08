@@ -279,3 +279,202 @@ target_link_libraries(
     CHECK(contains(it->second.cl_compile.preprocessor_definitions, "DEF_A"));
     CHECK(contains(it->second.cl_compile.preprocessor_definitions, "DEF_B"));
 }
+
+// ============================================================================
+// WHOLE_ARCHIVE support
+// ============================================================================
+
+TEST_CASE("WHOLE_ARCHIVE parsed on single-line target_link_libraries", "[whole_archive]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:ImGui]
+type = lib
+
+[project:ImGuizmo]
+type = lib
+
+[project:Engine]
+type = dll
+target_link_libraries(PRIVATE WHOLE_ARCHIVE ImGui PRIVATE ImGuizmo)
+)");
+    auto* engine = find_project(sol, "Engine");
+    REQUIRE(engine != nullptr);
+    REQUIRE(engine->project_references.size() == 2);
+
+    auto& ref0 = engine->project_references[0];
+    CHECK(ref0.name == "ImGui");
+    CHECK(ref0.visibility == DependencyVisibility::PRIVATE);
+    CHECK(ref0.whole_archive == true);
+
+    auto& ref1 = engine->project_references[1];
+    CHECK(ref1.name == "ImGuizmo");
+    CHECK(ref1.visibility == DependencyVisibility::PRIVATE);
+    CHECK(ref1.whole_archive == false);
+}
+
+TEST_CASE("WHOLE_ARCHIVE parsed on multi-line target_link_libraries", "[whole_archive]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:ImGui]
+type = lib
+
+[project:ImGuizmo]
+type = lib
+
+[project:Engine]
+type = dll
+target_link_libraries(
+    PRIVATE WHOLE_ARCHIVE ImGui
+    PRIVATE ImGuizmo
+)
+)");
+    auto* engine = find_project(sol, "Engine");
+    REQUIRE(engine != nullptr);
+    REQUIRE(engine->project_references.size() == 2);
+
+    CHECK(engine->project_references[0].name == "ImGui");
+    CHECK(engine->project_references[0].whole_archive == true);
+
+    CHECK(engine->project_references[1].name == "ImGuizmo");
+    CHECK(engine->project_references[1].whole_archive == false);
+}
+
+TEST_CASE("WHOLE_ARCHIVE resets after one dependency", "[whole_archive]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:LibA]
+type = lib
+
+[project:LibB]
+type = lib
+
+[project:App]
+type = exe
+target_link_libraries(PRIVATE WHOLE_ARCHIVE LibA LibB)
+)");
+    auto* app = find_project(sol, "App");
+    REQUIRE(app != nullptr);
+    REQUIRE(app->project_references.size() == 2);
+
+    CHECK(app->project_references[0].name == "LibA");
+    CHECK(app->project_references[0].whole_archive == true);
+
+    CHECK(app->project_references[1].name == "LibB");
+    CHECK(app->project_references[1].whole_archive == false);
+}
+
+TEST_CASE("Multiple WHOLE_ARCHIVE dependencies", "[whole_archive]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:LibA]
+type = lib
+
+[project:LibB]
+type = lib
+
+[project:LibC]
+type = lib
+
+[project:App]
+type = exe
+target_link_libraries(PRIVATE WHOLE_ARCHIVE LibA WHOLE_ARCHIVE LibB LibC)
+)");
+    auto* app = find_project(sol, "App");
+    REQUIRE(app != nullptr);
+    REQUIRE(app->project_references.size() == 3);
+
+    CHECK(app->project_references[0].name == "LibA");
+    CHECK(app->project_references[0].whole_archive == true);
+
+    CHECK(app->project_references[1].name == "LibB");
+    CHECK(app->project_references[1].whole_archive == true);
+
+    CHECK(app->project_references[2].name == "LibC");
+    CHECK(app->project_references[2].whole_archive == false);
+}
+
+TEST_CASE("WHOLE_ARCHIVE with PUBLIC visibility", "[whole_archive]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:SharedLib]
+type = lib
+
+[project:App]
+type = exe
+target_link_libraries(PUBLIC WHOLE_ARCHIVE SharedLib)
+)");
+    auto* app = find_project(sol, "App");
+    REQUIRE(app != nullptr);
+    REQUIRE(app->project_references.size() == 1);
+
+    CHECK(app->project_references[0].name == "SharedLib");
+    CHECK(app->project_references[0].visibility == DependencyVisibility::PUBLIC);
+    CHECK(app->project_references[0].whole_archive == true);
+}
+
+TEST_CASE("WHOLE_ARCHIVE does not propagate transitively", "[whole_archive]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:CoreLib]
+type = lib
+
+[project:MidLib]
+type = lib
+target_link_libraries(PUBLIC CoreLib)
+
+[project:App]
+type = exe
+target_link_libraries(PUBLIC WHOLE_ARCHIVE MidLib)
+)");
+    auto* app = find_project(sol, "App");
+    REQUIRE(app != nullptr);
+
+    // MidLib should be whole_archive
+    bool found_mid = false;
+    bool found_core = false;
+    for (const auto& dep : app->project_references) {
+        if (dep.name == "MidLib") {
+            found_mid = true;
+            CHECK(dep.whole_archive == true);
+        }
+        // CoreLib should NOT be in App's direct project_references with whole_archive
+        // (it's only added transitively via propagation, not as a direct ref)
+        if (dep.name == "CoreLib") {
+            found_core = true;
+            CHECK(dep.whole_archive == false);
+        }
+    }
+    CHECK(found_mid == true);
+    // CoreLib is not a direct dependency of App, so it won't be in project_references
+    // The whole_archive flag only lives on direct project_references
+}

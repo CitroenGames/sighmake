@@ -2327,6 +2327,89 @@ target_link_libraries(
 4. **Test your visibility** - Build a project that depends on yours; if it fails to compile/link, you may need PUBLIC
 ```
 
+### Whole Archive Linking: WHOLE_ARCHIVE
+
+When a static library is linked into a DLL, the linker only includes object files that resolve symbols directly referenced by the DLL. Unreferenced symbols are silently discarded. This becomes a problem when a downstream executable needs symbols from the static lib that the intermediate DLL never directly uses.
+
+The `WHOLE_ARCHIVE` modifier forces the linker to include all object files from a static library, even if not directly referenced.
+
+**Syntax:**
+```ini
+target_link_libraries(
+    PRIVATE WHOLE_ARCHIVE imgui-docking    # Force all .obj files into the DLL
+    PRIVATE imguizmo                       # Normal linking
+)
+```
+
+`WHOLE_ARCHIVE` applies to the **next dependency only**, then resets. You can mark multiple dependencies:
+
+```ini
+target_link_libraries(
+    PRIVATE WHOLE_ARCHIVE libA WHOLE_ARCHIVE libB libC
+)
+# libA and libB are whole-archive, libC is normal
+```
+
+**What it generates:**
+
+| Platform | Generated Flag |
+|----------|---------------|
+| MSVC (.vcxproj) | `/WHOLEARCHIVE:libname` in `<AdditionalOptions>` |
+| GCC/Clang (Makefile) | `-Wl,--whole-archive lib.a -Wl,--no-whole-archive` |
+| macOS (Makefile) | `-Wl,-force_load,lib.a` |
+| CMake | `$<LINK_LIBRARY:WHOLE_ARCHIVE,libname>` (requires CMake 3.24+) |
+
+**Real-World Example:**
+
+A common use case is a DLL that bundles a static library with multiple backends. The DLL only uses some backends directly, but downstream executables need others:
+
+```ini
+# imgui with multiple backends compiled as a static lib
+[project:imgui-docking]
+type = lib
+sources = {
+    imgui.cpp
+    imgui_draw.cpp
+    backends/imgui_impl_sdl2.cpp
+    backends/imgui_impl_vulkan.cpp
+    backends/imgui_impl_sdlrenderer2.cpp    # Not used by EngineGraphics directly
+}
+defines = ENGINEGRAPHICS_BUILDING_DLL
+public_includes = ., backends
+
+# Engine DLL that consumes imgui — force all backends to be included
+[project:EngineGraphics]
+type = dll
+sources = src/**/*.cpp
+target_link_libraries(
+    PRIVATE WHOLE_ARCHIVE imgui-docking    # All imgui backends exported
+    PRIVATE imguizmo
+)
+defines = ENGINEGRAPHICS_BUILDING_DLL
+
+# Editor can now use any imgui backend through EngineGraphics
+[project:Editor]
+type = exe
+sources = src/**/*.cpp
+target_link_libraries(PRIVATE EngineGraphics)
+```
+
+Without `WHOLE_ARCHIVE`, the `imgui_impl_sdlrenderer2.obj` would be discarded by the MSVC linker because `EngineGraphics` never calls any `ImGui_ImplSDLRenderer2_*` function, causing unresolved external symbol errors in the Editor.
+
+**When to use WHOLE_ARCHIVE:**
+
+| Use Case | Description |
+|----------|-------------|
+| Plugin architectures | DLL bundles a static utility lib, but plugins need symbols the DLL didn't reference |
+| Self-registering factories | Static constructors register types at startup, but the DLL has no explicit reference |
+| Backend/driver selection | Library compiles multiple backends; which ones are needed is determined by downstream consumers |
+| Test harnesses | Test executables need internal symbols from a static lib consumed by a DLL |
+
+**Notes:**
+- `WHOLE_ARCHIVE` works with any visibility (`PUBLIC`, `PRIVATE`, `INTERFACE`)
+- The flag does **not** propagate transitively — it only affects how the declaring project links against the named dependency
+- Only meaningful when linking static libraries into executables or DLLs; ignored for lib-to-lib dependencies
+
 ### Finding External Packages: find_package()
 
 Use `find_package()` to locate external SDKs and libraries on your system. This function searches for packages and sets variables that you can use in your build settings.

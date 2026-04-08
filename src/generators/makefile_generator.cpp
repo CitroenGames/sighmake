@@ -531,7 +531,11 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     // Add project reference outputs (.a files) to link line, including transitive PUBLIC deps
     if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
         // Collect all project .a files by traversing the dependency tree
-        std::vector<std::string> dep_archives;
+        struct ArchiveEntry {
+            std::string path;
+            bool whole_archive;
+        };
+        std::vector<ArchiveEntry> dep_archives;
         std::set<std::string> visited_deps;
 
         // Helper to find a project by name
@@ -576,8 +580,9 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
         };
 
         // Recursive traversal: visit a dependency and its transitive PUBLIC deps
-        std::function<void(const std::string&, bool)> collect_deps =
-            [&](const std::string& dep_name, bool add_locally) {
+        // whole_archive flag only applies to the direct dependency, not transitive ones
+        std::function<void(const std::string&, bool, bool)> collect_deps =
+            [&](const std::string& dep_name, bool add_locally, bool is_whole_archive) {
             if (visited_deps.count(dep_name)) return;
             visited_deps.insert(dep_name);
 
@@ -588,26 +593,34 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
             if (add_locally) {
                 std::string archive = get_archive_path(*dep_proj, config_key, config_name);
                 if (!archive.empty()) {
-                    dep_archives.push_back(compute_relative_path(archive, makefile_dir));
+                    dep_archives.push_back({compute_relative_path(archive, makefile_dir), is_whole_archive});
                 }
             }
 
-            // Follow transitive PUBLIC dependencies
+            // Follow transitive PUBLIC dependencies (transitive deps are never whole-archive)
             for (const auto& sub_dep : dep_proj->project_references) {
                 if (sub_dep.visibility == DependencyVisibility::PRIVATE) continue;
-                collect_deps(sub_dep.name, true);
+                collect_deps(sub_dep.name, true, false);
             }
         };
 
         // Start from the project's direct dependencies
         for (const auto& dep : project.project_references) {
             if (dep.visibility == DependencyVisibility::INTERFACE) continue;
-            collect_deps(dep.name, true);
+            collect_deps(dep.name, true, dep.whole_archive);
         }
 
         // Prepend archives to ldlibs (reverse order so direct deps come first)
         for (auto it = dep_archives.rbegin(); it != dep_archives.rend(); ++it) {
-            ldlibs = *it + " " + ldlibs;
+            if (it->whole_archive) {
+#ifdef __APPLE__
+                ldlibs = "-Wl,-force_load," + it->path + " " + ldlibs;
+#else
+                ldlibs = "-Wl,--whole-archive " + it->path + " -Wl,--no-whole-archive " + ldlibs;
+#endif
+            } else {
+                ldlibs = it->path + " " + ldlibs;
+            }
         }
     }
 

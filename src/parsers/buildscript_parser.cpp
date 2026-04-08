@@ -930,6 +930,7 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
 
                 // State machine: track current visibility keyword (default PUBLIC for backward compat)
                 DependencyVisibility current_visibility = DependencyVisibility::PUBLIC;
+                bool next_is_whole_archive = false;
 
                 for (const auto& token : tokens) {
                     std::string trimmed_token = trim(token);
@@ -942,9 +943,12 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
                         current_visibility = DependencyVisibility::PRIVATE;
                     } else if (trimmed_token == "INTERFACE") {
                         current_visibility = DependencyVisibility::INTERFACE;
+                    } else if (trimmed_token == "WHOLE_ARCHIVE") {
+                        next_is_whole_archive = true;
                     } else {
                         // It's a dependency name - add with current visibility
-                        ProjectDependency dep(trimmed_token, current_visibility);
+                        ProjectDependency dep(trimmed_token, current_visibility, next_is_whole_archive);
+                        next_is_whole_archive = false;  // Reset after consuming
 
                         // Check for duplicates (last one wins)
                         auto it = std::find_if(
@@ -957,6 +961,7 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
                             state.current_project->project_references.push_back(dep);
                         } else {
                             it->visibility = current_visibility;  // Update visibility
+                            it->whole_archive = dep.whole_archive;  // Update whole_archive
                         }
                     }
                 }
@@ -1279,6 +1284,7 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
 
                 // State machine: track current visibility keyword (default PUBLIC for backward compat)
                 DependencyVisibility current_visibility = DependencyVisibility::PUBLIC;
+                bool next_is_whole_archive = false;
 
                 for (const auto& token : tokens) {
                     std::string trimmed_token = trim(token);
@@ -1291,9 +1297,12 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
                         current_visibility = DependencyVisibility::PRIVATE;
                     } else if (trimmed_token == "INTERFACE") {
                         current_visibility = DependencyVisibility::INTERFACE;
+                    } else if (trimmed_token == "WHOLE_ARCHIVE") {
+                        next_is_whole_archive = true;
                     } else {
                         // It's a dependency name - add with current visibility
-                        ProjectDependency dep(trimmed_token, current_visibility);
+                        ProjectDependency dep(trimmed_token, current_visibility, next_is_whole_archive);
+                        next_is_whole_archive = false;  // Reset after consuming
 
                         // Check for duplicates (last one wins)
                         auto it = std::find_if(
@@ -1306,6 +1315,7 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
                             state.current_project->project_references.push_back(dep);
                         } else {
                             it->visibility = current_visibility;  // Update visibility
+                            it->whole_archive = dep.whole_archive;  // Update whole_archive
                         }
                     }
                 }
