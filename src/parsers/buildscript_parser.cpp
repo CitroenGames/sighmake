@@ -486,15 +486,25 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
         solution.name = solution.projects[0].name;
     }
 
-    // Collect solution folders from projects
-    std::set<std::string> folder_names;
+    // Collect solution folders from projects (including intermediate parents for nesting)
+    std::set<std::string> folder_paths;
     for (const auto& project : solution.projects) {
-        if (!project.solution_folder.empty())
-            folder_names.insert(project.solution_folder);
+        if (!project.solution_folder.empty()) {
+            std::string path = project.solution_folder;
+            while (!path.empty()) {
+                folder_paths.insert(path);
+                size_t last_slash = path.rfind('/');
+                if (last_slash == std::string::npos) break;
+                path = path.substr(0, last_slash);
+            }
+        }
     }
-    for (const auto& name : folder_names) {
+    for (const auto& path : folder_paths) {
         SolutionFolder sf;
-        sf.name = name;
+        size_t last_slash = path.rfind('/');
+        sf.name = (last_slash == std::string::npos) ? path : path.substr(last_slash + 1);
+        sf.path = path;
+        sf.parent = (last_slash == std::string::npos) ? std::string() : path.substr(0, last_slash);
         sf.uuid = generate_uuid();
         solution.folders.push_back(sf);
     }
@@ -1014,8 +1024,7 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
 
     // Handle opening brace for pending folder block (brace on next line)
     if (trimmed == "{" && state.pending_folder_brace) {
-        state.current_folder = state.pending_folder_name;
-        state.in_folder_block = true;
+        state.folder_stack.push_back(state.pending_folder_name);
         state.pending_folder_brace = false;
         state.pending_folder_name.clear();
         return;
@@ -1049,8 +1058,7 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
 
             size_t brace_pos = trimmed.rfind('{');
             if (brace_pos != std::string::npos && brace_pos > end_paren) {
-                state.current_folder = folder_name;
-                state.in_folder_block = true;
+                state.folder_stack.push_back(folder_name);
             } else {
                 state.pending_folder_brace = true;
                 state.pending_folder_name = folder_name;
@@ -1073,9 +1081,8 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
         }
 
         // Folder block closing
-        if (state.in_folder_block) {
-            state.in_folder_block = false;
-            state.current_folder.clear();
+        if (!state.folder_stack.empty()) {
+            state.folder_stack.pop_back();
             return;
         }
     }
@@ -1399,7 +1406,7 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
         state.current_project->root_namespace = state.current_project->name;
         // Store the buildscript directory for path resolution in custom commands
         state.current_project->buildscript_path = state.base_path;
-        state.current_project->solution_folder = state.current_folder;
+        state.current_project->solution_folder = state.get_current_folder_path();
         state.current_file = nullptr;
         state.current_config.clear();
         return true;

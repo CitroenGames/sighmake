@@ -58,11 +58,19 @@ private:
         bool pending_if_result = false;     // Result of evaluate_condition() for pending if
         std::string pending_if_platform_filter;  // Platform filter for pending if (e.g., "Win32", "x64")
 
-        // Folder block tracking
-        std::string current_folder;
-        bool in_folder_block = false;
+        // Folder block tracking (stack for nested folders)
+        std::vector<std::string> folder_stack;
         bool pending_folder_brace = false;
         std::string pending_folder_name;
+
+        std::string get_current_folder_path() const {
+            std::string result;
+            for (size_t i = 0; i < folder_stack.size(); ++i) {
+                if (i > 0) result += '/';
+                result += folder_stack[i];
+            }
+            return result;
+        }
 
         struct ScopeState {
             bool executing;

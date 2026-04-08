@@ -1259,6 +1259,179 @@ folder("Core") {
     CHECK(sol.projects[0].sources.size() >= 2);
 }
 
+TEST_CASE("Nested folder assigns correct solution_folder", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+folder("Engine") {
+    folder("ThirdParty") {
+        [project:ZLib]
+        type = lib
+    }
+    [project:Core]
+    type = lib
+}
+[project:App]
+type = exe
+)");
+    REQUIRE(sol.projects.size() == 3);
+    // Find projects by name
+    const Project* zlib = nullptr;
+    const Project* core = nullptr;
+    const Project* app = nullptr;
+    for (const auto& p : sol.projects) {
+        if (p.name == "ZLib") zlib = &p;
+        else if (p.name == "Core") core = &p;
+        else if (p.name == "App") app = &p;
+    }
+    REQUIRE(zlib);
+    REQUIRE(core);
+    REQUIRE(app);
+    CHECK(zlib->solution_folder == "Engine/ThirdParty");
+    CHECK(core->solution_folder == "Engine");
+    CHECK(app->solution_folder.empty());
+}
+
+TEST_CASE("Triple nested folders", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+folder("A") {
+    folder("B") {
+        folder("C") {
+            [project:Deep]
+            type = lib
+        }
+    }
+}
+)");
+    REQUIRE(sol.projects.size() == 1);
+    CHECK(sol.projects[0].solution_folder == "A/B/C");
+    // Should have 3 folder entries: A, A/B, A/B/C
+    CHECK(sol.folders.size() == 3);
+    bool found_a = false, found_ab = false, found_abc = false;
+    for (const auto& f : sol.folders) {
+        if (f.path == "A") { found_a = true; CHECK(f.name == "A"); CHECK(f.parent.empty()); }
+        if (f.path == "A/B") { found_ab = true; CHECK(f.name == "B"); CHECK(f.parent == "A"); }
+        if (f.path == "A/B/C") { found_abc = true; CHECK(f.name == "C"); CHECK(f.parent == "A/B"); }
+    }
+    CHECK(found_a);
+    CHECK(found_ab);
+    CHECK(found_abc);
+}
+
+TEST_CASE("Nested folder with brace on next line", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+folder("Engine")
+{
+    folder("ThirdParty")
+    {
+        [project:ZLib]
+        type = lib
+    }
+}
+)");
+    REQUIRE(sol.projects.size() == 1);
+    CHECK(sol.projects[0].solution_folder == "Engine/ThirdParty");
+}
+
+TEST_CASE("Intermediate folders created for nested folders", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+folder("Engine") {
+    folder("ThirdParty") {
+        [project:ZLib]
+        type = lib
+    }
+}
+)");
+    // Even though no project is directly in "Engine", the folder should be created
+    CHECK(sol.folders.size() == 2);
+    bool found_engine = false, found_tp = false;
+    for (const auto& f : sol.folders) {
+        if (f.path == "Engine") { found_engine = true; CHECK(f.parent.empty()); }
+        if (f.path == "Engine/ThirdParty") { found_tp = true; CHECK(f.parent == "Engine"); }
+    }
+    CHECK(found_engine);
+    CHECK(found_tp);
+}
+
+TEST_CASE("Backward compatibility - single flat folder", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+folder("Core") {
+    [project:Lib]
+    type = lib
+}
+)");
+    REQUIRE(sol.projects.size() == 1);
+    CHECK(sol.projects[0].solution_folder == "Core");
+    REQUIRE(sol.folders.size() == 1);
+    CHECK(sol.folders[0].name == "Core");
+    CHECK(sol.folders[0].path == "Core");
+    CHECK(sol.folders[0].parent.empty());
+}
+
+TEST_CASE("Projects after nested folder block are at root", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+folder("Engine") {
+    folder("Sub") {
+        [project:Inner]
+        type = lib
+    }
+    [project:Mid]
+    type = lib
+}
+[project:Root]
+type = exe
+)");
+    REQUIRE(sol.projects.size() == 3);
+    const Project* inner = nullptr;
+    const Project* mid = nullptr;
+    const Project* root = nullptr;
+    for (const auto& p : sol.projects) {
+        if (p.name == "Inner") inner = &p;
+        else if (p.name == "Mid") mid = &p;
+        else if (p.name == "Root") root = &p;
+    }
+    REQUIRE(inner);
+    REQUIRE(mid);
+    REQUIRE(root);
+    CHECK(inner->solution_folder == "Engine/Sub");
+    CHECK(mid->solution_folder == "Engine");
+    CHECK(root->solution_folder.empty());
+}
+
 TEST_CASE("Parse multiple defines with config section", "[buildscript_parser]") {
     BuildscriptParser parser;
     auto sol = parser.parse_string(R"(

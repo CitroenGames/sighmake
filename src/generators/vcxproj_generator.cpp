@@ -1490,13 +1490,24 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
     file << "\t\tHideSolutionNode = FALSE\n";
     file << "\tEndGlobalSection\n";
 
-    // Nested projects (solution folder membership)
+    // Nested projects (solution folder membership and folder-to-folder nesting)
     if (!solution.folders.empty()) {
         std::map<std::string, std::string> folder_uuid_map;
         for (const auto& f : solution.folders)
-            folder_uuid_map[f.name] = f.uuid;
+            folder_uuid_map[f.path] = f.uuid;
 
         file << "\tGlobalSection(NestedProjects) = preSolution\n";
+
+        // Folder-to-folder nesting (child folder -> parent folder)
+        for (const auto& f : solution.folders) {
+            if (!f.parent.empty()) {
+                auto parent_it = folder_uuid_map.find(f.parent);
+                if (parent_it != folder_uuid_map.end())
+                    file << "\t\t{" << f.uuid << "} = {" << parent_it->second << "}\n";
+            }
+        }
+
+        // Project-to-folder nesting
         for (const auto& proj : solution.projects) {
             if (proj.is_package_project) continue;  // Skip synthetic find_package projects
             if (!proj.solution_folder.empty()) {
@@ -1610,12 +1621,23 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
         }
     };
 
-    // Solution folders with their child projects
+    // Solution folders with nested hierarchy
+    std::vector<SolutionFolder> sorted_folders = solution.folders;
+    std::sort(sorted_folders.begin(), sorted_folders.end(),
+        [](const SolutionFolder& a, const SolutionFolder& b) { return a.path < b.path; });
+
     std::map<std::string, pugi::xml_node> folder_nodes;
-    for (const auto& folder : solution.folders) {
-        auto folder_node = root.append_child("Folder");
+    for (const auto& folder : sorted_folders) {
+        pugi::xml_node parent_node;
+        if (folder.parent.empty()) {
+            parent_node = root;
+        } else {
+            auto parent_it = folder_nodes.find(folder.parent);
+            parent_node = (parent_it != folder_nodes.end()) ? parent_it->second : root;
+        }
+        auto folder_node = parent_node.append_child("Folder");
         folder_node.append_attribute("Name") = ("/" + folder.name + "/").c_str();
-        folder_nodes[folder.name] = folder_node;
+        folder_nodes[folder.path] = folder_node;
     }
 
     // Projects

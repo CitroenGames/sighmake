@@ -1428,3 +1428,148 @@ midl_flags = -Oicf
 
     fs::remove_all(temp_dir, ec);
 }
+
+// ============================================================================
+// Nested solution folders
+// ============================================================================
+
+TEST_CASE("SLN with nested solution folders has folder-to-folder nesting", "[vcxproj_generator]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = NestedTest
+configurations = Debug
+platforms = Win32
+
+folder("Engine") {
+    folder("ThirdParty") {
+        [project:ZLib]
+        type = lib
+    }
+    [project:Core]
+    type = lib
+}
+[project:App]
+type = exe
+)");
+
+    // Check the .sln file was generated
+    REQUIRE(!gen.sln_path.empty());
+    REQUIRE(fs::exists(gen.sln_path));
+
+    std::string sln_content = read_file(gen.sln_path);
+
+    if (gen.sln_path.extension() == ".sln") {
+        // Both folders should appear as solution folder project entries
+        CHECK(sln_content.find("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") != std::string::npos);
+
+        // NestedProjects section should exist
+        CHECK(sln_content.find("GlobalSection(NestedProjects)") != std::string::npos);
+
+        // Find folder UUIDs from the solution data
+        std::string engine_uuid, thirdparty_uuid;
+        for (const auto& f : gen.solution.folders) {
+            if (f.path == "Engine") engine_uuid = f.uuid;
+            if (f.path == "Engine/ThirdParty") thirdparty_uuid = f.uuid;
+        }
+        REQUIRE(!engine_uuid.empty());
+        REQUIRE(!thirdparty_uuid.empty());
+
+        // Folder-to-folder nesting: ThirdParty -> Engine
+        std::string folder_nesting = "{" + thirdparty_uuid + "} = {" + engine_uuid + "}";
+        CHECK(sln_content.find(folder_nesting) != std::string::npos);
+
+        // Project-to-folder nesting: ZLib -> ThirdParty
+        std::string zlib_uuid;
+        for (const auto& p : gen.solution.projects) {
+            if (p.name == "ZLib") zlib_uuid = p.uuid;
+        }
+        REQUIRE(!zlib_uuid.empty());
+        std::string proj_nesting = "{" + zlib_uuid + "} = {" + thirdparty_uuid + "}";
+        CHECK(sln_content.find(proj_nesting) != std::string::npos);
+    }
+}
+
+TEST_CASE("SLNX with nested solution folders has XML hierarchy", "[vcxproj_generator]") {
+    // Construct solution directly to test .slnx generation
+    Solution solution;
+    solution.name = "NestedSlnxTest";
+    solution.uuid = "00000000-0000-0000-0000-000000000000";
+    solution.configurations = {"Debug"};
+    solution.platforms = {"Win32"};
+
+    Project zlib;
+    zlib.name = "ZLib";
+    zlib.uuid = "11111111-1111-1111-1111-111111111111";
+    zlib.solution_folder = "Engine/ThirdParty";
+    solution.projects.push_back(zlib);
+
+    Project core;
+    core.name = "Core";
+    core.uuid = "22222222-2222-2222-2222-222222222222";
+    core.solution_folder = "Engine";
+    solution.projects.push_back(core);
+
+    SolutionFolder engine_folder;
+    engine_folder.name = "Engine";
+    engine_folder.path = "Engine";
+    engine_folder.parent = "";
+    engine_folder.uuid = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA";
+    solution.folders.push_back(engine_folder);
+
+    SolutionFolder tp_folder;
+    tp_folder.name = "ThirdParty";
+    tp_folder.path = "Engine/ThirdParty";
+    tp_folder.parent = "Engine";
+    tp_folder.uuid = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB";
+    solution.folders.push_back(tp_folder);
+
+    // Generate .slnx
+    fs::path temp_dir = fs::temp_directory_path() / "sighmake_test_slnx_nested";
+    std::error_code ec;
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir);
+
+    fs::path slnx_path = temp_dir / "NestedSlnxTest.slnx";
+    VcxprojGenerator generator;
+    bool ok = generator.generate_slnx(solution, slnx_path.string());
+    REQUIRE(ok);
+
+    pugi::xml_document doc;
+    auto result = doc.load_file(slnx_path.string().c_str());
+    REQUIRE(result.status == pugi::status_ok);
+
+    auto root = doc.child("Solution");
+    REQUIRE(root);
+
+    // Engine folder should be a direct child of Solution
+    auto engine_node = root.find_child_by_attribute("Folder", "Name", "/Engine/");
+    REQUIRE(engine_node);
+
+    // ThirdParty folder should be a child of Engine, not of Solution root
+    auto tp_node = engine_node.find_child_by_attribute("Folder", "Name", "/ThirdParty/");
+    REQUIRE(tp_node);
+
+    // ThirdParty should NOT be a direct child of root
+    auto tp_at_root = root.find_child_by_attribute("Folder", "Name", "/ThirdParty/");
+    CHECK_FALSE(tp_at_root);
+
+    // ZLib project should be under ThirdParty
+    bool zlib_found = false;
+    for (auto child = tp_node.first_child(); child; child = child.next_sibling()) {
+        if (std::string(child.name()) == "Project") {
+            zlib_found = true;
+        }
+    }
+    CHECK(zlib_found);
+
+    // Core project should be under Engine (not ThirdParty)
+    bool core_found = false;
+    for (auto child = engine_node.first_child(); child; child = child.next_sibling()) {
+        if (std::string(child.name()) == "Project") {
+            core_found = true;
+        }
+    }
+    CHECK(core_found);
+
+    fs::remove_all(temp_dir, ec);
+}

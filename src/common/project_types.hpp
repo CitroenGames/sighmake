@@ -344,7 +344,9 @@ struct Project {
 };
 
 struct SolutionFolder {
-    std::string name;
+    std::string name;    // Leaf name (e.g. "ThirdParty")
+    std::string path;    // Full hierarchical path (e.g. "Engine/ThirdParty") — lookup key
+    std::string parent;  // Parent folder path (e.g. "Engine"), empty = root
     std::string uuid;
 };
 
