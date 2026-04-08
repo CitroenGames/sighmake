@@ -1541,19 +1541,19 @@ TEST_CASE("SLNX with nested solution folders has XML hierarchy", "[vcxproj_gener
     auto root = doc.child("Solution");
     REQUIRE(root);
 
-    // Engine folder should be a direct child of Solution
+    // .slnx format: ALL folders are direct children of <Solution> with full path names
     auto engine_node = root.find_child_by_attribute("Folder", "Name", "/Engine/");
     REQUIRE(engine_node);
 
-    // ThirdParty folder should be a child of Engine, not of Solution root
-    auto tp_node = engine_node.find_child_by_attribute("Folder", "Name", "/ThirdParty/");
+    // ThirdParty folder uses full path "/Engine/ThirdParty/" and is a direct child of Solution
+    auto tp_node = root.find_child_by_attribute("Folder", "Name", "/Engine/ThirdParty/");
     REQUIRE(tp_node);
 
-    // ThirdParty should NOT be a direct child of root
-    auto tp_at_root = root.find_child_by_attribute("Folder", "Name", "/ThirdParty/");
-    CHECK_FALSE(tp_at_root);
+    // ThirdParty should NOT be nested inside Engine as a child XML element
+    auto tp_nested = engine_node.find_child_by_attribute("Folder", "Name", "/Engine/ThirdParty/");
+    CHECK_FALSE(tp_nested);
 
-    // ZLib project should be under ThirdParty
+    // ZLib project should be under the ThirdParty folder node
     bool zlib_found = false;
     for (auto child = tp_node.first_child(); child; child = child.next_sibling()) {
         if (std::string(child.name()) == "Project") {
@@ -1562,7 +1562,7 @@ TEST_CASE("SLNX with nested solution folders has XML hierarchy", "[vcxproj_gener
     }
     CHECK(zlib_found);
 
-    // Core project should be under Engine (not ThirdParty)
+    // Core project should be under Engine folder node
     bool core_found = false;
     for (auto child = engine_node.first_child(); child; child = child.next_sibling()) {
         if (std::string(child.name()) == "Project") {

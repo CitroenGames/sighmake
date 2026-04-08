@@ -1621,22 +1621,16 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
         }
     };
 
-    // Solution folders with nested hierarchy
+    // Solution folders — .slnx requires ALL folders as direct children of <Solution>
+    // with full path names (e.g. "/Engine/ThirdParty/"), not nested XML elements.
     std::vector<SolutionFolder> sorted_folders = solution.folders;
     std::sort(sorted_folders.begin(), sorted_folders.end(),
         [](const SolutionFolder& a, const SolutionFolder& b) { return a.path < b.path; });
 
     std::map<std::string, pugi::xml_node> folder_nodes;
     for (const auto& folder : sorted_folders) {
-        pugi::xml_node parent_node;
-        if (folder.parent.empty()) {
-            parent_node = root;
-        } else {
-            auto parent_it = folder_nodes.find(folder.parent);
-            parent_node = (parent_it != folder_nodes.end()) ? parent_it->second : root;
-        }
-        auto folder_node = parent_node.append_child("Folder");
-        folder_node.append_attribute("Name") = ("/" + folder.name + "/").c_str();
+        auto folder_node = root.append_child("Folder");
+        folder_node.append_attribute("Name") = ("/" + folder.path + "/").c_str();
         folder_nodes[folder.path] = folder_node;
     }
 
