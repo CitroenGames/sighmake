@@ -864,6 +864,29 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
         solution.projects.push_back(std::move(pkg_project));
     }
 
+    // Phase 2.75: For interface/header-only projects, promote local libdirs to public_libdirs.
+    // Interface projects don't build anything themselves — everything they define is for consumers.
+    // Without this, libdirs set via find_package() in interface projects won't propagate.
+    for (auto& proj : solution.projects) {
+        bool is_interface = false;
+        for (const auto& [key, cfg] : proj.configurations) {
+            if (cfg.config_type == "Utility") {
+                is_interface = true;
+                break;
+            }
+        }
+        if (!is_interface) continue;
+
+        for (const auto& [config_key, cfg] : proj.configurations) {
+            for (const auto& dir : cfg.link.additional_library_directories) {
+                if (std::find(proj.public_libdirs.begin(), proj.public_libdirs.end(), dir)
+                    == proj.public_libdirs.end()) {
+                    proj.public_libdirs.push_back(dir);
+                }
+            }
+        }
+    }
+
     // Phase 3: Propagate public_includes, public_libs, and public_defines from dependencies
     // This must happen after all projects are parsed and defaults are applied
     propagate_target_link_libraries(solution);
@@ -3895,7 +3918,7 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
             // Propagate to all configurations
             for (const auto& config_key : solution.get_config_keys()) {
                 // Add locally if visibility permits (PUBLIC or PRIVATE)
-                if (should_add_locally) {
+                if (should_add_locally || should_propagate_transitively) {
                     // Propagate public_includes (all-config)
                     auto& proj_includes = proj.configurations[config_key]
                         .cl_compile.additional_include_directories;

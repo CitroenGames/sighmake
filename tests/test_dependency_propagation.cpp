@@ -478,3 +478,69 @@ target_link_libraries(PUBLIC WHOLE_ARCHIVE MidLib)
     // CoreLib is not a direct dependency of App, so it won't be in project_references
     // The whole_archive flag only lives on direct project_references
 }
+
+// ============================================================================
+// INTERFACE dependency propagates public_libdirs
+// ============================================================================
+
+TEST_CASE("INTERFACE library public_libdirs propagate to consumer", "[dependency_propagation]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:SDL2]
+type = interface
+public_libdirs = /opt/homebrew/lib
+public_libs = SDL2
+
+[project:App]
+type = exe
+target_link_libraries(PUBLIC SDL2)
+)");
+    auto* app = find_project(sol, "App");
+    REQUIRE(app != nullptr);
+
+    auto it = app->configurations.find("Debug|Win32");
+    REQUIRE(it != app->configurations.end());
+    CHECK(contains_substring(it->second.link.additional_library_directories, "/opt/homebrew/lib"));
+    CHECK(contains(it->second.link.additional_dependencies, "SDL2"));
+}
+
+// ============================================================================
+// INTERFACE visibility propagates through to downstream consumer
+// ============================================================================
+
+TEST_CASE("INTERFACE visibility propagates properties to downstream consumer", "[dependency_propagation]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:SDL2]
+type = interface
+public_includes = sdl2_include
+public_libdirs = /opt/homebrew/lib
+public_defines = USE_SDL2
+
+[project:EngineCore]
+type = lib
+target_link_libraries(INTERFACE SDL2)
+
+[project:Game]
+type = exe
+target_link_libraries(PUBLIC EngineCore)
+)");
+    auto* game = find_project(sol, "Game");
+    REQUIRE(game != nullptr);
+
+    auto it = game->configurations.find("Debug|Win32");
+    REQUIRE(it != game->configurations.end());
+    CHECK(contains_substring(it->second.cl_compile.additional_include_directories, "sdl2_include"));
+    CHECK(contains_substring(it->second.link.additional_library_directories, "/opt/homebrew/lib"));
+    CHECK(contains(it->second.cl_compile.preprocessor_definitions, "USE_SDL2"));
+}

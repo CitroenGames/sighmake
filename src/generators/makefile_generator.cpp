@@ -804,7 +804,15 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
             config_name = config_name.substr(0, pipe_pos);
         }
         if (config_name == "Release") {
+#ifdef __APPLE__
+            if (config.config_type == "DynamicLibrary") {
+                out << "\tstrip -x $@\n";
+            } else {
+                out << "\tstrip $@\n";
+            }
+#else
             out << "\tstrip $@\n";
+#endif
         }
     }
 
