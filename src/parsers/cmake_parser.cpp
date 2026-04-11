@@ -1432,8 +1432,19 @@ void CMakeParser::handle_foreach(const std::vector<std::string>& args, size_t& i
                 stop = std::stoi(args[3]);
                 if (args.size() >= 5) step = std::stoi(args[4]);
             }
-            for (int val = start; val <= stop; val += step) {
-                items.push_back(std::to_string(val));
+            if (step == 0) {
+                std::cerr << "[CMake] Error: foreach() RANGE step cannot be 0\n";
+                capture_until("endforeach", i, tokens);
+                return;
+            }
+            if (step > 0) {
+                for (int val = start; val <= stop; val += step) {
+                    items.push_back(std::to_string(val));
+                }
+            } else {
+                for (int val = start; val >= stop; val += step) {
+                    items.push_back(std::to_string(val));
+                }
             }
         } catch (const std::exception&) {
             std::cerr << "[CMake] Error: Invalid RANGE parameters in foreach()\n";

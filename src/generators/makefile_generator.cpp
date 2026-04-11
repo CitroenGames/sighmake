@@ -280,7 +280,7 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
     for (const auto& inc : config.cl_compile.additional_include_directories) {
         for (const auto& part : split_semicolons(inc)) {
             std::string inc_path = compute_relative_path(part, makefile_dir);
-            ss << "-I" << inc_path << " ";
+            ss << "-I\"" << inc_path << "\" ";
         }
     }
 
@@ -320,7 +320,7 @@ std::string MakefileGenerator::get_linker_flags(const Configuration& config, con
     for (const auto& libdir : config.link.additional_library_directories) {
         for (const auto& part : split_semicolons(libdir)) {
             std::string lib_path = compute_relative_path(part, makefile_dir);
-            ss << "-L" << lib_path << " ";
+            ss << "-L\"" << lib_path << "\" ";
         }
     }
 
@@ -863,7 +863,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
 
             // Add -include flag to force PCH inclusion for files that use it
             if (uses_pch && has_pch && !pch_include_base.empty()) {
-                out << " -include " << pch_include_base;
+                out << " -include \"" << pch_include_base << "\"";
             }
 
             out << " -MMD -MP -c -o $@ $<\n\n";

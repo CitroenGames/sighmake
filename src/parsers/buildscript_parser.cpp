@@ -3918,7 +3918,7 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
             // Propagate to all configurations
             for (const auto& config_key : solution.get_config_keys()) {
                 // Add locally if visibility permits (PUBLIC or PRIVATE)
-                if (should_add_locally || should_propagate_transitively) {
+                if (should_add_locally) {
                     // Propagate public_includes (all-config)
                     auto& proj_includes = proj.configurations[config_key]
                         .cl_compile.additional_include_directories;
@@ -4019,13 +4019,11 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
                             effective_vis = visibility;  // Inherit current visibility
                         }
                     } else {  // INTERFACE
-                        // INTERFACE always propagates as INTERFACE (unless blocked by PRIVATE)
-                        if (visibility == DependencyVisibility::PRIVATE) {
-                            // PRIVATE boundary: add to current project but don't propagate further
-                            effective_vis = DependencyVisibility::PRIVATE;
-                        } else {
-                            effective_vis = DependencyVisibility::INTERFACE;
-                        }
+                        // INTERFACE means "propagate to consumers" - inherit current visibility
+                        // PUBLIC + INTERFACE → PUBLIC (consumer gets it and propagates)
+                        // PRIVATE + INTERFACE → PRIVATE (consumer gets it locally only)
+                        // INTERFACE + INTERFACE → INTERFACE (consumer doesn't get it, passes through)
+                        effective_vis = visibility;
                     }
 
                     to_process.push_back({trans_dep.name, effective_vis});

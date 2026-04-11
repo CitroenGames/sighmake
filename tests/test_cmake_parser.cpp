@@ -638,3 +638,42 @@ add_executable(MyApp main.cpp)
     auto* proj = find_project(sol, "MyApp");
     REQUIRE(proj != nullptr);
 }
+
+// ============================================================================
+// foreach RANGE edge cases
+// ============================================================================
+
+TEST_CASE("CMake foreach RANGE with step zero does not hang", "[cmake_parser]") {
+    CMakeParser parser;
+    // This should not hang - step=0 should be rejected
+    REQUIRE_NOTHROW(parser.parse_string(R"(
+project(Test)
+foreach(i RANGE 0 5 0)
+endforeach()
+add_executable(App main.cpp)
+)"));
+}
+
+TEST_CASE("CMake foreach RANGE with negative step", "[cmake_parser]") {
+    CMakeParser parser;
+    // foreach(i RANGE 3 0 -1) should iterate 3, 2, 1, 0
+    auto sol = parser.parse_string(R"(
+project(Test)
+set(SOURCES "")
+foreach(i RANGE 3 0 -1)
+    list(APPEND SOURCES file${i}.cpp)
+endforeach()
+add_executable(App ${SOURCES})
+)");
+    auto* app = find_project(sol, "App");
+    REQUIRE(app != nullptr);
+    // Should have 4 source files from the countdown
+    bool has_file3 = false;
+    bool has_file0 = false;
+    for (const auto& src : app->sources) {
+        if (src.path.find("file3") != std::string::npos) has_file3 = true;
+        if (src.path.find("file0") != std::string::npos) has_file0 = true;
+    }
+    CHECK(has_file3);
+    CHECK(has_file0);
+}
