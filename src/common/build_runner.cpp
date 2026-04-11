@@ -168,7 +168,11 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
     if (options.clean_first) {
         std::string clean_cmd = cmd + " clean";
         std::cout << "Cleaning...\n";
-        std::system(clean_cmd.c_str());
+        int clean_result = std::system(clean_cmd.c_str());
+        if (clean_result != 0) {
+            std::cerr << "Warning: clean step returned non-zero exit code ("
+                      << clean_result << "), continuing with build.\n";
+        }
     }
 
     // Add target or config

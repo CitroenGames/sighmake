@@ -543,4 +543,13 @@ target_link_libraries(PUBLIC EngineCore)
     CHECK(contains_substring(it->second.cl_compile.additional_include_directories, "sdl2_include"));
     CHECK(contains_substring(it->second.link.additional_library_directories, "/opt/homebrew/lib"));
     CHECK(contains(it->second.cl_compile.preprocessor_definitions, "USE_SDL2"));
+
+    // EngineCore should NOT have SDL2's properties (INTERFACE means "not for me")
+    auto* engine = find_project(sol, "EngineCore");
+    REQUIRE(engine != nullptr);
+    auto eit = engine->configurations.find("Debug|Win32");
+    REQUIRE(eit != engine->configurations.end());
+    CHECK_FALSE(contains_substring(eit->second.cl_compile.additional_include_directories, "sdl2_include"));
+    CHECK_FALSE(contains_substring(eit->second.link.additional_library_directories, "/opt/homebrew/lib"));
+    CHECK_FALSE(contains(eit->second.cl_compile.preprocessor_definitions, "USE_SDL2"));
 }

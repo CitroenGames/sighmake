@@ -717,3 +717,39 @@ postbuild = echo postbuild_step
         CHECK(result.content.find("prebuild") != std::string::npos);
     }
 }
+
+TEST_CASE("MakefileGenerator quotes include paths with spaces", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = exe
+sources = main.cpp
+includes = path with spaces/include
+)");
+    if (!result.content.empty()) {
+        // Include path should be quoted: -I"path..."
+        CHECK(result.content.find("-I\"") != std::string::npos);
+    }
+}
+
+TEST_CASE("MakefileGenerator quotes library paths with spaces", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = exe
+sources = main.cpp
+libdirs = path with spaces/lib
+)");
+    if (!result.content.empty()) {
+        // Library path should be quoted: -L"path..."
+        CHECK(result.content.find("-L\"") != std::string::npos);
+    }
+}

@@ -96,7 +96,11 @@ std::optional<BuildCache> BuildCache::read(const std::string& dir) {
         } else if (key == "vs_installation_path") {
             cache.vs_installation_path = value;
         } else if (key == "vs_year") {
-            cache.vs_year = std::stoi(value);
+            try {
+                cache.vs_year = std::stoi(value);
+            } catch (...) {
+                cache.vs_year = 0;
+            }
         } else if (key == "platform_toolset") {
             cache.platform_toolset = value;
         } else if (key == "configurations") {
