@@ -479,6 +479,27 @@ inline bool is_unix_platform(const std::string& platform) {
     return p == "linux" || p == "macos" || p == "darwin" || p == "osx";
 }
 
+// Default output / intermediate directory layout when a buildscript does not
+// set outdir/intdir explicitly. Used by the vcxproj generator (to emit OutDir /
+// IntDir) and by the vcxproj reader (to suppress round-tripping these defaults
+// back into a regenerated buildscript). Keep both sides in sync — changing one
+// without the other will cause spurious `outdir`/`intdir` lines to appear.
+//
+// The paths are relative to the generated .vcxproj's own directory, which is
+// itself inside the build-root subdirectory (e.g. "build/"). MSBuild therefore
+// resolves OutDir to <build-root>/bin/<Platform>/<Config>/ and IntDir to
+// <build-root>/obj/<Platform>/<Config>/<Project>/ — one build tree, no doubling.
+inline std::string default_vcxproj_out_dir(const std::string& platform,
+                                           const std::string& config) {
+    return "bin\\" + platform + "\\" + config + "\\";
+}
+
+inline std::string default_vcxproj_int_dir(const std::string& platform,
+                                           const std::string& config,
+                                           const std::string& project_name) {
+    return "obj\\" + platform + "\\" + config + "\\" + project_name + "\\";
+}
+
 // Detect project language based on source files
 inline std::string detect_project_language(const Project& proj) {
     // If explicitly set, use it

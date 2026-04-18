@@ -25,6 +25,8 @@ void print_usage(const char* program_name) {
     std::cout << "  CMakeLists.txt / .cmake    CMake project files\n\n";
     std::cout << "Generation options:\n";
     std::cout << "  -g, --generator <type>     Generator type (vcxproj, cmake, makefile)\n";
+    std::cout << "  -B, --build-dir <dir>      Subdirectory for generated .vcxproj/.sln/.slnx\n";
+    std::cout << "                             (vcxproj generator only; default: build)\n";
     std::cout << "  -D <NAME>=<VALUE>          Define a variable for ${NAME} substitution\n";
     std::cout << "  -t, --toolset <name>       Default toolset (msvc2022, msvc2019, etc)\n";
     std::cout << "      --export-deps          Export dependency report as HTML\n\n";
@@ -154,6 +156,10 @@ int main(int argc, char* argv[]) {
 
     std::string buildscript_path;
     std::string output_dir = ".";
+    // vcxproj generator subdir for generated .vcxproj/.sln/.slnx. Default keeps
+    // all IDE artifacts in a single build/ tree; users can override.
+    std::string build_dir = "build";
+    bool build_dir_explicit = false;
 #ifdef _WIN32
     std::string generator_type = "vcxproj";  // Default generator
 #else
@@ -208,6 +214,14 @@ int main(int argc, char* argv[]) {
                 generator_type = argv[++i];
             } else {
                 std::cerr << "Error: -g requires an argument\n";
+                return 1;
+            }
+        } else if (strcmp(argv[i], "-B") == 0 || strcmp(argv[i], "--build-dir") == 0) {
+            if (i + 1 < argc) {
+                build_dir = argv[++i];
+                build_dir_explicit = true;
+            } else {
+                std::cerr << "Error: -B requires an argument\n";
                 return 1;
             }
         } else if (strcmp(argv[i], "--export-deps") == 0) {
@@ -354,6 +368,16 @@ int main(int argc, char* argv[]) {
         }
 
         std::cout << "Using generator: " << generator->name() << "\n";
+
+        // -B / --build-dir only affects the vcxproj generator today. Warn if
+        // the flag was explicit but points at a generator that doesn't use it,
+        // so the user knows it's being ignored rather than silently honored.
+        if (auto* vcxgen = dynamic_cast<vcxproj::VcxprojGenerator*>(generator.get())) {
+            vcxgen->set_build_dir(build_dir);
+        } else if (build_dir_explicit) {
+            std::cerr << "Warning: -B / --build-dir is only honored by the vcxproj generator; ignored for '"
+                      << generator->name() << "'.\n";
+        }
 
         // Generate project files
         if (!generator->generate(solution, output_dir)) {

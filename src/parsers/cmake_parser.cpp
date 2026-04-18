@@ -78,11 +78,11 @@ Solution CMakeParser::parse_string(const std::string& content, const std::string
                 if (config == "Debug") {
                     cfg.use_debug_libraries = true;
                     cfg.cl_compile.optimization = "Disabled";
-                    cfg.cl_compile.runtime_library = "MultiThreadedDebug";
+                    cfg.cl_compile.runtime_library = "MultiThreadedDebugDLL";
                     cfg.link.generate_debug_info = true;
                 } else {
                     cfg.cl_compile.optimization = "MaxSpeed";
-                    cfg.cl_compile.runtime_library = "MultiThreaded";
+                    cfg.cl_compile.runtime_library = "MultiThreadedDLL";
                     cfg.cl_compile.function_level_linking = true;
                     cfg.cl_compile.intrinsic_functions = true;
                     cfg.link.enable_comdat_folding = true;

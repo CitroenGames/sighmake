@@ -32,6 +32,32 @@ static std::string filter_vpc_commands(const std::string& command) {
 }
 
 // Helper function to normalize paths using std::filesystem
+// Canonical form for comparing two dir-path strings: forward slashes, a single
+// trailing slash. Only used to decide whether an OutDir/IntDir we just read
+// back from a .vcxproj matches the default the generator would have emitted,
+// so we don't round-trip a redundant outdir/intdir line into the buildscript.
+static std::string path_key(std::string p) {
+    for (auto& c : p) if (c == '\\') c = '/';
+    while (p.size() >= 2 && p.back() == '/' && p[p.size() - 2] == '/') p.pop_back();
+    if (!p.empty() && p.back() != '/') p.push_back('/');
+    return p;
+}
+
+static bool is_default_out_dir(const std::string& value,
+                               const std::string& config_key) {
+    if (value.empty()) return false;
+    auto [config_name, platform_name] = parse_config_key(config_key);
+    return path_key(value) == path_key(default_vcxproj_out_dir(platform_name, config_name));
+}
+
+static bool is_default_int_dir(const std::string& value,
+                               const std::string& config_key,
+                               const std::string& project_name) {
+    if (value.empty()) return false;
+    auto [config_name, platform_name] = parse_config_key(config_key);
+    return path_key(value) == path_key(default_vcxproj_int_dir(platform_name, config_name, project_name));
+}
+
 static std::string normalize_path(const std::string& path) {
     if (path.empty()) return path;
 
@@ -285,10 +311,17 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
         if (!config_key.empty() && project.configurations.count(config_key)) {
             auto& cfg = project.configurations[config_key];
 
-            if (auto node = prop_group.child("OutDir"))
-                cfg.out_dir = normalize_path(node.text().as_string());
-            if (auto node = prop_group.child("IntDir"))
-                cfg.int_dir = normalize_path(node.text().as_string());
+            if (auto node = prop_group.child("OutDir")) {
+                std::string v = normalize_path(node.text().as_string());
+                if (!is_default_out_dir(v, config_key)) cfg.out_dir = v;
+            }
+            if (auto node = prop_group.child("IntDir")) {
+                std::string v = normalize_path(node.text().as_string());
+                {
+                    const std::string& pname = project.name.empty() ? project.project_name : project.name;
+                    if (!is_default_int_dir(v, config_key, pname)) cfg.int_dir = v;
+                }
+            }
             if (auto node = prop_group.child("TargetName"))
                 cfg.target_name = node.text().as_string();
             if (auto node = prop_group.child("TargetExt"))
@@ -322,10 +355,15 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
                     auto& cfg = project.configurations[node_config_key];
                     std::string node_name = node.name();
 
-                    if (node_name == "OutDir")
-                        cfg.out_dir = normalize_path(node.text().as_string());
-                    else if (node_name == "IntDir")
-                        cfg.int_dir = normalize_path(node.text().as_string());
+                    if (node_name == "OutDir") {
+                        std::string v = normalize_path(node.text().as_string());
+                        if (!is_default_out_dir(v, node_config_key)) cfg.out_dir = v;
+                    }
+                    else if (node_name == "IntDir") {
+                        std::string v = normalize_path(node.text().as_string());
+                        const std::string& pname = project.name.empty() ? project.project_name : project.name;
+                        if (!is_default_int_dir(v, node_config_key, pname)) cfg.int_dir = v;
+                    }
                     else if (node_name == "TargetName")
                         cfg.target_name = node.text().as_string();
                     else if (node_name == "TargetExt")

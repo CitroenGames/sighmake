@@ -752,7 +752,7 @@ type = exe
 )");
     auto& debug_cfg = sol.projects[0].configurations["Debug|Win32"];
     CHECK(debug_cfg.cl_compile.optimization == "Disabled");
-    CHECK(debug_cfg.cl_compile.runtime_library == "MultiThreadedDebug");
+    CHECK(debug_cfg.cl_compile.runtime_library == "MultiThreadedDebugDLL");
     CHECK(debug_cfg.link.generate_debug_info == true);
 }
 
@@ -769,7 +769,7 @@ type = exe
 )");
     auto& release_cfg = sol.projects[0].configurations["Release|Win32"];
     CHECK(release_cfg.cl_compile.optimization == "MaxSpeed");
-    CHECK(release_cfg.cl_compile.runtime_library == "MultiThreaded");
+    CHECK(release_cfg.cl_compile.runtime_library == "MultiThreadedDLL");
     CHECK(release_cfg.cl_compile.function_level_linking == true);
     CHECK(release_cfg.cl_compile.intrinsic_functions == true);
     CHECK(release_cfg.link.enable_comdat_folding == true);

@@ -1111,7 +1111,7 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
                 if (is_windows_platform(plat)) continue;
 
                 std::string target_name = config.target_name.empty() ? proj.name : config.target_name;
-                std::string out_dir = config.out_dir.empty() ? "bin/" + cfg_name : config.out_dir;
+                std::string out_dir = config.out_dir.empty() ? "build/" + cfg_name : config.out_dir;
                 // Make path relative to build dir
                 fs::path out_path = fs::path(out_dir);
                 if (out_path.is_absolute()) {

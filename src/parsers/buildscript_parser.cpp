@@ -675,7 +675,7 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                         cfg.cl_compile.optimization = "Disabled";
                     }
                     if (cfg.cl_compile.runtime_library.empty()) {
-                        cfg.cl_compile.runtime_library = "MultiThreadedDebug";
+                        cfg.cl_compile.runtime_library = "MultiThreadedDebugDLL";
                     }
                     if (cfg.cl_compile.debug_information_format.empty()) {
                         // EditAndContinue only works on Win32
@@ -690,7 +690,7 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                         cfg.cl_compile.optimization = "MaxSpeed";
                     }
                     if (cfg.cl_compile.runtime_library.empty()) {
-                        cfg.cl_compile.runtime_library = "MultiThreaded";
+                        cfg.cl_compile.runtime_library = "MultiThreadedDLL";
                     }
                     if (cfg.cl_compile.debug_information_format.empty()) {
                         cfg.cl_compile.debug_information_format = "ProgramDatabase";
@@ -741,9 +741,9 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
 
             if (cfg.cl_compile.runtime_library.empty()) {
                 if (config == "Debug") {
-                    cfg.cl_compile.runtime_library = "MultiThreadedDebug";
+                    cfg.cl_compile.runtime_library = "MultiThreadedDebugDLL";
                 } else {
-                    cfg.cl_compile.runtime_library = "MultiThreaded";
+                    cfg.cl_compile.runtime_library = "MultiThreadedDLL";
                 }
             }
 

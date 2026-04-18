@@ -15,6 +15,11 @@ public:
     // Generate all project files (implements Generator interface)
     bool generate(Solution& solution, const std::string& output_dir) override;
 
+    // Override the subdirectory (under output_dir) where .vcxproj/.sln/.slnx are
+    // written. Default is "build". Empty means "write directly into output_dir".
+    void set_build_dir(const std::string& build_dir) { build_dir_ = build_dir; }
+    const std::string& build_dir() const { return build_dir_; }
+
     // Get generator name
     std::string name() const override { return "vcxproj"; }
 
@@ -60,6 +65,9 @@ private:
 
     // Resolve the effective toolset from a Solution (target_toolset, or first project's config)
     std::string resolve_solution_toolset(const Solution& solution) const;
+
+    // Default: .vcxproj / .sln / .slnx are written to output_dir/build/.
+    std::string build_dir_ = "build";
 };
 
 } // namespace vcxproj

@@ -118,13 +118,13 @@ This minimal buildscript automatically gets:
 
 **Debug Configuration:**
 - Optimization: Disabled
-- Runtime Library: MultiThreadedDebug
+- Runtime Library: MultiThreadedDebugDLL
 - Debug Info: EditAndContinue (Win32) or ProgramDatabase (x64)
 - Incremental Linking: Enabled
 
 **Release Configuration:**
 - Optimization: MaxSpeed
-- Runtime Library: MultiThreaded
+- Runtime Library: MultiThreadedDLL
 - Debug Info: ProgramDatabase
 - Function-Level Linking, Intrinsic Functions, COMDAT Folding, Optimize References: All enabled
 
@@ -695,6 +695,13 @@ defines[Linux] = __linux__, PLATFORM_LINUX, _DLL_EXT=.so, _DLL_PREFIX=lib
 |---------|-------------|---------|
 | `outdir` | Output directory for binaries | `outdir = bin/Release` |
 | `intdir` | Intermediate directory for object files | `intdir = obj/Release` |
+
+**Defaults (vcxproj generator):** the vcxproj generator writes `.vcxproj`, `.sln`, and `.slnx` files into a `build/` subdirectory of the current working directory by default (override with `-B <dir>` / `--build-dir <dir>`). When `outdir`/`intdir` are not specified, the generator emits paths **relative to the .vcxproj's own location**:
+
+- `outdir` → `bin\<Platform>\<Config>\` (resolves to `build\bin\<Platform>\<Config>\`)
+- `intdir` → `obj\<Platform>\<Config>\<ProjectName>\` (resolves to `build\obj\<Platform>\<Config>\<ProjectName>\`)
+
+This keeps all build artifacts — project files and compiled binaries — under a single top-level `build/` tree instead of scattering them into each project's directory (MSBuild's own fallback). Relative `outdir`/`intdir` in a buildscript are interpreted relative to the buildscript file, so they survive the move to `build/` correctly (they get a `..\` prefix when emitted).
 
 **Example:**
 ```ini
@@ -6840,7 +6847,7 @@ Aliases for `excluded`: `exclude`, `excluded_from_build`
 | Setting | Debug | Release |
 |---------|-------|---------|
 | `optimization` | `Disabled` | `MaxSpeed` |
-| `runtime_library` | `MultiThreadedDebug` | `MultiThreaded` |
+| `runtime_library` | `MultiThreadedDebugDLL` | `MultiThreadedDLL` |
 | `debug_info` | `EditAndContinue`/`ProgramDatabase` | `ProgramDatabase` |
 | `link_incremental` | `true` | `false` |
 | `defines` | `DEBUG`, `_DEBUG` | `NDEBUG` |

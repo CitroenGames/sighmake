@@ -352,16 +352,29 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
         if (is_unix_platform(platform_name)) continue;  // Skip Unix configs for vcxproj
         std::string condition = "'$(Configuration)|$(Platform)'=='" + config_key + "'";
 
-        if (!cfg.out_dir.empty()) {
+        // Relative outdir/intdir in a buildscript are interpreted relative to
+        // the buildscript file itself. Since the .vcxproj now lives in a build
+        // subdirectory (not next to the buildscript), we must first anchor a
+        // relative path against project.buildscript_path, then relativize from
+        // the vcxproj location. Absolute paths and MSBuild $() variables are
+        // passed through unchanged (the latter) or only relativized (the former).
+        auto resolve_dir = [&](const std::string& raw) -> std::string {
+            if (raw.find("$(") != std::string::npos) return raw;
+            fs::path p(raw);
+            if (!p.is_absolute() && !project.buildscript_path.empty()) {
+                p = fs::path(project.buildscript_path) / p;
+            }
+            return make_relative_path(p.string(), output_path);
+        };
+
+        {
             auto node = props.append_child("OutDir");
             node.append_attribute("Condition") = condition.c_str();
             std::string out_value;
-            if (cfg.out_dir.find("$(") != std::string::npos) {
-                // Contains MSBuild variables - write as-is
-                out_value = cfg.out_dir;
+            if (cfg.out_dir.empty()) {
+                out_value = default_vcxproj_out_dir(platform_name, config_name);
             } else {
-                // Absolute path - make relative to vcxproj output location
-                out_value = make_relative_path(cfg.out_dir, output_path);
+                out_value = resolve_dir(cfg.out_dir);
             }
             // Ensure trailing slash for MSBuild
             if (!out_value.empty() && out_value.back() != '\\') {
@@ -369,16 +382,14 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             }
             node.text() = out_value.c_str();
         }
-        if (!cfg.int_dir.empty()) {
+        {
             auto node = props.append_child("IntDir");
             node.append_attribute("Condition") = condition.c_str();
             std::string int_value;
-            if (cfg.int_dir.find("$(") != std::string::npos) {
-                // Contains MSBuild variables - write as-is
-                int_value = cfg.int_dir;
+            if (cfg.int_dir.empty()) {
+                int_value = default_vcxproj_int_dir(platform_name, config_name, project.name);
             } else {
-                // Absolute path - make relative to vcxproj output location
-                int_value = make_relative_path(cfg.int_dir, output_path);
+                int_value = resolve_dir(cfg.int_dir);
             }
             // Ensure trailing slash for MSBuild
             if (!int_value.empty() && int_value.back() != '\\') {
@@ -1287,13 +1298,9 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                 if (sol_proj.name == dep.name) {
                     found = true;
 
-                    // Calculate correct relative path using buildscript_path
-                    if (!sol_proj.buildscript_path.empty()) {
-                        fs::path dep_vcxproj_path = fs::path(sol_proj.buildscript_path) / (sol_proj.name + GENERATED_VCXPROJ);
-                        ref_path = make_relative_path(dep_vcxproj_path.string(), output_path);
-                    } else {
-                        ref_path = dep.name + GENERATED_VCXPROJ;
-                    }
+                    // All .vcxproj files for a solution live side-by-side in the
+                    // effective build root, so the reference is always a bare filename.
+                    ref_path = sol_proj.name + GENERATED_VCXPROJ;
 
                     ref_elem.append_attribute("Include") = ref_path.c_str();
 
@@ -1399,29 +1406,9 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
     // Projects
     for (const auto& proj : solution.projects) {
         if (proj.is_package_project) continue;  // Skip synthetic find_package projects
-#if PROJ_SEPERATOR
-        // Compute relative path to vcxproj
-        std::string vcxproj_path;
-        if (!proj.buildscript_path.empty()) {
-            // vcxproj is at buildscript_path/name_.vcxproj
-            fs::path proj_path = fs::path(proj.buildscript_path) / (proj.name + GENERATED_VCXPROJ);
-            fs::path sln_path(output_path);
-            try {
-                vcxproj_path = fs::relative(proj_path, sln_path.parent_path()).string();
-                std::replace(vcxproj_path.begin(), vcxproj_path.end(), '/', '\\');
-            } catch (...) {
-                // fallback below
-            }
-            if (vcxproj_path.empty()) {
-                vcxproj_path = fs::absolute(proj_path).string();
-                std::replace(vcxproj_path.begin(), vcxproj_path.end(), '/', '\\');
-            }
-        } else {
-            vcxproj_path = proj.name + GENERATED_VCXPROJ;
-        }
-#else
+        // .vcxproj is co-located with this .sln in the effective build root,
+        // so the reference is always a bare filename.
         std::string vcxproj_path = proj.name + GENERATED_VCXPROJ;
-#endif
         file << "Project(\"{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}\") = \""
              << proj.name << "\", \"" << vcxproj_path << "\", \"{"
              << proj.uuid << "}\"\n";
@@ -1553,28 +1540,8 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
 
     // Helper: emit a Project element under a given parent node
     auto emit_project = [&](pugi::xml_node parent, const Project& proj) {
-        // Compute relative path to vcxproj
-        std::string vcxproj_path;
-#if PROJ_SEPERATOR
-        if (!proj.buildscript_path.empty()) {
-            fs::path proj_path = fs::path(proj.buildscript_path) / (proj.name + GENERATED_VCXPROJ);
-            fs::path sln_path(output_path);
-            try {
-                vcxproj_path = fs::relative(proj_path, sln_path.parent_path()).string();
-                std::replace(vcxproj_path.begin(), vcxproj_path.end(), '/', '\\');
-            } catch (...) {
-                // fallback below
-            }
-            if (vcxproj_path.empty()) {
-                vcxproj_path = fs::absolute(proj_path).string();
-                std::replace(vcxproj_path.begin(), vcxproj_path.end(), '/', '\\');
-            }
-        } else {
-            vcxproj_path = proj.name + GENERATED_VCXPROJ;
-        }
-#else
-        vcxproj_path = proj.name + GENERATED_VCXPROJ;
-#endif
+        // .vcxproj is co-located with this .slnx in the effective build root.
+        std::string vcxproj_path = proj.name + GENERATED_VCXPROJ;
 
         auto project = parent.append_child("Project");
         project.append_attribute("Path") = vcxproj_path.c_str();
@@ -1590,26 +1557,8 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
             std::string dep_path;
             for (const auto& dep_proj : solution.projects) {
                 if (dep_proj.name == dep.name) {
-#if PROJ_SEPERATOR
-                    if (!dep_proj.buildscript_path.empty()) {
-                        fs::path dep_proj_path = fs::path(dep_proj.buildscript_path) / (dep_proj.name + GENERATED_VCXPROJ);
-                        fs::path sln_path(output_path);
-                        try {
-                            dep_path = fs::relative(dep_proj_path, sln_path.parent_path()).string();
-                            std::replace(dep_path.begin(), dep_path.end(), '/', '\\');
-                        } catch (...) {
-                            // fallback below
-                        }
-                        if (dep_path.empty()) {
-                            dep_path = fs::absolute(dep_proj_path).string();
-                            std::replace(dep_path.begin(), dep_path.end(), '/', '\\');
-                        }
-                    } else {
-                        dep_path = dep_proj.name + GENERATED_VCXPROJ;
-                    }
-#else
+                    // All vcxproj files live next to this .slnx in the build root.
                     dep_path = dep_proj.name + GENERATED_VCXPROJ;
-#endif
                     break;
                 }
             }
@@ -1660,6 +1609,23 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
             fs::create_directories(output_dir);
         } catch (const std::exception& e) {
             std::cerr << "Error: Failed to create output directory: " << e.what() << "\n";
+            return false;
+        }
+    }
+
+    // .vcxproj / .sln / .slnx all land in this directory. Default is
+    // "<output_dir>/build/"; users override via -B / --build-dir. Empty
+    // build_dir_ means "write directly into output_dir" (back-compat escape hatch
+    // for callers that explicitly opted out).
+    fs::path effective_build_root = build_dir_.empty()
+        ? fs::path(output_dir.empty() ? "." : output_dir)
+        : fs::path(output_dir.empty() ? "." : output_dir) / build_dir_;
+    if (!fs::exists(effective_build_root)) {
+        try {
+            fs::create_directories(effective_build_root);
+        } catch (const std::exception& e) {
+            std::cerr << "Error: Failed to create build directory "
+                      << effective_build_root << ": " << e.what() << "\n";
             return false;
         }
     }
@@ -1765,25 +1731,8 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
     // 3. THIRD: Generate project files (now with correct toolsets)
     for (const auto& project : solution.projects) {
         if (project.is_package_project) continue;  // Skip synthetic find_package projects
-        fs::path vcxproj_path;
-
-#if PROJ_SEPERATOR
-        // Generate at buildscript location with underscore suffix
         std::string filename = project.name + GENERATED_VCXPROJ;
-        if (!project.buildscript_path.empty()) {
-            vcxproj_path = fs::path(project.buildscript_path) / filename;
-        } else {
-            vcxproj_path = fs::path(output_dir) / filename;
-        }
-#else
-        // Generate without underscore at buildscript location
-        std::string filename = project.name + GENERATED_VCXPROJ;
-        if (!project.buildscript_path.empty()) {
-            vcxproj_path = fs::path(project.buildscript_path) / filename;
-        } else {
-            vcxproj_path = fs::path(output_dir) / filename;
-        }
-#endif
+        fs::path vcxproj_path = effective_build_root / filename;
 
         if (!generate_vcxproj(project, solution, vcxproj_path.string())) {
             std::cerr << "Error: Failed to generate " << vcxproj_path << "\n";
@@ -1810,8 +1759,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
 
         if (use_slnx) {
             // Generate .slnx for MSVC 2026
-            fs::path slnx_path;
-            slnx_path = fs::path(output_dir) / (sln_name + GENERATED_SLNX);
+            fs::path slnx_path = effective_build_root / (sln_name + GENERATED_SLNX);
 
             std::cout << "Generating .slnx format for Visual Studio " << vs_info->year << "...\n";
 
@@ -1821,8 +1769,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
             }
         } else {
             // Generate traditional .sln for older toolsets
-            fs::path sln_path;
-            sln_path = fs::path(output_dir) / (sln_name + GENERATED_SLN);
+            fs::path sln_path = effective_build_root / (sln_name + GENERATED_SLN);
 
             if (!generate_sln(solution, sln_path.string())) {
                 std::cerr << "Error: Failed to generate " << sln_path << "\n";
@@ -1836,16 +1783,21 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
         BuildCache cache;
         cache.generator = "vcxproj";
         cache.solution_name = solution.name.empty() ? solution.projects[0].name : solution.name;
-        if (vs_info->year >= 2026) {
-            cache.solution_file = cache.solution_name + GENERATED_SLNX;
-        } else {
-            cache.solution_file = cache.solution_name + GENERATED_SLN;
-        }
+        std::string sln_filename = (vs_info->year >= 2026)
+            ? cache.solution_name + GENERATED_SLNX
+            : cache.solution_name + GENERATED_SLN;
+        // Cache stores solution_file relative to the cache directory (output_dir),
+        // and the runner resolves it as <cache_dir>/<solution_file>. Since the
+        // .sln/.slnx now lives in build_dir_, prefix the filename accordingly.
+        cache.solution_file = build_dir_.empty()
+            ? sln_filename
+            : (fs::path(build_dir_) / sln_filename).string();
         cache.vs_installation_path = vs_info->installation_path;
         cache.vs_year = vs_info->year;
         cache.platform_toolset = vs_info->platform_toolset;
         cache.configurations = solution.configurations;
         cache.platforms = solution.platforms;
+        cache.build_dir = build_dir_;
         cache.write(output_dir);
     }
 

@@ -503,3 +503,67 @@ TEST_CASE("VcxprojReader loads conditional import when file exists", "[vcxproj_r
     auto& defs = proj.configurations["Debug|Win32"].cl_compile.preprocessor_definitions;
     CHECK(std::find(defs.begin(), defs.end(), "FROM_PROPS") != defs.end());
 }
+
+TEST_CASE("VcxprojReader drops default OutDir/IntDir on readback", "[vcxproj_reader]") {
+    // If the generator emitted the exact default paths, readback should NOT
+    // populate out_dir/int_dir — so a regenerated buildscript stays clean.
+    std::string xml = R"(<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectName>App</ProjectName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>bin\x64\Debug\</OutDir>
+    <IntDir>obj\x64\Debug\App\</IntDir>
+  </PropertyGroup>
+</Project>)";
+
+    TempVcxproj temp(xml);
+    VcxprojReader reader;
+    auto proj = reader.read_vcxproj(temp.vcxproj_path.string());
+
+    auto& cfg = proj.configurations["Debug|x64"];
+    CHECK(cfg.out_dir.empty());
+    CHECK(cfg.int_dir.empty());
+}
+
+TEST_CASE("VcxprojReader keeps non-default OutDir/IntDir on readback", "[vcxproj_reader]") {
+    std::string xml = R"(<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectName>App</ProjectName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>custom\out\</OutDir>
+    <IntDir>custom\int\</IntDir>
+  </PropertyGroup>
+</Project>)";
+
+    TempVcxproj temp(xml);
+    VcxprojReader reader;
+    auto proj = reader.read_vcxproj(temp.vcxproj_path.string());
+
+    auto& cfg = proj.configurations["Debug|x64"];
+    CHECK_FALSE(cfg.out_dir.empty());
+    CHECK_FALSE(cfg.int_dir.empty());
+    CHECK(cfg.out_dir.find("custom") != std::string::npos);
+    CHECK(cfg.int_dir.find("custom") != std::string::npos);
+}

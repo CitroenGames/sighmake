@@ -58,7 +58,9 @@ static GeneratedProject generate_from_buildscript(const std::string& buildscript
     VcxprojGenerator generator;
     generator.generate(result.solution, result.temp_dir.string());
 
-    // Find generated files (check both temp dir and parent for .sln/.slnx)
+    // .vcxproj / .sln / .slnx land in temp_dir/build/ by default now. Search
+    // parent and temp_dir too as fallbacks so older-style test fixtures keep
+    // passing while they're transitioned.
     auto search_dir = [&](const fs::path& dir) {
         if (!fs::exists(dir)) return;
         for (auto& entry : fs::directory_iterator(dir)) {
@@ -70,8 +72,8 @@ static GeneratedProject generate_from_buildscript(const std::string& buildscript
             }
         }
     };
+    search_dir(result.temp_dir / "build");
     search_dir(result.temp_dir);
-    // .sln/.slnx may be generated in parent directory
     search_dir(result.temp_dir.parent_path());
 
     return result;
@@ -191,7 +193,9 @@ sources = main.cpp, util.cpp
 
     // Find the generated vcxproj
     fs::path vcxproj_path;
-    for (auto& entry : fs::directory_iterator(temp_dir)) {
+    // .vcxproj now lands in temp_dir/build/ by default; recurse so tests that
+    // scan with a fresh iterator still find it without restructuring each case.
+    for (auto& entry : fs::recursive_directory_iterator(temp_dir)) {
         if (entry.path().extension() == ".vcxproj") {
             vcxproj_path = entry.path();
             break;
@@ -239,7 +243,9 @@ headers = types.h
     generator.generate(sol, temp_dir.string());
 
     fs::path vcxproj_path;
-    for (auto& entry : fs::directory_iterator(temp_dir)) {
+    // .vcxproj now lands in temp_dir/build/ by default; recurse so tests that
+    // scan with a fresh iterator still find it without restructuring each case.
+    for (auto& entry : fs::recursive_directory_iterator(temp_dir)) {
         if (entry.path().extension() == ".vcxproj") {
             vcxproj_path = entry.path();
             break;
@@ -833,7 +839,9 @@ pch.cpp:pch_header = pch.h
     generator.generate(sol, temp_dir.string());
 
     fs::path vcxproj_path;
-    for (auto& entry : fs::directory_iterator(temp_dir)) {
+    // .vcxproj now lands in temp_dir/build/ by default; recurse so tests that
+    // scan with a fresh iterator still find it without restructuring each case.
+    for (auto& entry : fs::recursive_directory_iterator(temp_dir)) {
         if (entry.path().extension() == ".vcxproj") {
             vcxproj_path = entry.path();
             break;
@@ -885,7 +893,9 @@ unused.cpp:exclude = true
     generator.generate(sol, temp_dir.string());
 
     fs::path vcxproj_path;
-    for (auto& entry : fs::directory_iterator(temp_dir)) {
+    // .vcxproj now lands in temp_dir/build/ by default; recurse so tests that
+    // scan with a fresh iterator still find it without restructuring each case.
+    for (auto& entry : fs::recursive_directory_iterator(temp_dir)) {
         if (entry.path().extension() == ".vcxproj") {
             vcxproj_path = entry.path();
             break;
@@ -937,7 +947,9 @@ slow.cpp:optimization = Disabled
     generator.generate(sol, temp_dir.string());
 
     fs::path vcxproj_path;
-    for (auto& entry : fs::directory_iterator(temp_dir)) {
+    // .vcxproj now lands in temp_dir/build/ by default; recurse so tests that
+    // scan with a fresh iterator still find it without restructuring each case.
+    for (auto& entry : fs::recursive_directory_iterator(temp_dir)) {
         if (entry.path().extension() == ".vcxproj") {
             vcxproj_path = entry.path();
             break;
@@ -993,7 +1005,9 @@ masm = code.asm
     generator.generate(sol, temp_dir.string());
 
     fs::path vcxproj_path;
-    for (auto& entry : fs::directory_iterator(temp_dir)) {
+    // .vcxproj now lands in temp_dir/build/ by default; recurse so tests that
+    // scan with a fresh iterator still find it without restructuring each case.
+    for (auto& entry : fs::recursive_directory_iterator(temp_dir)) {
         if (entry.path().extension() == ".vcxproj") {
             vcxproj_path = entry.path();
             break;
@@ -1039,7 +1053,9 @@ resources = app.rc
     generator.generate(sol, temp_dir.string());
 
     fs::path vcxproj_path;
-    for (auto& entry : fs::directory_iterator(temp_dir)) {
+    // .vcxproj now lands in temp_dir/build/ by default; recurse so tests that
+    // scan with a fresh iterator still find it without restructuring each case.
+    for (auto& entry : fs::recursive_directory_iterator(temp_dir)) {
         if (entry.path().extension() == ".vcxproj") {
             vcxproj_path = entry.path();
             break;
@@ -1337,7 +1353,9 @@ mc_header_dir = $(IntDir)
 
     // Find vcxproj
     fs::path vcxproj_path;
-    for (auto& entry : fs::directory_iterator(temp_dir)) {
+    // .vcxproj now lands in temp_dir/build/ by default; recurse so tests that
+    // scan with a fresh iterator still find it without restructuring each case.
+    for (auto& entry : fs::recursive_directory_iterator(temp_dir)) {
         if (entry.path().extension() == ".vcxproj") {
             vcxproj_path = entry.path();
             break;
@@ -1396,7 +1414,9 @@ midl_flags = -Oicf
     generator.generate(solution, temp_dir.string());
 
     fs::path vcxproj_path;
-    for (auto& entry : fs::directory_iterator(temp_dir)) {
+    // .vcxproj now lands in temp_dir/build/ by default; recurse so tests that
+    // scan with a fresh iterator still find it without restructuring each case.
+    for (auto& entry : fs::recursive_directory_iterator(temp_dir)) {
         if (entry.path().extension() == ".vcxproj") {
             vcxproj_path = entry.path();
             break;
@@ -1572,4 +1592,208 @@ TEST_CASE("SLNX with nested solution folders has XML hierarchy", "[vcxproj_gener
     CHECK(core_found);
 
     fs::remove_all(temp_dir, ec);
+}
+
+// Helper: find OutDir/IntDir for a given "Config|Platform" condition.
+static std::string find_prop_group_value(const pugi::xml_document& doc,
+                                         const std::string& element,
+                                         const std::string& config_platform) {
+    std::string want = "'$(Configuration)|$(Platform)'=='" + config_platform + "'";
+    for (auto& pg : doc.child("Project").children("PropertyGroup")) {
+        for (auto node : pg.children(element.c_str())) {
+            if (std::string(node.attribute("Condition").as_string()) == want) {
+                return node.text().as_string();
+            }
+        }
+    }
+    return {};
+}
+
+TEST_CASE("VcxprojGenerator emits default OutDir/IntDir when unset", "[vcxproj_generator]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+)");
+
+    REQUIRE(fs::exists(gen.vcxproj_path));
+    pugi::xml_document doc;
+    doc.load_file(gen.vcxproj_path.string().c_str());
+
+    // Paths are relative to the .vcxproj's own directory (now the build/
+    // subdirectory), so MSBuild resolves them to build/bin/... and build/obj/...
+    CHECK(find_prop_group_value(doc, "OutDir", "Debug|x64")   == "bin\\x64\\Debug\\");
+    CHECK(find_prop_group_value(doc, "OutDir", "Release|x64") == "bin\\x64\\Release\\");
+    CHECK(find_prop_group_value(doc, "IntDir", "Debug|x64")   == "obj\\x64\\Debug\\App\\");
+    CHECK(find_prop_group_value(doc, "IntDir", "Release|x64") == "obj\\x64\\Release\\App\\");
+}
+
+TEST_CASE("VcxprojGenerator lets explicit outdir override default", "[vcxproj_generator]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64
+
+[project:App]
+type = exe
+outdir[Debug|x64] = custom_out
+intdir[Debug|x64] = custom_int
+)");
+
+    pugi::xml_document doc;
+    doc.load_file(gen.vcxproj_path.string().c_str());
+
+    std::string out = find_prop_group_value(doc, "OutDir", "Debug|x64");
+    std::string intd = find_prop_group_value(doc, "IntDir", "Debug|x64");
+    CHECK(out.find("custom_out") != std::string::npos);
+    CHECK(intd.find("custom_int") != std::string::npos);
+    // Must not fall back to the default bin\...\Debug\ / obj\...\Debug\<Project>\ layout.
+    CHECK(out != "bin\\x64\\Debug\\");
+    CHECK(intd != "obj\\x64\\Debug\\App\\");
+}
+
+TEST_CASE("VcxprojGenerator passes $() MSBuild variables through unchanged", "[vcxproj_generator]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64
+
+[project:App]
+type = exe
+outdir[Debug|x64] = $(SolutionDir)out\$(Configuration)\
+intdir[Debug|x64] = $(SolutionDir)obj\$(Configuration)\
+)");
+
+    pugi::xml_document doc;
+    doc.load_file(gen.vcxproj_path.string().c_str());
+
+    CHECK(find_prop_group_value(doc, "OutDir", "Debug|x64") == "$(SolutionDir)out\\$(Configuration)\\");
+    CHECK(find_prop_group_value(doc, "IntDir", "Debug|x64") == "$(SolutionDir)obj\\$(Configuration)\\");
+}
+
+TEST_CASE("VcxprojGenerator emits defaults for multiple platforms distinctly", "[vcxproj_generator]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32, x64
+
+[project:App]
+type = exe
+)");
+
+    pugi::xml_document doc;
+    doc.load_file(gen.vcxproj_path.string().c_str());
+
+    CHECK(find_prop_group_value(doc, "OutDir", "Debug|Win32") == "bin\\Win32\\Debug\\");
+    CHECK(find_prop_group_value(doc, "OutDir", "Debug|x64")   == "bin\\x64\\Debug\\");
+    CHECK(find_prop_group_value(doc, "IntDir", "Debug|Win32") == "obj\\Win32\\Debug\\App\\");
+    CHECK(find_prop_group_value(doc, "IntDir", "Debug|x64")   == "obj\\x64\\Debug\\App\\");
+}
+
+TEST_CASE("VcxprojGenerator writes files into build/ by default", "[vcxproj_generator]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64
+
+[project:App]
+type = exe
+)");
+
+    REQUIRE(fs::exists(gen.vcxproj_path));
+    CHECK(gen.vcxproj_path.parent_path().filename() == "build");
+    REQUIRE(fs::exists(gen.sln_path));
+    CHECK(gen.sln_path.parent_path().filename() == "build");
+    // Nothing should have been written at the temp_dir root itself.
+    CHECK_FALSE(fs::exists(gen.temp_dir / "App_.vcxproj"));
+    CHECK_FALSE(fs::exists(gen.temp_dir / "App.vcxproj"));
+}
+
+TEST_CASE("VcxprojGenerator honors set_build_dir override", "[vcxproj_generator]") {
+    fs::path temp_dir = fs::temp_directory_path() / "sighmake_test_vcxproj_B";
+    std::error_code ec;
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir);
+
+    BuildscriptParser parser;
+    auto solution = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64
+
+[project:App]
+type = exe
+)", temp_dir.string());
+
+    VcxprojGenerator generator;
+    generator.set_build_dir("out/ide");
+    REQUIRE(generator.generate(solution, temp_dir.string()));
+
+    CHECK(fs::exists(temp_dir / "out" / "ide" / "App_.vcxproj"));
+    CHECK_FALSE(fs::exists(temp_dir / "build" / "App_.vcxproj"));
+    CHECK_FALSE(fs::exists(temp_dir / "App_.vcxproj"));
+
+    fs::remove_all(temp_dir, ec);
+}
+
+TEST_CASE("VcxprojGenerator empty build_dir writes directly into output_dir", "[vcxproj_generator]") {
+    fs::path temp_dir = fs::temp_directory_path() / "sighmake_test_vcxproj_noB";
+    std::error_code ec;
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir);
+
+    BuildscriptParser parser;
+    auto solution = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64
+
+[project:App]
+type = exe
+)", temp_dir.string());
+
+    VcxprojGenerator generator;
+    generator.set_build_dir("");
+    REQUIRE(generator.generate(solution, temp_dir.string()));
+
+    CHECK(fs::exists(temp_dir / "App_.vcxproj"));
+    CHECK_FALSE(fs::exists(temp_dir / "build" / "App_.vcxproj"));
+
+    fs::remove_all(temp_dir, ec);
+}
+
+TEST_CASE("VcxprojGenerator re-roots explicit relative outdir from buildscript", "[vcxproj_generator]") {
+    // When a buildscript sets a relative outdir, it is interpreted relative to
+    // the buildscript file. Since the .vcxproj now lives one level deeper
+    // (in build/), the emitted OutDir should include a ..\ prefix.
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64
+
+[project:App]
+type = exe
+outdir[Debug|x64] = bin/Debug
+intdir[Debug|x64] = obj/Debug
+)");
+
+    pugi::xml_document doc;
+    doc.load_file(gen.vcxproj_path.string().c_str());
+
+    std::string out = find_prop_group_value(doc, "OutDir", "Debug|x64");
+    std::string intd = find_prop_group_value(doc, "IntDir", "Debug|x64");
+    // Expect the path to climb out of build/ and point back at bin/Debug.
+    CHECK(out == "..\\bin\\Debug\\");
+    CHECK(intd == "..\\obj\\Debug\\");
 }
