@@ -370,6 +370,14 @@ std::string BuildscriptParser::resolve_path(const std::string& path, const std::
     // Check if original path has trailing slash/backslash
     bool has_trailing_slash = !path.empty() && (path.back() == '/' || path.back() == '\\');
 
+#ifdef _WIN32
+    // Preserve Unix absolute paths in cross-platform buildscripts instead of
+    // interpreting them as drive-relative Windows paths.
+    if (!path.empty() && path[0] == '/' && (path.size() == 1 || path[1] != '/')) {
+        return path;
+    }
+#endif
+
     // Resolve path relative to base_path to get absolute path
     fs::path abs_path;
     if (fs::path(path).is_absolute()) {

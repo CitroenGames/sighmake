@@ -92,8 +92,12 @@ static std::string make_relative_path(const std::string& file_path, const std::s
             return result;
         }
 
-        // Calculate relative path
-        fs::path relative = fs::relative(file, base);
+        // Calculate relative path without touching the filesystem. Some output
+        // directories do not exist yet, and fs::relative() can fail on them.
+        fs::path relative = file.lexically_relative(base);
+        if (relative.empty() && file != base) {
+            relative = file;
+        }
 
         // Convert to string with backslashes for Windows
         std::string result = relative.string();

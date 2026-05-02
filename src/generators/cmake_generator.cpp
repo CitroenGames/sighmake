@@ -703,69 +703,69 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
 
     bool has_content = !public_deps.empty() || !private_deps.empty() || !interface_deps.empty() ||
                        !common_libs.empty() || !per_config.empty();
-    if (!has_content) return;
-
     std::string default_vis = (config_type == "Utility") ? "INTERFACE" : "PRIVATE";
 
-    out << "\ntarget_link_libraries(" << project.name << "\n";
+    if (has_content) {
+        out << "\ntarget_link_libraries(" << project.name << "\n";
 
-    if (!public_deps.empty()) {
-        out << "    PUBLIC\n";
-        for (const auto& [name, wa] : public_deps) {
-            if (wa) {
-                out << "        $<LINK_LIBRARY:WHOLE_ARCHIVE," << name << ">\n";
-            } else {
-                out << "        " << name << "\n";
+        if (!public_deps.empty()) {
+            out << "    PUBLIC\n";
+            for (const auto& [name, wa] : public_deps) {
+                if (wa) {
+                    out << "        $<LINK_LIBRARY:WHOLE_ARCHIVE," << name << ">\n";
+                } else {
+                    out << "        " << name << "\n";
+                }
             }
         }
-    }
-    if (!private_deps.empty()) {
-        out << "    PRIVATE\n";
-        for (const auto& [name, wa] : private_deps) {
-            if (wa) {
-                out << "        $<LINK_LIBRARY:WHOLE_ARCHIVE," << name << ">\n";
-            } else {
-                out << "        " << name << "\n";
+        if (!private_deps.empty()) {
+            out << "    PRIVATE\n";
+            for (const auto& [name, wa] : private_deps) {
+                if (wa) {
+                    out << "        $<LINK_LIBRARY:WHOLE_ARCHIVE," << name << ">\n";
+                } else {
+                    out << "        " << name << "\n";
+                }
             }
         }
-    }
-    if (!interface_deps.empty()) {
-        out << "    INTERFACE\n";
-        for (const auto& [name, wa] : interface_deps) {
-            if (wa) {
-                out << "        $<LINK_LIBRARY:WHOLE_ARCHIVE," << name << ">\n";
-            } else {
-                out << "        " << name << "\n";
+        if (!interface_deps.empty()) {
+            out << "    INTERFACE\n";
+            for (const auto& [name, wa] : interface_deps) {
+                if (wa) {
+                    out << "        $<LINK_LIBRARY:WHOLE_ARCHIVE," << name << ">\n";
+                } else {
+                    out << "        " << name << "\n";
+                }
             }
         }
-    }
 
-    if (!common_libs.empty() || !per_config.empty()) {
-        // Use default visibility for raw libs
-        out << "    " << default_vis << "\n";
-        for (const auto& lib : common_libs) {
-            // Skip libs that are already project deps
-            bool is_proj_dep = false;
-            for (const auto& dep : project.project_references) {
-                if (dep.name == lib) { is_proj_dep = true; break; }
+        if (!common_libs.empty() || !per_config.empty()) {
+            // Use default visibility for raw libs
+            out << "    " << default_vis << "\n";
+            for (const auto& lib : common_libs) {
+                // Skip libs that are already project deps
+                bool is_proj_dep = false;
+                for (const auto& dep : project.project_references) {
+                    if (dep.name == lib) { is_proj_dep = true; break; }
+                }
+                if (is_proj_dep) continue;
+                out << "        " << to_cmake_path(lib) << "\n";
             }
-            if (is_proj_dep) continue;
-            out << "        " << to_cmake_path(lib) << "\n";
-        }
-        for (const auto& pc : per_config) {
-            for (const auto& lib : pc.libs) {
-                out << "        $<$<CONFIG:" << pc.name << ">:" << to_cmake_path(lib) << ">\n";
+            for (const auto& pc : per_config) {
+                for (const auto& lib : pc.libs) {
+                    out << "        $<$<CONFIG:" << pc.name << ">:" << to_cmake_path(lib) << ">\n";
+                }
             }
         }
-    }
 
-    out << ")\n";
+        out << ")\n";
+    }
 
     // Linker options (subsystem, entry point, etc.)
     std::vector<std::string> msvc_link_opts;
     std::vector<std::string> gcc_link_opts;
 
-    if (!first) {  // We have at least one config
+    if (!project.configurations.empty()) {
         const Configuration* first_cfg = nullptr;
         for (const auto& [key, config] : project.configurations) {
             first_cfg = &config;

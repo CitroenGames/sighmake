@@ -645,7 +645,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
 
         std::string nasmflags = "-f " + nasm_fmt;
         for (const auto& inc : config.nasm.include_directories) {
-            std::string rel_inc = fs::relative(inc, makefile_dir).string();
+            std::string rel_inc = compute_relative_path(inc, makefile_dir);
             nasmflags += " -I" + rel_inc + "/";
         }
         for (const auto& def : config.nasm.preprocessor_definitions) {
@@ -1114,13 +1114,9 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
                 std::string out_dir = config.out_dir.empty() ? "build/" + cfg_name : config.out_dir;
                 // Make path relative to build dir
                 fs::path out_path = fs::path(out_dir);
-                if (out_path.is_absolute()) {
-                    out_path = fs::relative(out_path, build_dir);
-                } else {
-                    // out_dir from buildscript is relative to project root, make relative to build dir
-                    out_path = fs::relative(fs::path(output_dir) / out_dir, build_dir);
-                }
-                std::string rel_out = to_unix_path(out_path.string());
+                std::string rel_out = out_path.is_absolute()
+                    ? compute_relative_path(out_path.string(), build_dir)
+                    : compute_relative_path((fs::path(output_dir) / out_dir).string(), build_dir);
                 if (!rel_out.empty() && rel_out.back() != '/') rel_out += '/';
 
                 if (config.config_type == "Application") {
