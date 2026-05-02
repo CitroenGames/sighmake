@@ -2007,6 +2007,9 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             out << "target_name = " << cfg.target_name << "\n";
         if (!cfg.target_ext.empty())
             out << "target_ext = " << cfg.target_ext << "\n";
+        if (!cfg.character_set.empty() &&
+            cfg.character_set != project.configurations.begin()->second.character_set)
+            out << "charset = " << cfg.character_set << "\n";
         if (!cfg.executable_path.empty())
             out << "executable_path = " << cfg.executable_path << "\n";
         if (!cfg.generate_manifest)

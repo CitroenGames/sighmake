@@ -190,3 +190,23 @@ TEST_CASE("BuildscriptWriter round-trip with BuildscriptParser", "[buildscript_w
     REQUIRE(sol.projects.size() >= 1);
     CHECK(sol.projects[0].name == "RoundTrip");
 }
+
+TEST_CASE("BuildscriptWriter preserves config-specific Unicode charset", "[buildscript_writer]") {
+    Project proj;
+    proj.name = "MixedCharset";
+    proj.configurations["Debug|Win32"].config_type = "Application";
+    proj.configurations["Debug|Win32"].character_set = "MultiByte";
+    proj.configurations["Release|x64"].config_type = "Application";
+    proj.configurations["Release|x64"].character_set = "Unicode";
+
+    auto result = write_project(proj);
+    CHECK(result.content.find("charset = MultiByte") != std::string::npos);
+    CHECK(result.content.find("[config:Release|x64]") != std::string::npos);
+    CHECK(result.content.find("charset = Unicode") != std::string::npos);
+
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(result.content, result.temp_dir.string());
+    REQUIRE(sol.projects.size() >= 1);
+    CHECK(sol.projects[0].configurations["Debug|Win32"].character_set == "MultiByte");
+    CHECK(sol.projects[0].configurations["Release|x64"].character_set == "Unicode");
+}
