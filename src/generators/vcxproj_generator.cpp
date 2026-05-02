@@ -61,6 +61,10 @@ static std::string adjust_command_paths(const std::string& command,
 
 // Helper function to make a path relative to the output directory
 static std::string make_relative_path(const std::string& file_path, const std::string& base_path) {
+    if (file_path.find("$(") != std::string::npos || file_path.find("%(") != std::string::npos) {
+        return file_path;
+    }
+
     try {
         // Check if original path has trailing slash/backslash
         bool has_trailing_slash = !file_path.empty() &&
@@ -650,6 +654,12 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                 }
 
                 deps_str += join_vector(relative_deps, ";");
+                if (deps_str.find("%(AdditionalDependencies)") == std::string::npos) {
+                    if (!deps_str.empty() && deps_str.back() != ';') {
+                        deps_str += ";";
+                    }
+                    deps_str += "%(AdditionalDependencies)";
+                }
                 link.append_child("AdditionalDependencies").text() = deps_str.c_str();
             }
             if (!cfg.link.additional_library_directories.empty()) {

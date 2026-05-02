@@ -1834,6 +1834,33 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
     parse_project_misc_setting(key, value, state);
 }
 
+static std::string parse_buildscript_config_type_value(const std::string& value, bool& kernel_mode) {
+    kernel_mode = false;
+
+    if (value == "exe" || value == "application" || value == "Application") {
+        return "Application";
+    }
+    if (value == "lib" || value == "static" || value == "staticlib" || value == "StaticLibrary") {
+        return "StaticLibrary";
+    }
+    if (value == "dll" || value == "shared" || value == "dynamiclib" || value == "DynamicLibrary") {
+        return "DynamicLibrary";
+    }
+    if (value == "sys" || value == "driver" || value == "Driver") {
+        kernel_mode = true;
+        return "Driver";
+    }
+    if (value == "sys_lib" || value == "kernel_lib") {
+        kernel_mode = true;
+        return "StaticLibrary";
+    }
+    if (value == "interface" || value == "header-only" || value == "Utility") {
+        return "Utility";
+    }
+
+    return value;
+}
+
 bool BuildscriptParser::parse_project_basic_setting(const std::string& key, const std::string& value,
                                                      ParseState& state) {
     Project& proj = *state.current_project;
@@ -1849,23 +1876,10 @@ bool BuildscriptParser::parse_project_basic_setting(const std::string& key, cons
     } else if (key == "ignore_warn_duplicated_filename") {
         proj.ignore_warn_compile_duplicated_filename = (value == "true" || value == "yes" || value == "1");
     } else if (key == "type") {
-        std::string config_type;
-        if (value == "exe" || value == "application" || value == "Application") {
-            config_type = "Application";
-        } else if (value == "lib" || value == "static" || value == "staticlib" || value == "StaticLibrary") {
-            config_type = "StaticLibrary";
-        } else if (value == "dll" || value == "shared" || value == "dynamiclib" || value == "DynamicLibrary") {
-            config_type = "DynamicLibrary";
-        } else if (value == "sys" || value == "driver" || value == "Driver") {
-            config_type = "Driver";
+        bool kernel_mode = false;
+        std::string config_type = parse_buildscript_config_type_value(value, kernel_mode);
+        if (kernel_mode) {
             proj.is_kernel_mode = true;
-        } else if (value == "sys_lib" || value == "kernel_lib") {
-            config_type = "StaticLibrary";
-            proj.is_kernel_mode = true;
-        } else if (value == "interface" || value == "header-only" || value == "Utility") {
-            config_type = "Utility";
-        } else {
-            config_type = value;
         }
         // Apply to all configurations
         for (auto& [_, cfg] : proj.configurations) {
@@ -3084,7 +3098,13 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
     auto& cfg = state.current_project->configurations[config_key];
     
     // Configuration-specific settings
-    if (key == "optimization") {
+    if (key == "type" || key == "configuration_type") {
+        bool kernel_mode = false;
+        cfg.config_type = parse_buildscript_config_type_value(value, kernel_mode);
+        if (kernel_mode) {
+            state.current_project->is_kernel_mode = true;
+        }
+    } else if (key == "optimization") {
         cfg.cl_compile.optimization = value;
     } else if (key == "runtime_library") {
         cfg.cl_compile.runtime_library = value;
@@ -3141,8 +3161,12 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
         }
     } else if (key == "libdirs" || key == "lib_dirs" || key == "additional_library_directories") {
         auto dirs = split(value, ',');
+        std::vector<std::string> resolved_dirs;
+        for (const auto& dir : dirs) {
+            resolved_dirs.push_back(dir.find("$(") != std::string::npos ? dir : resolve_path(dir, state.base_path));
+        }
         cfg.link.additional_library_directories.insert(
-            cfg.link.additional_library_directories.end(), dirs.begin(), dirs.end());
+            cfg.link.additional_library_directories.end(), resolved_dirs.begin(), resolved_dirs.end());
     } else if (key == "ignore_libs" || key == "ignore_specific_default_libraries") {
         auto libs = split(value, ',');
         cfg.link.ignore_specific_default_libraries.insert(

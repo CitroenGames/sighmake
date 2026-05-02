@@ -1131,7 +1131,7 @@ additional_dependencies = ws2_32.lib, user32.lib
         auto ad = link.child("AdditionalDependencies");
         if (!ad.empty()) {
             std::string deps = ad.text().as_string();
-            if (deps.find("ws2_32.lib") != std::string::npos) {
+            if (deps == "ws2_32.lib;user32.lib;%(AdditionalDependencies)") {
                 found = true;
             }
         }
@@ -1609,6 +1609,27 @@ static std::string find_prop_group_value(const pugi::xml_document& doc,
     return {};
 }
 
+static std::string find_item_definition_value(const pugi::xml_document& doc,
+                                              const std::string& tool,
+                                              const std::string& element,
+                                              const std::string& config_platform) {
+    std::string want = "'$(Configuration)|$(Platform)'=='" + config_platform + "'";
+    for (auto& idg : doc.child("Project").children("ItemDefinitionGroup")) {
+        if (std::string(idg.attribute("Condition").as_string()) != want) {
+            continue;
+        }
+        auto tool_node = idg.child(tool.c_str());
+        if (!tool_node) {
+            continue;
+        }
+        auto value_node = tool_node.child(element.c_str());
+        if (value_node) {
+            return value_node.text().as_string();
+        }
+    }
+    return {};
+}
+
 TEST_CASE("VcxprojGenerator emits default OutDir/IntDir when unset", "[vcxproj_generator]") {
     auto gen = generate_from_buildscript(R"(
 [solution]
@@ -1668,6 +1689,7 @@ platforms = x64
 type = exe
 outdir[Debug|x64] = $(SolutionDir)out\$(Configuration)\
 intdir[Debug|x64] = $(SolutionDir)obj\$(Configuration)\
+libdirs[Debug|x64] = $(OutDir), $(SolutionDir)deps\lib
 )");
 
     pugi::xml_document doc;
@@ -1675,6 +1697,8 @@ intdir[Debug|x64] = $(SolutionDir)obj\$(Configuration)\
 
     CHECK(find_prop_group_value(doc, "OutDir", "Debug|x64") == "$(SolutionDir)out\\$(Configuration)\\");
     CHECK(find_prop_group_value(doc, "IntDir", "Debug|x64") == "$(SolutionDir)obj\\$(Configuration)\\");
+    CHECK(find_item_definition_value(doc, "Link", "AdditionalLibraryDirectories", "Debug|x64") ==
+          "$(OutDir);$(SolutionDir)deps\\lib");
 }
 
 TEST_CASE("VcxprojGenerator emits defaults for multiple platforms distinctly", "[vcxproj_generator]") {

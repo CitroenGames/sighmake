@@ -35,6 +35,7 @@ private:
     struct SlnProject {
         std::string name;
         std::string path;
+        std::string resolved_path;
         std::string uuid;
         std::string solution_folder;
         std::vector<std::string> dependency_keys;

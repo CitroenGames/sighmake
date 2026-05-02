@@ -210,3 +210,48 @@ TEST_CASE("BuildscriptWriter preserves config-specific Unicode charset", "[build
     CHECK(sol.projects[0].configurations["Debug|Win32"].character_set == "MultiByte");
     CHECK(sol.projects[0].configurations["Release|x64"].character_set == "Unicode");
 }
+
+TEST_CASE("BuildscriptWriter preserves config-specific x64 linker and language settings", "[buildscript_writer]") {
+    Project proj;
+    proj.name = "MixedSettings";
+    proj.configurations["Debug|Win32"].config_type = "Application";
+    proj.configurations["Debug|Win32"].platform_toolset = "v145";
+    proj.configurations["Debug|Win32"].cl_compile.language_standard = "stdcpp20";
+    proj.configurations["Debug|Win32"].link.sub_system = "Console";
+
+    auto& x64 = proj.configurations["Debug|x64"];
+    x64.config_type = "DynamicLibrary";
+    x64.platform_toolset = "v143";
+    x64.cl_compile.language_standard = "stdcpplatest";
+    x64.cl_compile.additional_include_directories = {"..\\deps\\include", "..\\vkr\\"};
+    x64.cl_compile.multi_processor_compilation = true;
+    x64.link.sub_system = "Windows";
+    x64.link.additional_library_directories = {"..\\deps\\lib\\", "..\\deps\\dbg", "$(OutDir)"};
+    x64.link.additional_dependencies = {"glfw3.lib", "vkr.lib"};
+
+    auto result = write_project(proj);
+    CHECK(result.content.find("[config:Debug|x64]") != std::string::npos);
+    CHECK(result.content.find("type = dll") != std::string::npos);
+    CHECK(result.content.find("toolset = v143") != std::string::npos);
+    CHECK(result.content.find("std = latest") != std::string::npos);
+    CHECK(result.content.find("includes = ..\\deps\\include, ..\\vkr\\") != std::string::npos);
+    CHECK(result.content.find("libdirs = ..\\deps\\lib\\, ..\\deps\\dbg, $(OutDir)") != std::string::npos);
+    CHECK(result.content.find("libs = glfw3.lib, vkr.lib") != std::string::npos);
+    CHECK(result.content.find("subsystem = Windows") != std::string::npos);
+
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(result.content, result.temp_dir.string());
+    REQUIRE(sol.projects.size() >= 1);
+
+    auto& parsed = sol.projects[0].configurations["Debug|x64"];
+    CHECK(parsed.config_type == "DynamicLibrary");
+    CHECK(parsed.platform_toolset == "v143");
+    CHECK(parsed.cl_compile.language_standard == "stdcpplatest");
+    CHECK(parsed.link.sub_system == "Windows");
+    CHECK(std::find(parsed.link.additional_dependencies.begin(),
+                    parsed.link.additional_dependencies.end(),
+                    "glfw3.lib") != parsed.link.additional_dependencies.end());
+    CHECK(std::find(parsed.link.additional_library_directories.begin(),
+                    parsed.link.additional_library_directories.end(),
+                    "$(OutDir)") != parsed.link.additional_library_directories.end());
+}

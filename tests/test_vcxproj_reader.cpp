@@ -588,19 +588,52 @@ struct TempSlnxSolution {
     void write_project(const std::string& filename,
                        const std::string& project_name,
                        const std::string& guid,
-                       const std::string& config_type) {
+                       const std::string& config_type,
+                       const std::vector<std::string>& config_keys = {"Debug|x64"},
+                       const std::vector<std::string>& link_dependencies = {}) {
+        fs::create_directories((temp_dir / filename).parent_path());
         std::ofstream project_file(temp_dir / filename);
         project_file << R"(<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+)";
+        for (const auto& config_key : config_keys) {
+            auto [config, platform] = parse_config_key(config_key);
+            project_file << R"(    <ProjectConfiguration Include=")" << config_key << R"(">
+      <Configuration>)" << config << R"(</Configuration>
+      <Platform>)" << platform << R"(</Platform>
+    </ProjectConfiguration>
+)";
+        }
+        project_file << R"(  </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{)" << guid << R"(}</ProjectGuid>
     <ProjectName>)" << project_name << R"(</ProjectName>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+)";
+        for (const auto& config_key : config_keys) {
+            project_file << R"(  <PropertyGroup Condition="'$(Configuration)|$(Platform)'==')" << config_key << R"('" Label="Configuration">
     <ConfigurationType>)" << config_type << R"(</ConfigurationType>
     <PlatformToolset>v143</PlatformToolset>
   </PropertyGroup>
-</Project>)";
+)";
+        }
+        if (!link_dependencies.empty()) {
+            for (const auto& config_key : config_keys) {
+                project_file << R"(  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'==')" << config_key << R"('">
+    <Link>
+      <AdditionalDependencies>)";
+                for (size_t i = 0; i < link_dependencies.size(); ++i) {
+                    if (i > 0) project_file << ";";
+                    project_file << link_dependencies[i];
+                }
+                project_file << R"(;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+)";
+            }
+        }
+        project_file << R"(</Project>)";
     }
 };
 
@@ -638,6 +671,81 @@ TEST_CASE("SlnReader reads slnx projects configurations and dependencies", "[vcx
                                [](const Project& project) { return project.name == "App"; });
     REQUIRE(app_it != solution.projects.end());
     CHECK(app_it->vcxproj_path == "App.vcxproj");
+    REQUIRE(app_it->project_references.size() == 1);
+    CHECK(app_it->project_references[0].name == "Lib");
+}
+
+TEST_CASE("SlnReader rebases stale absolute slnx paths and infers missing build types", "[vcxproj_reader][slnx]") {
+    TempSlnxSolution temp;
+    temp.write_project("Lib/Lib.vcxproj", "Lib", "11111111-1111-1111-1111-111111111111", "StaticLibrary",
+                       {"Debug|Win32", "Development|x64"});
+    temp.write_project("App/App.vcxproj", "App", "22222222-2222-2222-2222-222222222222", "Application",
+                       {"Debug|Win32", "Development|x64"});
+
+    {
+        std::ofstream slnx(temp.slnx_path);
+        slnx << R"(<?xml version="1.0" encoding="UTF-8"?>
+<Solution>
+  <Configurations>
+    <Platform Name="x86" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Folder Name="/engine/">
+    <Project Path="Z:/stale/root/Lib/Lib.vcxproj" Id="11111111-1111-1111-1111-111111111111" />
+    <Project Path="App/App.vcxproj" Id="22222222-2222-2222-2222-222222222222">
+      <BuildDependency Project="Z:/stale/root/Lib/Lib.vcxproj" />
+    </Project>
+  </Folder>
+</Solution>)";
+    }
+
+    SlnReader reader;
+    auto solution = reader.read_slnx(temp.slnx_path.string());
+
+    CHECK(std::find(solution.configurations.begin(), solution.configurations.end(), "Debug") != solution.configurations.end());
+    CHECK(std::find(solution.configurations.begin(), solution.configurations.end(), "Development") != solution.configurations.end());
+    CHECK(std::find(solution.platforms.begin(), solution.platforms.end(), "Win32") != solution.platforms.end());
+    CHECK(std::find(solution.platforms.begin(), solution.platforms.end(), "x64") != solution.platforms.end());
+    REQUIRE(solution.projects.size() == 2);
+
+    auto lib_it = std::find_if(solution.projects.begin(), solution.projects.end(),
+                               [](const Project& project) { return project.name == "Lib"; });
+    REQUIRE(lib_it != solution.projects.end());
+    CHECK(fs::path(lib_it->vcxproj_path) == fs::path("Lib") / "Lib.vcxproj");
+
+    auto app_it = std::find_if(solution.projects.begin(), solution.projects.end(),
+                               [](const Project& project) { return project.name == "App"; });
+    REQUIRE(app_it != solution.projects.end());
+    REQUIRE(app_it->project_references.size() == 1);
+    CHECK(app_it->project_references[0].name == "Lib");
+    CHECK(app_it->solution_folder == "engine");
+}
+
+TEST_CASE("SlnReader infers project dependency from matching linked lib", "[vcxproj_reader][slnx]") {
+    TempSlnxSolution temp;
+    temp.write_project("Lib/Lib.vcxproj", "Lib", "11111111-1111-1111-1111-111111111111", "StaticLibrary");
+    temp.write_project("App/App.vcxproj", "App", "22222222-2222-2222-2222-222222222222", "Application",
+                       {"Debug|x64"}, {"Lib.lib"});
+
+    {
+        std::ofstream slnx(temp.slnx_path);
+        slnx << R"(<?xml version="1.0" encoding="UTF-8"?>
+<Solution>
+  <Configurations>
+    <BuildType Name="Debug" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="Lib/Lib.vcxproj" Id="11111111-1111-1111-1111-111111111111" />
+  <Project Path="App/App.vcxproj" Id="22222222-2222-2222-2222-222222222222" />
+</Solution>)";
+    }
+
+    SlnReader reader;
+    auto solution = reader.read_slnx(temp.slnx_path.string());
+
+    auto app_it = std::find_if(solution.projects.begin(), solution.projects.end(),
+                               [](const Project& project) { return project.name == "App"; });
+    REQUIRE(app_it != solution.projects.end());
     REQUIRE(app_it->project_references.size() == 1);
     CHECK(app_it->project_references[0].name == "Lib");
 }

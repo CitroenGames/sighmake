@@ -81,6 +81,80 @@ static std::string normalize_path(const std::string& path) {
     }
 }
 
+static std::string trim_copy(const std::string& value) {
+    const auto first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+static std::string linked_library_key(const std::string& dependency) {
+    std::string dep = trim_copy(dependency);
+    if (dep.empty() || dep.find("$(") != std::string::npos || dep.find("%(") != std::string::npos) {
+        return "";
+    }
+
+    fs::path dep_path(dep);
+    std::string ext = to_lower(dep_path.extension().string());
+    if (ext != ".lib") {
+        return "";
+    }
+
+    return to_lower(dep_path.stem().string());
+}
+
+static void add_library_project_key(std::map<std::string, std::string>& library_to_project,
+                                    const std::string& key,
+                                    const std::string& project_name) {
+    if (key.empty()) return;
+
+    auto [it, inserted] = library_to_project.emplace(to_lower(key), project_name);
+    if (!inserted && it->second != project_name) {
+        it->second.clear(); // Ambiguous library name.
+    }
+}
+
+static bool has_project_reference(const Project& project, const std::string& dependency_name) {
+    return std::any_of(project.project_references.begin(),
+                       project.project_references.end(),
+                       [&](const ProjectDependency& dep) { return dep.name == dependency_name; });
+}
+
+static void infer_project_references_from_link_libraries(Solution& solution) {
+    std::map<std::string, std::string> library_to_project;
+
+    for (const auto& project : solution.projects) {
+        bool produces_library = false;
+        for (const auto& [_, cfg] : project.configurations) {
+            if (cfg.config_type == "StaticLibrary" || cfg.config_type == "DynamicLibrary") {
+                produces_library = true;
+                add_library_project_key(library_to_project, cfg.target_name.empty() ? project.name : cfg.target_name, project.name);
+            }
+        }
+
+        if (produces_library) {
+            add_library_project_key(library_to_project, project.name, project.name);
+            add_library_project_key(library_to_project, project.project_name, project.name);
+        }
+    }
+
+    for (auto& project : solution.projects) {
+        for (const auto& [_, cfg] : project.configurations) {
+            for (const auto& dependency : cfg.link.additional_dependencies) {
+                auto it = library_to_project.find(linked_library_key(dependency));
+                if (it == library_to_project.end() || it->second.empty() || it->second == project.name) {
+                    continue;
+                }
+                if (!has_project_reference(project, it->second)) {
+                    project.project_references.push_back(ProjectDependency(it->second));
+                    std::cout << "  " << project.name << " inferred dependency from "
+                              << dependency << " -> " << it->second << "\n";
+                }
+            }
+        }
+    }
+}
+
 // Helper function to normalize paths within build event commands
 // For 100% accuracy, we preserve paths exactly as they appear
 static std::string normalize_command_paths(const std::string& command) {
@@ -992,6 +1066,73 @@ static std::string project_name_from_vcxproj_path(const std::string& path) {
     return fs::path(path).stem().string();
 }
 
+static fs::path resolve_slnx_project_path(const fs::path& sln_dir, const std::string& project_path) {
+    fs::path raw_path(project_path);
+    fs::path direct = raw_path.is_absolute()
+        ? raw_path
+        : (sln_dir / raw_path).lexically_normal();
+
+    if (fs::exists(direct)) {
+        return direct.lexically_normal();
+    }
+
+    std::vector<fs::path> parts;
+    for (const auto& component : raw_path) {
+        if (component == raw_path.root_name() || component == raw_path.root_directory()) {
+            continue;
+        }
+        parts.push_back(component);
+    }
+
+    for (size_t skip = 0; skip < parts.size(); ++skip) {
+        fs::path tail;
+        for (size_t i = skip; i < parts.size(); ++i) {
+            tail /= parts[i];
+        }
+        if (tail.empty()) {
+            continue;
+        }
+
+        fs::path rebased = (sln_dir / tail).lexically_normal();
+        if (fs::exists(rebased)) {
+            return rebased;
+        }
+    }
+
+    std::error_code ec;
+    if (fs::exists(sln_dir, ec)) {
+        std::string target_name = raw_path.filename().string();
+        std::string target_lower = target_name;
+        std::transform(target_lower.begin(), target_lower.end(), target_lower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        for (fs::recursive_directory_iterator it(sln_dir, fs::directory_options::skip_permission_denied, ec), end;
+             !ec && it != end; it.increment(ec)) {
+            if (!it->is_regular_file(ec)) {
+                continue;
+            }
+
+            std::string candidate_name = it->path().filename().string();
+            std::transform(candidate_name.begin(), candidate_name.end(), candidate_name.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (candidate_name == target_lower) {
+                return it->path().lexically_normal();
+            }
+        }
+    }
+
+    return direct.lexically_normal();
+}
+
+static std::string path_relative_to_solution(const fs::path& path, const fs::path& sln_dir) {
+    std::error_code ec;
+    fs::path rel = fs::relative(path, sln_dir, ec);
+    if (!ec && !rel.empty()) {
+        return rel.string();
+    }
+    return path.string();
+}
+
 static std::optional<std::string> resolve_slnx_reference(
     const std::string& ref,
     const std::map<std::string, std::string>& key_to_name)
@@ -1116,6 +1257,8 @@ Solution SlnReader::read_sln(const std::string& filepath) {
         }
     }
 
+    infer_project_references_from_link_libraries(solution);
+
     // Extract solution name from filename
     solution.name = fs::path(filepath).stem().string();
     solution.uuid = generate_uuid();
@@ -1147,20 +1290,13 @@ Solution SlnReader::read_slnx(const std::string& filepath) {
             if (node_name == "BuildType" || node_name == "Configuration") {
                 configs.insert(name);
             } else if (node_name == "Platform") {
-                platforms.insert(name);
+                platforms.insert(normalize_platform(name));
             }
         }
     }
 
     solution.configurations = std::vector<std::string>(configs.begin(), configs.end());
     solution.platforms = std::vector<std::string>(platforms.begin(), platforms.end());
-
-    if (solution.configurations.empty()) {
-        solution.configurations = {"Debug", "Release"};
-    }
-    if (solution.platforms.empty()) {
-        solution.platforms = {"Win32", "x64"};
-    }
 
     std::vector<SlnProject> projects;
     std::set<std::string> folder_paths;
@@ -1216,12 +1352,14 @@ Solution SlnReader::read_slnx(const std::string& filepath) {
     std::vector<std::pair<size_t, SlnProject>> loaded_projects;
 
     for (const auto& proj_info : projects) {
-        fs::path proj_path = (sln_dir / fs::path(proj_info.path)).lexically_normal();
+        fs::path proj_path = resolve_slnx_project_path(sln_dir, proj_info.path);
 
         if (fs::exists(proj_path)) {
             try {
                 VcxprojReader reader;
                 Project proj = reader.read_vcxproj(proj_path.string());
+                SlnProject loaded_info = proj_info;
+                loaded_info.resolved_path = proj_path.string();
 
                 if (!proj_info.name.empty()) {
                     proj.name = proj_info.name;
@@ -1235,12 +1373,12 @@ Solution SlnReader::read_slnx(const std::string& filepath) {
                     proj.uuid = proj_info.uuid;
                 }
 
-                proj.vcxproj_path = proj_info.path;
+                proj.vcxproj_path = path_relative_to_solution(proj_path, sln_dir);
                 proj.solution_folder = proj_info.solution_folder;
 
                 size_t project_index = solution.projects.size();
                 solution.projects.push_back(proj);
-                loaded_projects.push_back({project_index, proj_info});
+                loaded_projects.push_back({project_index, loaded_info});
             } catch (const std::exception& e) {
                 std::cerr << "Warning: Failed to read project " << proj_info.path
                           << ": " << e.what() << "\n";
@@ -1250,12 +1388,50 @@ Solution SlnReader::read_slnx(const std::string& filepath) {
         }
     }
 
+    if (solution.configurations.empty() || solution.platforms.empty()) {
+        std::set<std::string> inferred_configs(solution.configurations.begin(), solution.configurations.end());
+        std::set<std::string> inferred_platforms(solution.platforms.begin(), solution.platforms.end());
+
+        for (const auto& project : solution.projects) {
+            for (const auto& [config_key, cfg] : project.configurations) {
+                (void)cfg;
+                auto [config_name, platform_name] = parse_config_key(config_key);
+                if (!config_name.empty()) {
+                    inferred_configs.insert(config_name);
+                }
+                if (!platform_name.empty()) {
+                    inferred_platforms.insert(normalize_platform(platform_name));
+                }
+            }
+        }
+
+        if (solution.configurations.empty()) {
+            solution.configurations = std::vector<std::string>(inferred_configs.begin(), inferred_configs.end());
+        }
+        if (solution.platforms.empty()) {
+            solution.platforms = std::vector<std::string>(inferred_platforms.begin(), inferred_platforms.end());
+        }
+    }
+
+    if (solution.configurations.empty()) {
+        solution.configurations = {"Debug", "Release"};
+    }
+    if (solution.platforms.empty()) {
+        solution.platforms = {"Win32", "x64"};
+    }
+
     std::map<std::string, std::string> key_to_name;
     for (const auto& loaded : loaded_projects) {
         const auto& proj_info = loaded.second;
         const auto& proj = solution.projects[loaded.first];
 
         key_to_name[solution_path_key(proj_info.path)] = proj.name;
+        if (!proj_info.resolved_path.empty()) {
+            key_to_name[solution_path_key(proj_info.resolved_path)] = proj.name;
+        }
+        if (!proj.vcxproj_path.empty()) {
+            key_to_name[solution_path_key(proj.vcxproj_path)] = proj.name;
+        }
         if (!proj_info.uuid.empty()) {
             key_to_name[solution_id_key(proj_info.uuid)] = proj.name;
         }
@@ -1293,6 +1469,8 @@ Solution SlnReader::read_slnx(const std::string& filepath) {
             }
         }
     }
+
+    infer_project_references_from_link_libraries(solution);
 
     for (const auto& path : folder_paths) {
         SolutionFolder folder;
@@ -1599,6 +1777,23 @@ static std::string create_file_settings_signature(const SourceFile* src,
     return sig.str();
 }
 
+static std::string config_type_to_buildscript_type(const std::string& config_type, bool kernel_mode) {
+    if (config_type == "Application") return "exe";
+    if (config_type == "StaticLibrary" && kernel_mode) return "sys_lib";
+    if (config_type == "StaticLibrary") return "lib";
+    if (config_type == "DynamicLibrary") return "dll";
+    if (config_type == "Driver") return "sys";
+    if (config_type == "Utility") return "interface";
+    return config_type;
+}
+
+static std::string cpp_standard_to_buildscript_value(std::string value) {
+    if (value.find("stdcpp") == 0) {
+        value = value.substr(6);
+    }
+    return value;
+}
+
 void BuildscriptWriter::write_project_content(std::ostream& out, const Project& project,
                                              const std::string& filepath,
                                              const std::vector<std::string>& configurations,
@@ -1622,13 +1817,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
     // Determine project type from first configuration
     if (!project.configurations.empty()) {
         auto& first_cfg = project.configurations.begin()->second;
-        out << "type = ";
-        if (first_cfg.config_type == "Application") out << "exe\n";
-        else if (first_cfg.config_type == "StaticLibrary" && project.is_kernel_mode) out << "sys_lib\n";
-        else if (first_cfg.config_type == "StaticLibrary") out << "lib\n";
-        else if (first_cfg.config_type == "DynamicLibrary") out << "dll\n";
-        else if (first_cfg.config_type == "Driver") out << "sys\n";
-        else out << first_cfg.config_type << "\n";
+        out << "type = " << config_type_to_buildscript_type(first_cfg.config_type, project.is_kernel_mode) << "\n";
     }
 
     // Source files
@@ -1750,12 +1939,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             }
         }
         if (!cl.language_standard.empty()) {
-            // Strip "stdcpp" prefix if present (e.g., "stdcpp17" -> "17")
-            std::string std_value = cl.language_standard;
-            if (std_value.find("stdcpp") == 0) {
-                std_value = std_value.substr(6);  // Remove "stdcpp" prefix
-            }
-            out << "std = " << std_value << "\n";
+            out << "std = " << cpp_standard_to_buildscript_value(cl.language_standard) << "\n";
         }
         if (!cl.warning_level.empty()) {
             std::string wl = cl.warning_level;
@@ -1925,6 +2109,18 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
 
     for (const auto& [config_key, cfg] : project.configurations) {
         out << "\n[config:" << config_key << "]\n";
+        const auto& first_cfg = project.configurations.begin()->second;
+
+        if (!cfg.config_type.empty() && cfg.config_type != first_cfg.config_type) {
+            out << "type = " << config_type_to_buildscript_type(cfg.config_type, project.is_kernel_mode) << "\n";
+        }
+        if (!cfg.platform_toolset.empty() && cfg.platform_toolset != first_cfg.platform_toolset) {
+            out << "toolset = " << cfg.platform_toolset << "\n";
+        }
+        if (!cfg.windows_target_platform_version.empty() &&
+            cfg.windows_target_platform_version != first_cfg.windows_target_platform_version) {
+            out << "windows_sdk = " << cfg.windows_target_platform_version << "\n";
+        }
 
         // Write config-specific preprocessor definitions (those not common to all configs)
         std::vector<std::string> config_specific_defines;
@@ -1945,15 +2141,19 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             if (cfg.out_dir.find("$(") == std::string::npos && !project.vcxproj_path.empty()) {
                 namespace fs = std::filesystem;
                 try {
+                    fs::path buildscript_dir = fs::path(filepath).parent_path();
+                    fs::path vcxproj_path(project.vcxproj_path);
+                    fs::path vcxproj_dir = vcxproj_path.is_absolute()
+                        ? vcxproj_path.parent_path()
+                        : buildscript_dir;
+
                     // Resolve out_dir to absolute path based on vcxproj location
-                    fs::path vcxproj_dir = fs::path(project.vcxproj_path).parent_path();
                     fs::path abs_out_dir = fs::absolute(vcxproj_dir / cfg.out_dir);
 
                     // Normalize the path (removes .\ and \.\ etc)
                     abs_out_dir = abs_out_dir.lexically_normal();
 
                     // Make it relative to buildscript location
-                    fs::path buildscript_dir = fs::path(filepath).parent_path();
                     fs::path relative_out = fs::relative(abs_out_dir, buildscript_dir);
 
                     converted_out_dir = relative_out.string();
@@ -1977,15 +2177,19 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             if (cfg.int_dir.find("$(") == std::string::npos && !project.vcxproj_path.empty()) {
                 namespace fs = std::filesystem;
                 try {
+                    fs::path buildscript_dir = fs::path(filepath).parent_path();
+                    fs::path vcxproj_path(project.vcxproj_path);
+                    fs::path vcxproj_dir = vcxproj_path.is_absolute()
+                        ? vcxproj_path.parent_path()
+                        : buildscript_dir;
+
                     // Resolve int_dir to absolute path based on vcxproj location
-                    fs::path vcxproj_dir = fs::path(project.vcxproj_path).parent_path();
                     fs::path abs_int_dir = fs::absolute(vcxproj_dir / cfg.int_dir);
 
                     // Normalize the path (removes .\ and \.\ etc)
                     abs_int_dir = abs_int_dir.lexically_normal();
 
                     // Make it relative to buildscript location
-                    fs::path buildscript_dir = fs::path(filepath).parent_path();
                     fs::path relative_int = fs::relative(abs_int_dir, buildscript_dir);
 
                     converted_int_dir = relative_int.string();
@@ -2010,6 +2214,18 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         if (!cfg.character_set.empty() &&
             cfg.character_set != project.configurations.begin()->second.character_set)
             out << "charset = " << cfg.character_set << "\n";
+        if (!cfg.cl_compile.language_standard.empty() &&
+            cfg.cl_compile.language_standard != first_cfg.cl_compile.language_standard) {
+            out << "std = " << cpp_standard_to_buildscript_value(cfg.cl_compile.language_standard) << "\n";
+        }
+        if (!cfg.cl_compile.additional_include_directories.empty() &&
+            cfg.cl_compile.additional_include_directories != first_cfg.cl_compile.additional_include_directories) {
+            out << "includes = " << join_vector(cfg.cl_compile.additional_include_directories, ", ") << "\n";
+        }
+        if (!cfg.cl_compile.forced_include_files.empty() &&
+            cfg.cl_compile.forced_include_files != first_cfg.cl_compile.forced_include_files) {
+            out << "forced_includes = " << join_vector(cfg.cl_compile.forced_include_files, ", ") << "\n";
+        }
         if (!cfg.executable_path.empty())
             out << "executable_path = " << cfg.executable_path << "\n";
         if (!cfg.generate_manifest)
@@ -2034,6 +2250,8 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         if (!cfg.cl_compile.additional_options.empty() &&
             cfg.cl_compile.additional_options != project.configurations.begin()->second.cl_compile.additional_options)
             out << "cflags = " << cfg.cl_compile.additional_options << "\n";
+        if (cfg.cl_compile.multi_processor_compilation != first_cfg.cl_compile.multi_processor_compilation)
+            out << "multiprocessor = " << (cfg.cl_compile.multi_processor_compilation ? "true" : "false") << "\n";
         if (!cfg.cl_compile.favor_size_or_speed.empty())
             out << "favor = " << cfg.cl_compile.favor_size_or_speed << "\n";
         if (!cfg.cl_compile.inline_function_expansion.empty())
@@ -2054,6 +2272,17 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
 
         if (!config_libs.empty()) {
             out << "libs = " << join_vector(config_libs, ", ") << "\n";
+        }
+        if (!cfg.link.additional_library_directories.empty() &&
+            cfg.link.additional_library_directories != first_cfg.link.additional_library_directories) {
+            out << "libdirs = " << join_vector(cfg.link.additional_library_directories, ", ") << "\n";
+        }
+        if (!cfg.link.sub_system.empty() && cfg.link.sub_system != first_cfg.link.sub_system) {
+            out << "subsystem = " << cfg.link.sub_system << "\n";
+        }
+        if (!cfg.link.additional_options.empty() &&
+            cfg.link.additional_options != first_cfg.link.additional_options) {
+            out << "ldflags = " << cfg.link.additional_options << "\n";
         }
 
         // Linker ignore settings
@@ -2625,15 +2854,35 @@ static bool should_merge_buildscript(
     return parent.empty() || parent.string() == ".";
 }
 
+static std::string join_solution_values(const std::vector<std::string>& values, const std::string& sep = ", ") {
+    if (values.empty()) return "";
+    std::string result = values[0];
+    for (size_t i = 1; i < values.size(); ++i) {
+        result += sep + values[i];
+    }
+    return result;
+}
+
 // Helper function to write [solution] section
 static void write_solution_section(
     std::ostream& out,
     const std::string& solution_name,
-    const std::string& solution_uuid)
+    const std::string& solution_uuid,
+    const std::vector<std::string>& configurations = {},
+    const std::vector<std::string>& platforms = {})
 {
     out << "[solution]\n";
     out << "name = " << solution_name << "\n";
     out << "uuid = " << solution_uuid << "\n\n";
+    if (!configurations.empty()) {
+        out << "configurations = " << join_solution_values(configurations) << "\n";
+    }
+    if (!platforms.empty()) {
+        out << "platforms = " << join_solution_values(platforms) << "\n";
+    }
+    if (!configurations.empty() || !platforms.empty()) {
+        out << "\n";
+    }
 }
 
 bool BuildscriptWriter::write_solution_buildscripts(const Solution& solution, const std::string& base_dir) {
@@ -2686,7 +2935,8 @@ bool BuildscriptWriter::write_solution_buildscripts(const Solution& solution, co
         merged_out << "# Solution and project share the same name and directory\n\n";
 
         // Write solution section
-        write_solution_section(merged_out, solution.name, solution.uuid);
+        write_solution_section(merged_out, solution.name, solution.uuid,
+                               solution.configurations, solution.platforms);
 
         // Write project section (reusing existing logic)
         write_project_content(merged_out, project, merged_path.string(),
@@ -2713,7 +2963,8 @@ bool BuildscriptWriter::write_solution_buildscripts(const Solution& solution, co
             root_out << "# Generated root buildscript for solution: " << solution.name << "\n";
             root_out << "# This file includes all project buildscripts\n\n";
 
-            write_solution_section(root_out, solution.name, solution.uuid);
+            write_solution_section(root_out, solution.name, solution.uuid,
+                                   solution.configurations, solution.platforms);
         } else {
             root_out << "\n# Included project buildscripts\n";
         }
