@@ -25,6 +25,11 @@ static bool contains_substring(const std::vector<std::string>& vec, const std::s
     return false;
 }
 
+static std::string normalize_slashes(std::string value) {
+    std::replace(value.begin(), value.end(), '\\', '/');
+    return value;
+}
+
 // ============================================================================
 // Basic CMake parsing
 // ============================================================================
@@ -100,6 +105,36 @@ set(MY_NAME HelloProject)
 project(${MY_NAME})
 )");
     CHECK(sol.name == "HelloProject");
+}
+
+TEST_CASE("CMake project source variables use current source directory", "[cmake_parser]") {
+    CMakeParser parser;
+    auto sol = parser.parse_string(R"(
+project(GLFW)
+add_library(glfw "${GLFW_SOURCE_DIR}/include/GLFW/glfw3.h" src/context.c)
+target_include_directories(glfw PRIVATE "$<BUILD_INTERFACE:${GLFW_SOURCE_DIR}/include>")
+)", "C:/repo/glfw");
+
+    auto* proj = find_project(sol, "glfw");
+    REQUIRE(proj != nullptr);
+
+    bool has_header = false;
+    for (const auto& src : proj->sources) {
+        if (normalize_slashes(src.path).find("C:/repo/glfw/include/GLFW/glfw3.h") != std::string::npos) {
+            has_header = true;
+        }
+    }
+    CHECK(has_header);
+
+    bool has_include = false;
+    for (const auto& [key, cfg] : proj->configurations) {
+        for (const auto& inc : cfg.cl_compile.additional_include_directories) {
+            if (normalize_slashes(inc).find("C:/repo/glfw/include") != std::string::npos) {
+                has_include = true;
+            }
+        }
+    }
+    CHECK(has_include);
 }
 
 TEST_CASE("CMake target_include_directories adds includes", "[cmake_parser]") {
@@ -220,6 +255,29 @@ TEST_CASE("CMake if(DEFINED var) executes when variable is set", "[cmake_parser]
 project(Test)
 set(MY_VAR ON)
 if(DEFINED MY_VAR)
+    add_executable(App main.cpp)
+endif()
+)");
+    CHECK(find_project(sol, "App") != nullptr);
+}
+
+TEST_CASE("CMake if(undefined var) does not execute", "[cmake_parser]") {
+    CMakeParser parser;
+    auto sol = parser.parse_string(R"(
+project(Test)
+if(MISSING_VAR)
+    add_executable(App main.cpp)
+endif()
+)");
+    CHECK(find_project(sol, "App") == nullptr);
+}
+
+TEST_CASE("CMake cmake_dependent_option respects platform conditions", "[cmake_parser]") {
+    CMakeParser parser;
+    auto sol = parser.parse_string(R"(
+project(Test)
+cmake_dependent_option(BUILD_WIN "Build Windows backend" ON "WIN32" OFF)
+if(BUILD_WIN)
     add_executable(App main.cpp)
 endif()
 )");
@@ -637,6 +695,25 @@ add_executable(MyApp main.cpp)
     CHECK(sol.name == "MyApp");
     auto* proj = find_project(sol, "MyApp");
     REQUIRE(proj != nullptr);
+}
+
+TEST_CASE("CMake set_property target CXX_STANDARD maps to project standard", "[cmake_parser]") {
+    CMakeParser parser;
+    auto sol = parser.parse_string(R"(
+project(Test)
+add_executable(App main.cpp)
+set_property(TARGET App PROPERTY CXX_STANDARD 20)
+)");
+    auto* proj = find_project(sol, "App");
+    REQUIRE(proj != nullptr);
+
+    bool found_cpp20 = false;
+    for (const auto& [key, cfg] : proj->configurations) {
+        if (cfg.cl_compile.language_standard == "stdcpp20") {
+            found_cpp20 = true;
+        }
+    }
+    CHECK(found_cpp20);
 }
 
 // ============================================================================

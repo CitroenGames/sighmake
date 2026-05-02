@@ -24,7 +24,7 @@ void print_usage(const char* program_name) {
     std::cout << "  .buildscript               Sighmake buildscript (INI-style)\n";
     std::cout << "  CMakeLists.txt / .cmake    CMake project files\n\n";
     std::cout << "Generation options:\n";
-    std::cout << "  -g, --generator <type>     Generator type (vcxproj, cmake, makefile)\n";
+    std::cout << "  -g, --generator <type>     Generator type (vcxproj, cmake, makefile, buildscript)\n";
     std::cout << "  -B, --build-dir <dir>      Subdirectory for generated .vcxproj/.sln/.slnx\n";
     std::cout << "                             (vcxproj generator only; default: build)\n";
     std::cout << "  -D <NAME>=<VALUE>          Define a variable for ${NAME} substitution\n";
@@ -47,6 +47,7 @@ void print_usage(const char* program_name) {
     std::cout << "Examples:\n";
     std::cout << "  " << program_name << " project.buildscript\n";
     std::cout << "  " << program_name << " project.buildscript -g cmake\n";
+    std::cout << "  " << program_name << " CMakeLists.txt -g buildscript\n";
     std::cout << "  " << program_name << " project.buildscript -t msvc2022\n";
     std::cout << "  " << program_name << " project.buildscript -D ENGINE=C:/Engine\n";
     std::cout << "  " << program_name << " CMakeLists.txt -g makefile\n";

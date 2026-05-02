@@ -2698,18 +2698,25 @@ bool BuildscriptWriter::write_solution_buildscripts(const Solution& solution, co
     // Phase 3: Generate root buildscript only if there are non-merged projects
     if (!buildscript_paths.empty()) {
         fs::path root_buildscript = sln_base / (solution.name + ".buildscript");
-        std::ofstream root_out(root_buildscript);
+        bool append_to_merged_root = !merged_project_indices.empty();
+        std::ofstream root_out(root_buildscript,
+                               append_to_merged_root ? std::ios::app : std::ios::out);
         if (!root_out.is_open()) {
             std::cerr << "Error: Failed to create root buildscript: " << root_buildscript.string() << "\n";
             return false;
         }
 
-        std::cout << "  Generating root: " << root_buildscript.string() << "\n";
+        std::cout << (append_to_merged_root ? "  Appending includes to root: " : "  Generating root: ")
+                  << root_buildscript.string() << "\n";
 
-        root_out << "# Generated root buildscript for solution: " << solution.name << "\n";
-        root_out << "# This file includes all project buildscripts\n\n";
+        if (!append_to_merged_root) {
+            root_out << "# Generated root buildscript for solution: " << solution.name << "\n";
+            root_out << "# This file includes all project buildscripts\n\n";
 
-        write_solution_section(root_out, solution.name, solution.uuid);
+            write_solution_section(root_out, solution.name, solution.uuid);
+        } else {
+            root_out << "\n# Included project buildscripts\n";
+        }
 
         // Write include directives for non-merged projects
         for (const auto& include_path : buildscript_paths) {

@@ -93,6 +93,10 @@ private:
     void handle_find_library(const std::vector<std::string>& args, ParseState& state);
     void handle_find_path(const std::vector<std::string>& args, ParseState& state);
     void handle_find_package(const std::vector<std::string>& args, ParseState& state);
+    void handle_cmake_dependent_option(const std::vector<std::string>& args, ParseState& state);
+    void handle_set_property(const std::vector<std::string>& args, ParseState& state);
+    void handle_set_target_properties(const std::vector<std::string>& args, ParseState& state);
+    void handle_math(const std::vector<std::string>& args, ParseState& state);
     // Stubs for ignored/simple commands
     void handle_cmake_minimum_required(const std::vector<std::string>& args, ParseState& state);
     void handle_enable_testing(const std::vector<std::string>& args, ParseState& state);

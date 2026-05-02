@@ -28,6 +28,121 @@ namespace {
         }
         return result;
     }
+
+    std::vector<std::string> split_semicolon_list(const std::string& value) {
+        std::vector<std::string> result;
+        std::stringstream ss(value);
+        std::string item;
+        while (std::getline(ss, item, ';')) {
+            item = trim(item);
+            if (!item.empty()) result.push_back(item);
+        }
+        return result;
+    }
+
+    void append_option(std::string& options, const std::string& option) {
+        if (option.empty()) return;
+        if (!options.empty()) options += " ";
+        options += option;
+    }
+
+    class IntegerExpressionParser {
+    public:
+        explicit IntegerExpressionParser(const std::string& expression)
+            : expr(expression) {}
+
+        bool parse(long long& result) {
+            pos = 0;
+            if (!parse_expr(result)) return false;
+            skip_ws();
+            return pos == expr.size();
+        }
+
+    private:
+        const std::string& expr;
+        size_t pos = 0;
+
+        void skip_ws() {
+            while (pos < expr.size() && std::isspace(static_cast<unsigned char>(expr[pos]))) {
+                ++pos;
+            }
+        }
+
+        bool consume(char ch) {
+            skip_ws();
+            if (pos < expr.size() && expr[pos] == ch) {
+                ++pos;
+                return true;
+            }
+            return false;
+        }
+
+        bool parse_expr(long long& result) {
+            if (!parse_term(result)) return false;
+            while (true) {
+                if (consume('+')) {
+                    long long rhs = 0;
+                    if (!parse_term(rhs)) return false;
+                    result += rhs;
+                } else if (consume('-')) {
+                    long long rhs = 0;
+                    if (!parse_term(rhs)) return false;
+                    result -= rhs;
+                } else {
+                    return true;
+                }
+            }
+        }
+
+        bool parse_term(long long& result) {
+            if (!parse_factor(result)) return false;
+            while (true) {
+                if (consume('*')) {
+                    long long rhs = 0;
+                    if (!parse_factor(rhs)) return false;
+                    result *= rhs;
+                } else if (consume('/')) {
+                    long long rhs = 0;
+                    if (!parse_factor(rhs) || rhs == 0) return false;
+                    result /= rhs;
+                } else if (consume('%')) {
+                    long long rhs = 0;
+                    if (!parse_factor(rhs) || rhs == 0) return false;
+                    result %= rhs;
+                } else {
+                    return true;
+                }
+            }
+        }
+
+        bool parse_factor(long long& result) {
+            skip_ws();
+            if (consume('+')) return parse_factor(result);
+            if (consume('-')) {
+                if (!parse_factor(result)) return false;
+                result = -result;
+                return true;
+            }
+            if (consume('(')) {
+                if (!parse_expr(result)) return false;
+                return consume(')');
+            }
+
+            skip_ws();
+            size_t start = pos;
+            while (pos < expr.size() && std::isdigit(static_cast<unsigned char>(expr[pos]))) {
+                ++pos;
+            }
+            if (start == pos) return false;
+
+            try {
+                result = std::stoll(expr.substr(start, pos - start));
+                return true;
+            } catch (...) {
+                return false;
+            }
+        }
+    };
 }
 
 Solution CMakeParser::parse(const std::string& filepath) {
@@ -53,11 +168,35 @@ Solution CMakeParser::parse_string(const std::string& content, const std::string
     ParseState state;
     state.solution = &solution;
     state.base_path = base_path;
+    state.current_source_dir = base_path;
+    state.current_binary_dir = base_path;
     
     // Initialize standard CMake variables
     state.variables["CMAKE_SOURCE_DIR"] = base_path;
     state.variables["CMAKE_CURRENT_SOURCE_DIR"] = base_path;
+    state.variables["CMAKE_BINARY_DIR"] = base_path;
+    state.variables["CMAKE_CURRENT_BINARY_DIR"] = base_path;
     state.variables["PROJECT_SOURCE_DIR"] = base_path;
+    state.variables["PROJECT_BINARY_DIR"] = base_path;
+    state.variables["CMAKE_VERSION"] = "3.31.0";
+#ifdef _WIN32
+    state.variables["WIN32"] = "TRUE";
+    state.variables["MSVC"] = "TRUE";
+    state.variables["CMAKE_SYSTEM_NAME"] = "Windows";
+    state.variables["CMAKE_C_COMPILER_ID"] = "MSVC";
+    state.variables["CMAKE_CXX_COMPILER_ID"] = "MSVC";
+#elif defined(__APPLE__)
+    state.variables["APPLE"] = "TRUE";
+    state.variables["UNIX"] = "TRUE";
+    state.variables["CMAKE_SYSTEM_NAME"] = "Darwin";
+    state.variables["CMAKE_C_COMPILER_ID"] = "AppleClang";
+    state.variables["CMAKE_CXX_COMPILER_ID"] = "AppleClang";
+#else
+    state.variables["UNIX"] = "TRUE";
+    state.variables["CMAKE_SYSTEM_NAME"] = "Linux";
+    state.variables["CMAKE_C_COMPILER_ID"] = "GNU";
+    state.variables["CMAKE_CXX_COMPILER_ID"] = "GNU";
+#endif
 
     auto tokens = tokenize(content);
 
@@ -224,6 +363,20 @@ std::string CMakeParser::resolve_variables(const std::string& str, const ParseSt
         result.replace(pos, end - pos + 1, var_value);
         pos += var_value.length();
     }
+    pos = 0;
+    while ((pos = result.find("$ENV{", pos)) != std::string::npos) {
+        size_t end = result.find('}', pos);
+        if (end == std::string::npos) break;
+
+        std::string var_name = result.substr(pos + 5, end - (pos + 5));
+        std::string var_value;
+        if (const char* env = std::getenv(var_name.c_str())) {
+            var_value = env;
+        }
+
+        result.replace(pos, end - pos + 1, var_value);
+        pos += var_value.length();
+    }
     return result;
 }
 
@@ -235,6 +388,10 @@ void CMakeParser::handle_project(const std::vector<std::string>& args, ParseStat
             state.solution->name = args[0];
         }
         state.variables["PROJECT_NAME"] = args[0];
+        state.variables["PROJECT_SOURCE_DIR"] = state.current_source_dir.empty() ? state.base_path : state.current_source_dir;
+        state.variables["PROJECT_BINARY_DIR"] = state.current_binary_dir.empty() ? state.base_path : state.current_binary_dir;
+        state.variables[args[0] + "_SOURCE_DIR"] = state.variables["PROJECT_SOURCE_DIR"];
+        state.variables[args[0] + "_BINARY_DIR"] = state.variables["PROJECT_BINARY_DIR"];
     }
 }
 
@@ -367,14 +524,25 @@ void CMakeParser::handle_add_subdirectory(const std::vector<std::string>& args, 
         return;
     }
 
+    fs::path binary_dir = subdir_path;
+    if (args.size() > 1 && args[1] != "EXCLUDE_FROM_ALL") {
+        binary_dir = fs::path(args[1]);
+        if (!binary_dir.is_absolute()) {
+            fs::path parent_binary = state.current_binary_dir.empty() ? fs::path(state.base_path) : fs::path(state.current_binary_dir);
+            binary_dir = parent_binary / binary_dir;
+        }
+    }
+
     // Create a new scope
     // We create a copy of the state but share the solution pointer
     ParseState sub_state = state;
     sub_state.base_path = subdir_path.string();
     sub_state.current_source_dir = subdir_path.string();
+    sub_state.current_binary_dir = binary_dir.string();
     
     // Update CMake variables for the new scope
     sub_state.variables["CMAKE_CURRENT_SOURCE_DIR"] = subdir_path.string();
+    sub_state.variables["CMAKE_CURRENT_BINARY_DIR"] = binary_dir.string();
     
     // Clear parent-scope vars before parsing subdirectory
     sub_state.parent_scope_vars.clear();
@@ -469,6 +637,89 @@ void CMakeParser::handle_option(const std::vector<std::string>& args, ParseState
     // Only set if not already set (cache behavior simulation)
     if (state.variables.find(opt_name) == state.variables.end()) {
         state.variables[opt_name] = opt_val;
+    }
+}
+
+void CMakeParser::handle_cmake_dependent_option(const std::vector<std::string>& args, ParseState& state) {
+    // cmake_dependent_option(VAR "doc" default condition force)
+    if (args.size() < 5) return;
+
+    std::vector<std::string> condition_args;
+    for (const auto& clause : split_semicolon_list(args[3])) {
+        std::istringstream clause_stream(clause);
+        std::string token;
+        if (!condition_args.empty()) condition_args.push_back("AND");
+        while (clause_stream >> token) {
+            condition_args.push_back(token);
+        }
+    }
+
+    std::string value = evaluate_condition(condition_args, state) ? args[2] : args[4];
+    if (state.variables.find(args[0]) == state.variables.end()) {
+        state.variables[args[0]] = value;
+    }
+}
+
+static void apply_cmake_target_property(Project* proj,
+                                        const std::string& property,
+                                        const std::string& value,
+                                        const Solution& solution) {
+    if (!proj) return;
+
+    if (property == "CXX_STANDARD") {
+        std::string std_value = "stdcpp" + value;
+        for (const auto& config_key : solution.get_config_keys()) {
+            proj->configurations[config_key].cl_compile.language_standard = std_value;
+        }
+    } else if (property == "C_STANDARD") {
+        proj->language = "C";
+        proj->c_standard = value;
+    } else if (property == "FOLDER") {
+        proj->solution_folder = value;
+    } else if (property == "OUTPUT_NAME") {
+        for (const auto& config_key : solution.get_config_keys()) {
+            proj->configurations[config_key].target_name = value;
+        }
+    } else if (property == "LINK_FLAGS") {
+        for (const auto& config_key : solution.get_config_keys()) {
+            append_option(proj->configurations[config_key].link.additional_options, value);
+        }
+    }
+}
+
+void CMakeParser::handle_set_property(const std::vector<std::string>& args, ParseState& state) {
+    if (args.size() < 5 || args[0] != "TARGET") return;
+
+    auto prop_it = std::find(args.begin(), args.end(), "PROPERTY");
+    if (prop_it == args.end() || prop_it + 2 >= args.end()) return;
+
+    std::string property = *(prop_it + 1);
+    std::string value = *(prop_it + 2);
+    for (auto it = args.begin() + 1; it != prop_it; ++it) {
+        for (const auto& target_name : split_semicolon_list(*it)) {
+            apply_cmake_target_property(find_project(sanitize_target_name(target_name), state),
+                                        property, value, *state.solution);
+        }
+    }
+}
+
+void CMakeParser::handle_set_target_properties(const std::vector<std::string>& args, ParseState& state) {
+    auto props_it = std::find(args.begin(), args.end(), "PROPERTIES");
+    if (props_it == args.end()) return;
+
+    std::vector<std::string> targets;
+    for (auto it = args.begin(); it != props_it; ++it) {
+        auto split_targets = split_semicolon_list(*it);
+        targets.insert(targets.end(), split_targets.begin(), split_targets.end());
+    }
+
+    for (auto it = props_it + 1; it + 1 < args.end(); it += 2) {
+        const std::string& property = *it;
+        const std::string& value = *(it + 1);
+        for (const auto& target_name : targets) {
+            apply_cmake_target_property(find_project(sanitize_target_name(target_name), state),
+                                        property, value, *state.solution);
+        }
     }
 }
 
@@ -695,6 +946,24 @@ void CMakeParser::handle_enable_testing(const std::vector<std::string>& /*args*/
 
 void CMakeParser::handle_add_test(const std::vector<std::string>& /*args*/, ParseState& /*state*/) {
     // No-op
+}
+
+void CMakeParser::handle_math(const std::vector<std::string>& args, ParseState& state) {
+    if (args.size() < 3 || args[0] != "EXPR") return;
+
+    std::string expression;
+    for (size_t i = 2; i < args.size(); ++i) {
+        if (!expression.empty()) expression += " ";
+        expression += args[i];
+    }
+
+    long long result = 0;
+    IntegerExpressionParser parser(expression);
+    if (parser.parse(result)) {
+        state.variables[args[1]] = std::to_string(result);
+    } else {
+        std::cerr << "[CMake] Warning: unsupported math(EXPR) expression: " << expression << "\n";
+    }
 }
 
 void CMakeParser::handle_target_include_directories(const std::vector<std::string>& args, ParseState& state) {
@@ -1514,7 +1783,11 @@ void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, Pa
                     else if (command == "add_subdirectory") handle_add_subdirectory(args, state);
                     else if (command == "set") handle_set(args, state);
                     else if (command == "option") handle_option(args, state);
+                    else if (command == "cmake_dependent_option") handle_cmake_dependent_option(args, state);
                     else if (command == "list") handle_list(args, state);
+                    else if (command == "set_property") handle_set_property(args, state);
+                    else if (command == "set_target_properties") handle_set_target_properties(args, state);
+                    else if (command == "math") handle_math(args, state);
                     else if (command == "target_include_directories") handle_target_include_directories(args, state);
                     else if (command == "target_link_libraries") handle_target_link_libraries(args, state);
                     else if (command == "target_compile_definitions") handle_target_compile_definitions(args, state);
@@ -1814,7 +2087,14 @@ void CMakeParser::handle_while(const std::vector<std::string>& args, size_t& i, 
     size_t end_i = scan;
 
     // Loop
+    size_t iterations = 0;
+    constexpr size_t max_iterations = 10000;
     while (evaluate_condition(args, state)) {
+        if (++iterations > max_iterations) {
+            std::cerr << "[CMake] Warning: while() exceeded " << max_iterations
+                      << " iterations; aborting loop\n";
+            break;
+        }
         size_t loop_i = 0;
         execute_tokens(body, loop_i, state);
     }
@@ -1824,36 +2104,108 @@ void CMakeParser::handle_while(const std::vector<std::string>& args, size_t& i, 
 
 bool CMakeParser::evaluate_condition(const std::vector<std::string>& args, ParseState& state) {
     if (args.empty()) return false;
-    
-    // Basic condition evaluation
-    std::string lhs = args[0];
-    
-    if (lhs == "TRUE" || lhs == "1" || lhs == "ON" || lhs == "YES" || lhs == "Y") return true;
-    if (lhs == "FALSE" || lhs == "0" || lhs == "OFF" || lhs == "NO" || lhs == "N" || lhs == "IGNORE") return false;
-    
-    // Variable reference check (is it defined/true?)
-    if (state.variables.count(lhs)) {
-        std::string val = state.variables[lhs];
-         if (val == "TRUE" || val == "1" || val == "ON" || val == "YES" || val == "Y") return true;
-         // Non-empty string usually true except "FALSE" etc.
-         if (val != "FALSE" && val != "0" && val != "OFF" && val != "NO" && !val.empty()) return true;
-         return false;
+
+    auto upper = [](std::string value) {
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        return value;
+    };
+
+    auto resolve_term = [&](const std::string& term) {
+        auto it = state.variables.find(term);
+        return it != state.variables.end() ? it->second : term;
+    };
+
+    auto is_false = [&](const std::string& value) {
+        std::string v = upper(value);
+        return v.empty() || v == "0" || v == "FALSE" || v == "OFF" ||
+               v == "NO" || v == "N" || v == "IGNORE" ||
+               v.size() >= 9 && v.substr(v.size() - 9) == "-NOTFOUND";
+    };
+
+    auto is_true_constant = [&](const std::string& value) {
+        std::string v = upper(value);
+        return v == "1" || v == "TRUE" || v == "ON" || v == "YES" || v == "Y";
+    };
+
+    auto parse_version = [](const std::string& version) {
+        std::vector<int> parts;
+        std::stringstream ss(version);
+        std::string item;
+        while (std::getline(ss, item, '.')) {
+            try {
+                parts.push_back(std::stoi(item));
+            } catch (...) {
+                parts.push_back(0);
+            }
+        }
+        while (parts.size() < 4) parts.push_back(0);
+        return parts;
+    };
+
+    auto compare_version = [&](const std::string& lhs, const std::string& rhs) {
+        auto a = parse_version(lhs);
+        auto b = parse_version(rhs);
+        for (size_t i = 0; i < a.size() && i < b.size(); ++i) {
+            if (a[i] < b[i]) return -1;
+            if (a[i] > b[i]) return 1;
+        }
+        return 0;
+    };
+
+    // OR has the lowest precedence.
+    for (size_t idx = 0; idx < args.size(); ++idx) {
+        if (args[idx] == "OR") {
+            return evaluate_condition({args.begin(), args.begin() + idx}, state) ||
+                   evaluate_condition({args.begin() + idx + 1, args.end()}, state);
+        }
     }
-    
-    // Binary ops
+
+    for (size_t idx = 0; idx < args.size(); ++idx) {
+        if (args[idx] == "AND") {
+            return evaluate_condition({args.begin(), args.begin() + idx}, state) &&
+                   evaluate_condition({args.begin() + idx + 1, args.end()}, state);
+        }
+    }
+
+    if (args[0] == "NOT" && args.size() > 1) {
+        return !evaluate_condition({args.begin() + 1, args.end()}, state);
+    }
+
+    if (args[0] == "DEFINED" && args.size() > 1) {
+        return state.variables.find(args[1]) != state.variables.end();
+    }
+
     if (args.size() >= 3) {
-        std::string op = args[1];
-        std::string rhs = args[2];
-        
+        std::string lhs = resolve_term(args[0]);
+        const std::string& op = args[1];
+        std::string rhs = resolve_term(args[2]);
+
         if (op == "STREQUAL") return lhs == rhs;
-        if (op == "NOT") return !evaluate_condition({args.begin()+1, args.end()}, state); // Recurse? NOT is unary.
+        if (op == "EQUAL") return lhs == rhs;
+        if (op == "VERSION_GREATER") return compare_version(lhs, rhs) > 0;
+        if (op == "VERSION_LESS") return compare_version(lhs, rhs) < 0;
+        if (op == "VERSION_EQUAL") return compare_version(lhs, rhs) == 0;
+        if (op == "LESS" || op == "GREATER") {
+            try {
+                int a = std::stoi(lhs);
+                int b = std::stoi(rhs);
+                return op == "LESS" ? a < b : a > b;
+            } catch (...) {
+                return false;
+            }
+        }
     }
-    
-    if (lhs == "NOT" && args.size() > 1) {
-         return !evaluate_condition({args.begin()+1, args.end()}, state);
+
+    const std::string& term = args[0];
+    auto it = state.variables.find(term);
+    if (it == state.variables.end()) {
+        return is_true_constant(term);
     }
-    
-    return !lhs.empty();
+
+    const std::string& value = it->second;
+    if (is_true_constant(value)) return true;
+    return !is_false(value);
 }
 
 void CMakeParser::propagate_include_directories(Solution& solution) {

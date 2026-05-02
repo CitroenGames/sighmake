@@ -146,7 +146,7 @@ sighmake --convert <solution.sln|solution.slnx> [options]
 
 | Option | Long Form | Description |
 |--------|-----------|-------------|
-| `-g <type>` | `--generator <type>` | Specify generator type (vcxproj, makefile) |
+| `-g <type>` | `--generator <type>` | Specify generator type (vcxproj, cmake, makefile, buildscript) |
 | `-D <NAME>=<VALUE>` | | Define a variable for use in buildscripts as `${NAME}` |
 | `-t <name>` | `--toolset <name>` | Specify default toolset (msvc2022, msvc2019, etc.) |
 | `-c` | `--convert` | Convert Visual Studio .sln/.slnx to buildscripts |
@@ -178,6 +178,13 @@ sighmake project.buildscript -g makefile
 ```
 - Creates GNU Makefiles in the `build/` directory
 - Default on Linux
+
+**Buildscripts:**
+```batch
+sighmake CMakeLists.txt -g buildscript
+```
+- Converts a parsed input project to `.buildscript` files
+- Useful for direct CMake-to-buildscript migration
 
 **List available generators:**
 ```bash
@@ -371,6 +378,11 @@ sighmake project.buildscript -g makefile
 **Parse CMakeLists.txt and generate Visual Studio project:**
 ```batch
 sighmake CMakeLists.txt -g vcxproj
+```
+
+**Parse CMakeLists.txt and generate buildscripts:**
+```batch
+sighmake CMakeLists.txt -g buildscript
 ```
 
 **Convert existing solution:**
@@ -3230,6 +3242,21 @@ make -f build/MyProject.Release VERBOSE=1
 - Clean target
 - Cross-platform compatible
 
+### buildscript Generator
+
+Generates sighmake `.buildscript` files from any parsed input format, including CMake.
+
+**Usage:**
+```batch
+sighmake CMakeLists.txt -g buildscript
+```
+
+**Generated files:**
+- `SolutionName.buildscript` - Solution-level settings and includes
+- `ProjectName.buildscript` - One buildscript per project, unless merged with the solution buildscript
+
+**Use case:** Direct CMake-to-buildscript migration without generating Visual Studio files first.
+
 ### Listing Generators
 
 ```bash
@@ -3239,6 +3266,8 @@ sighmake --list
 Output:
 ```
 Available generators:
+  buildscript - Sighmake buildscript generator
+  cmake       - CMake project generator (cross-platform)
   vcxproj  - Visual Studio Project Generator
   makefile - GNU Makefile Generator
 ```
@@ -4364,6 +4393,9 @@ sighmake CMakeLists.txt -g vcxproj
 
 # Generate Makefile from CMake
 sighmake CMakeLists.txt -g makefile
+
+# Generate buildscript files from CMake
+sighmake CMakeLists.txt -g buildscript
 ```
 
 ### Supported CMake Features
@@ -4485,6 +4517,15 @@ CMake support is **experimental** and limited to basic features.
 - Projects requiring full CMake feature set
 
 ### CMake to Buildscript Workflow
+
+**Direct conversion:**
+```batch
+sighmake CMakeLists.txt -g buildscript
+```
+
+This writes a solution buildscript and one project buildscript per discovered CMake target.
+
+**Legacy two-step workflow:**
 
 1. **Generate from CMake:**
 ```batch
@@ -6285,11 +6326,15 @@ cflags[Release] = /Ob3
 ### CMake Migration
 
 **Step 1:** Existing CMakeLists.txt
-**Step 2:** Generate from CMake
+**Step 2:** Generate buildscripts directly
+```batch
+sighmake CMakeLists.txt -g buildscript
+```
+**Alternative:** Generate from CMake through Visual Studio files
 ```batch
 sighmake CMakeLists.txt -g vcxproj
 ```
-**Step 3:** Convert to buildscript
+**Step 3:** Convert generated solution to buildscript
 ```batch
 sighmake --convert Project.sln
 ```

@@ -84,6 +84,7 @@ sources = main.cpp
 )");
     CHECK(!result.root_content.empty());
     CHECK(result.root_content.find("cmake_minimum_required") != std::string::npos);
+    CHECK(result.root_content.find("cmake_minimum_required(VERSION 3.20)") != std::string::npos);
     CHECK(result.root_content.find("project(Test") != std::string::npos);
 }
 
