@@ -139,7 +139,7 @@ Perfect for quick prototyping! To customize configurations, define your own `[co
 ```
 sighmake <buildscript|CMakeLists.txt> [options]
 sighmake --build <dir> [--config <cfg>] [--clean]
-sighmake --convert <solution.sln> [options]
+sighmake --convert <solution.sln|solution.slnx> [options]
 ```
 
 ### Options Reference
@@ -149,7 +149,7 @@ sighmake --convert <solution.sln> [options]
 | `-g <type>` | `--generator <type>` | Specify generator type (vcxproj, makefile) |
 | `-D <NAME>=<VALUE>` | | Define a variable for use in buildscripts as `${NAME}` |
 | `-t <name>` | `--toolset <name>` | Specify default toolset (msvc2022, msvc2019, etc.) |
-| `-c` | `--convert` | Convert Visual Studio solution to buildscripts |
+| `-c` | `--convert` | Convert Visual Studio .sln/.slnx to buildscripts |
 | `-b <dir>` | `--build <dir>` | Build using previously generated project files |
 | | `--config <cfg>` | Build configuration (with --build, e.g. Release) |
 | | `--target <tgt>` | Build specific target (with --build) |
@@ -248,7 +248,7 @@ Variables defined with `-D` can also be overridden by `find_package()` if the sa
 Convert existing Visual Studio solutions to buildscripts:
 
 ```batch
-sighmake --convert MySolution.sln
+sighmake --convert MySolution.slnx
 ```
 
 This generates:
@@ -375,7 +375,7 @@ sighmake CMakeLists.txt -g vcxproj
 
 **Convert existing solution:**
 ```batch
-sighmake --convert MyProject.sln
+sighmake --convert MyProject.slnx
 ```
 
 ---

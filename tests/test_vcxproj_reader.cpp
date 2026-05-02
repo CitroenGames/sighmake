@@ -567,3 +567,77 @@ TEST_CASE("VcxprojReader keeps non-default OutDir/IntDir on readback", "[vcxproj
     CHECK(cfg.out_dir.find("custom") != std::string::npos);
     CHECK(cfg.int_dir.find("custom") != std::string::npos);
 }
+
+struct TempSlnxSolution {
+    fs::path temp_dir;
+    fs::path slnx_path;
+
+    TempSlnxSolution() {
+        temp_dir = fs::temp_directory_path() / "sighmake_test_slnx_reader";
+        std::error_code ec;
+        fs::remove_all(temp_dir, ec);
+        fs::create_directories(temp_dir);
+        slnx_path = temp_dir / "Engine.slnx";
+    }
+
+    ~TempSlnxSolution() {
+        std::error_code ec;
+        fs::remove_all(temp_dir, ec);
+    }
+
+    void write_project(const std::string& filename,
+                       const std::string& project_name,
+                       const std::string& guid,
+                       const std::string& config_type) {
+        std::ofstream project_file(temp_dir / filename);
+        project_file << R"(<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{)" << guid << R"(}</ProjectGuid>
+    <ProjectName>)" << project_name << R"(</ProjectName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>)" << config_type << R"(</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+</Project>)";
+    }
+};
+
+TEST_CASE("SlnReader reads slnx projects configurations and dependencies", "[vcxproj_reader][slnx]") {
+    TempSlnxSolution temp;
+    temp.write_project("Lib.vcxproj", "Lib", "11111111-1111-1111-1111-111111111111", "StaticLibrary");
+    temp.write_project("App.vcxproj", "App", "22222222-2222-2222-2222-222222222222", "Application");
+
+    {
+        std::ofstream slnx(temp.slnx_path);
+        slnx << R"(<?xml version="1.0" encoding="UTF-8"?>
+<Solution>
+  <Configurations>
+    <BuildType Name="Debug" />
+    <BuildType Name="Release" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="Lib.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="11111111-1111-1111-1111-111111111111" />
+  <Project Path="App.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="22222222-2222-2222-2222-222222222222">
+    <BuildDependency Project="Lib.vcxproj" />
+  </Project>
+</Solution>)";
+    }
+
+    SlnReader reader;
+    auto solution = reader.read_slnx(temp.slnx_path.string());
+
+    CHECK(solution.name == "Engine");
+    CHECK(std::find(solution.configurations.begin(), solution.configurations.end(), "Debug") != solution.configurations.end());
+    CHECK(std::find(solution.configurations.begin(), solution.configurations.end(), "Release") != solution.configurations.end());
+    CHECK(std::find(solution.platforms.begin(), solution.platforms.end(), "x64") != solution.platforms.end());
+    REQUIRE(solution.projects.size() == 2);
+
+    auto app_it = std::find_if(solution.projects.begin(), solution.projects.end(),
+                               [](const Project& project) { return project.name == "App"; });
+    REQUIRE(app_it != solution.projects.end());
+    CHECK(app_it->vcxproj_path == "App.vcxproj");
+    REQUIRE(app_it->project_references.size() == 1);
+    CHECK(app_it->project_references[0].name == "Lib");
+}

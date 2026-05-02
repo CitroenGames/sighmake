@@ -18,7 +18,7 @@ void print_usage(const char* program_name) {
     std::cout << "Usage:\n";
     std::cout << "  " << program_name << " <input-file> [options]\n";
     std::cout << "  " << program_name << " --build <dir> [build-options]\n";
-    std::cout << "  " << program_name << " --convert <solution.sln> [options]\n";
+    std::cout << "  " << program_name << " --convert <solution.sln|solution.slnx> [options]\n";
     std::cout << "  " << program_name << " convert vpc <file.vpc> [options]\n\n";
     std::cout << "Input formats:\n";
     std::cout << "  .buildscript               Sighmake buildscript (INI-style)\n";
@@ -38,7 +38,7 @@ void print_usage(const char* program_name) {
     std::cout << "      --clean-first          Clean before building\n";
     std::cout << "  -j, --parallel <N>         Parallel build jobs\n\n";
     std::cout << "Conversion:\n";
-    std::cout << "  -c, --convert              Convert Visual Studio .sln to buildscripts\n";
+    std::cout << "  -c, --convert              Convert Visual Studio .sln/.slnx to buildscripts\n";
     std::cout << "  convert vpc <file.vpc>     Convert Valve VPC file to buildscript\n\n";
     std::cout << "Info:\n";
     std::cout << "      --list-toolsets        List available toolsets\n";
@@ -51,7 +51,7 @@ void print_usage(const char* program_name) {
     std::cout << "  " << program_name << " project.buildscript -D ENGINE=C:/Engine\n";
     std::cout << "  " << program_name << " CMakeLists.txt -g makefile\n";
     std::cout << "  " << program_name << " --build . --config Release -j 8\n";
-    std::cout << "  " << program_name << " --convert solution.sln\n";
+    std::cout << "  " << program_name << " --convert solution.slnx\n";
     std::cout << "  " << program_name << " convert vpc project.vpc\n\n";
     std::cout << "Environment variables:\n";
     std::cout << "  SIGHMAKE_DEFAULT_TOOLSET   Default toolset when -t is not specified\n";
@@ -286,17 +286,21 @@ int main(int argc, char* argv[]) {
         // Handle conversion mode (solution -> buildscripts)
         if (convert_mode) {
             fs::path input_path(buildscript_path);
+            std::string input_ext = input_path.extension().string();
+            std::transform(input_ext.begin(), input_ext.end(), input_ext.begin(),
+                           [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
 
-            // Check if it's a .sln file
-            if (input_path.extension() != ".sln") {
-                std::cerr << "Error: Conversion mode requires a .sln file\n";
+            if (input_ext != ".sln" && input_ext != ".slnx") {
+                std::cerr << "Error: Conversion mode requires a .sln or .slnx file\n";
                 return 1;
             }
 
             std::cout << "Converting solution: " << buildscript_path << "\n";
 
             vcxproj::SlnReader sln_reader;
-            vcxproj::Solution solution = sln_reader.read_sln(buildscript_path);
+            vcxproj::Solution solution = (input_ext == ".slnx")
+                ? sln_reader.read_slnx(buildscript_path)
+                : sln_reader.read_sln(buildscript_path);
 
             std::cout << "Solution: " << solution.name << "\n";
             std::cout << "Projects: " << solution.projects.size() << "\n";

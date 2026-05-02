@@ -28,11 +28,16 @@ public:
     // Parse a .sln file and return a Solution with project references
     Solution read_sln(const std::string& filepath);
 
+    // Parse a .slnx file and return a Solution with project references
+    Solution read_slnx(const std::string& filepath);
+
 private:
     struct SlnProject {
         std::string name;
         std::string path;
         std::string uuid;
+        std::string solution_folder;
+        std::vector<std::string> dependency_keys;
     };
 
     std::vector<SlnProject> parse_projects(const std::string& content);

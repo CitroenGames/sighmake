@@ -943,6 +943,72 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
 }
 
 // Solution parser implementation
+static std::string strip_guid_braces(std::string guid) {
+    if (guid.size() >= 2 && guid.front() == '{' && guid.back() == '}') {
+        guid = guid.substr(1, guid.size() - 2);
+    }
+    return guid;
+}
+
+static std::string solution_id_key(const std::string& id) {
+    std::string key = strip_guid_braces(id);
+    std::transform(key.begin(), key.end(), key.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return key;
+}
+
+static std::string solution_path_key(std::string path) {
+    path = fs::path(path).lexically_normal().string();
+    std::replace(path.begin(), path.end(), '\\', '/');
+    std::transform(path.begin(), path.end(), path.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return path;
+}
+
+static std::string slnx_folder_path(std::string name, const std::string& parent) {
+    std::replace(name.begin(), name.end(), '\\', '/');
+    while (!name.empty() && name.front() == '/') name.erase(name.begin());
+    while (!name.empty() && name.back() == '/') name.pop_back();
+
+    if (name.empty()) return parent;
+    if (name.find('/') != std::string::npos || parent.empty()) return name;
+    return parent + "/" + name;
+}
+
+static void add_unique_string(std::vector<std::string>& values, const std::string& value) {
+    if (!value.empty() && std::find(values.begin(), values.end(), value) == values.end()) {
+        values.push_back(value);
+    }
+}
+
+static bool is_vcxproj_path(const std::string& path) {
+    std::string ext = fs::path(path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return ext == ".vcxproj";
+}
+
+static std::string project_name_from_vcxproj_path(const std::string& path) {
+    return fs::path(path).stem().string();
+}
+
+static std::optional<std::string> resolve_slnx_reference(
+    const std::string& ref,
+    const std::map<std::string, std::string>& key_to_name)
+{
+    auto id_it = key_to_name.find(solution_id_key(ref));
+    if (id_it != key_to_name.end()) {
+        return id_it->second;
+    }
+
+    auto path_it = key_to_name.find(solution_path_key(ref));
+    if (path_it != key_to_name.end()) {
+        return path_it->second;
+    }
+
+    return std::nullopt;
+}
+
 Solution SlnReader::read_sln(const std::string& filepath) {
     Solution solution;
 
@@ -1051,6 +1117,193 @@ Solution SlnReader::read_sln(const std::string& filepath) {
     }
 
     // Extract solution name from filename
+    solution.name = fs::path(filepath).stem().string();
+    solution.uuid = generate_uuid();
+
+    return solution;
+}
+
+Solution SlnReader::read_slnx(const std::string& filepath) {
+    Solution solution;
+
+    pugi::xml_document doc;
+    pugi::xml_parse_result result = doc.load_file(filepath.c_str());
+    if (!result) {
+        throw std::runtime_error("Failed to parse slnx: " + std::string(result.description()));
+    }
+
+    auto root = doc.child("Solution");
+    if (!root) {
+        throw std::runtime_error("Invalid slnx file: no Solution root element");
+    }
+
+    std::set<std::string> configs, platforms;
+    if (auto config_root = root.child("Configurations")) {
+        for (auto node : config_root.children()) {
+            std::string node_name = node.name();
+            std::string name = node.attribute("Name").as_string();
+            if (name.empty()) continue;
+
+            if (node_name == "BuildType" || node_name == "Configuration") {
+                configs.insert(name);
+            } else if (node_name == "Platform") {
+                platforms.insert(name);
+            }
+        }
+    }
+
+    solution.configurations = std::vector<std::string>(configs.begin(), configs.end());
+    solution.platforms = std::vector<std::string>(platforms.begin(), platforms.end());
+
+    if (solution.configurations.empty()) {
+        solution.configurations = {"Debug", "Release"};
+    }
+    if (solution.platforms.empty()) {
+        solution.platforms = {"Win32", "x64"};
+    }
+
+    std::vector<SlnProject> projects;
+    std::set<std::string> folder_paths;
+
+    std::function<void(pugi::xml_node, const std::string&)> collect_projects =
+        [&](pugi::xml_node node, const std::string& folder_path) {
+            for (auto child : node.children()) {
+                std::string node_name = child.name();
+
+                if (node_name == "Folder") {
+                    std::string child_folder = slnx_folder_path(child.attribute("Name").as_string(), folder_path);
+                    if (!child_folder.empty()) {
+                        folder_paths.insert(child_folder);
+                    }
+                    collect_projects(child, child_folder);
+                    continue;
+                }
+
+                if (node_name == "Project") {
+                    SlnProject proj;
+                    proj.path = child.attribute("Path").as_string();
+                    if (proj.path.empty() || !is_vcxproj_path(proj.path)) {
+                        continue;
+                    }
+
+                    proj.name = child.attribute("Name").as_string();
+                    if (proj.name.empty()) {
+                        proj.name = child.attribute("DisplayName").as_string();
+                    }
+                    proj.uuid = strip_guid_braces(child.attribute("Id").as_string());
+                    proj.solution_folder = folder_path;
+
+                    for (auto dep : child.children("BuildDependency")) {
+                        std::string dep_key = dep.attribute("Project").as_string();
+                        if (dep_key.empty()) dep_key = dep.attribute("Id").as_string();
+                        if (dep_key.empty()) dep_key = dep.attribute("Path").as_string();
+                        add_unique_string(proj.dependency_keys, dep_key);
+                    }
+
+                    projects.push_back(proj);
+                    continue;
+                }
+
+                collect_projects(child, folder_path);
+            }
+        };
+
+    collect_projects(root, "");
+
+    std::cout << "Found " << projects.size() << " project(s) in solution\n";
+
+    fs::path sln_dir = fs::path(filepath).parent_path();
+    std::vector<std::pair<size_t, SlnProject>> loaded_projects;
+
+    for (const auto& proj_info : projects) {
+        fs::path proj_path = (sln_dir / fs::path(proj_info.path)).lexically_normal();
+
+        if (fs::exists(proj_path)) {
+            try {
+                VcxprojReader reader;
+                Project proj = reader.read_vcxproj(proj_path.string());
+
+                if (!proj_info.name.empty()) {
+                    proj.name = proj_info.name;
+                } else if (!proj.project_name.empty()) {
+                    proj.name = proj.project_name;
+                } else {
+                    proj.name = project_name_from_vcxproj_path(proj_info.path);
+                }
+
+                if (!proj_info.uuid.empty()) {
+                    proj.uuid = proj_info.uuid;
+                }
+
+                proj.vcxproj_path = proj_info.path;
+                proj.solution_folder = proj_info.solution_folder;
+
+                size_t project_index = solution.projects.size();
+                solution.projects.push_back(proj);
+                loaded_projects.push_back({project_index, proj_info});
+            } catch (const std::exception& e) {
+                std::cerr << "Warning: Failed to read project " << proj_info.path
+                          << ": " << e.what() << "\n";
+            }
+        } else {
+            std::cerr << "Warning: Project file not found: " << proj_path.string() << "\n";
+        }
+    }
+
+    std::map<std::string, std::string> key_to_name;
+    for (const auto& loaded : loaded_projects) {
+        const auto& proj_info = loaded.second;
+        const auto& proj = solution.projects[loaded.first];
+
+        key_to_name[solution_path_key(proj_info.path)] = proj.name;
+        if (!proj_info.uuid.empty()) {
+            key_to_name[solution_id_key(proj_info.uuid)] = proj.name;
+        }
+        if (!proj.uuid.empty()) {
+            key_to_name[solution_id_key(proj.uuid)] = proj.name;
+        }
+    }
+
+    std::cout << "\nResolving dependencies:\n";
+    for (const auto& loaded : loaded_projects) {
+        auto& proj = solution.projects[loaded.first];
+        const auto& proj_info = loaded.second;
+
+        if (proj_info.dependency_keys.empty()) {
+            continue;
+        }
+
+        std::cout << "  " << proj.name << " has "
+                  << proj_info.dependency_keys.size() << " dependencies\n";
+
+        for (const auto& dep_key : proj_info.dependency_keys) {
+            auto dep_name = resolve_slnx_reference(dep_key, key_to_name);
+            if (dep_name && *dep_name != proj.name) {
+                auto already_added = std::find_if(
+                    proj.project_references.begin(),
+                    proj.project_references.end(),
+                    [&](const ProjectDependency& dep) { return dep.name == *dep_name; });
+
+                if (already_added == proj.project_references.end()) {
+                    proj.project_references.push_back(ProjectDependency(*dep_name));
+                    std::cout << "    -> " << *dep_name << "\n";
+                }
+            } else {
+                std::cout << "    -> (unknown reference: " << dep_key << ")\n";
+            }
+        }
+    }
+
+    for (const auto& path : folder_paths) {
+        SolutionFolder folder;
+        size_t last_slash = path.rfind('/');
+        folder.name = (last_slash == std::string::npos) ? path : path.substr(last_slash + 1);
+        folder.path = path;
+        folder.parent = (last_slash == std::string::npos) ? std::string() : path.substr(0, last_slash);
+        folder.uuid = generate_uuid();
+        solution.folders.push_back(folder);
+    }
+
     solution.name = fs::path(filepath).stem().string();
     solution.uuid = generate_uuid();
 

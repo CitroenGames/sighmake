@@ -130,7 +130,7 @@ make -f build/sighmake.Release
 ```
 sighmake <buildscript|CMakeLists.txt> [options]
 sighmake --build <dir> [--config <cfg>] [--clean]
-sighmake --convert <solution.sln> [options]
+sighmake --convert <solution.sln|solution.slnx> [options]
 
 Options:
   -g, --generator <type>     Generator type (vcxproj, makefile)
@@ -141,7 +141,7 @@ Options:
       --clean                Clean build artifacts (with --build)
       --clean-first          Clean before building (with --build)
   -j, --parallel <N>         Parallel build jobs (with --build)
-  -c, --convert              Convert Visual Studio solution to buildscripts
+  -c, --convert              Convert Visual Studio .sln/.slnx to buildscripts
       --export-deps          Export project dependency report as HTML
       --list-toolsets        List available toolsets
   -l, --list                 List available generators
@@ -167,7 +167,7 @@ sighmake project.buildscript -t msvc2019
 
 **Convert Visual Studio solution to buildscripts:**
 ```batch
-sighmake --convert solution.sln
+sighmake --convert solution.slnx
 ```
 
 **Export dependency report:**
@@ -611,7 +611,7 @@ Convert existing Visual Studio solutions to buildscripts:
 
 ```bash
 # Convert solution to buildscripts
-sighmake --convert MyProject.sln
+sighmake --convert MyProject.slnx
 
 # This will generate:
 # - MyProject.buildscript (solution-level settings)
