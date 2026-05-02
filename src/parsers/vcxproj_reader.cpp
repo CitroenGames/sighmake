@@ -120,6 +120,187 @@ static bool has_project_reference(const Project& project, const std::string& dep
                        [&](const ProjectDependency& dep) { return dep.name == dependency_name; });
 }
 
+static std::string normalized_abs_path_key(const fs::path& path) {
+    auto value = fs::absolute(path).lexically_normal().string();
+    std::replace(value.begin(), value.end(), '/', '\\');
+    return to_lower(value);
+}
+
+static bool path_contains_build_macro(const std::string& path) {
+    return path.find("$(") != std::string::npos ||
+           path.find("%(") != std::string::npos ||
+           path.find("%") != std::string::npos;
+}
+
+static fs::path resolve_from_dir(const fs::path& base_dir, const std::string& path) {
+    fs::path resolved(path);
+    if (!resolved.is_absolute()) {
+        resolved = base_dir / resolved;
+    }
+    return resolved.lexically_normal();
+}
+
+static std::string relative_path_string(const fs::path& target, const fs::path& from) {
+    std::error_code ec;
+    fs::path relative = fs::relative(target, from, ec);
+    if (ec) {
+        relative = target;
+    }
+    auto value = relative.lexically_normal().string();
+    std::replace(value.begin(), value.end(), '/', '\\');
+    return value;
+}
+
+static std::vector<std::string> read_include_directives(const fs::path& file_path) {
+    std::vector<std::string> includes;
+    std::ifstream file(file_path);
+    if (!file.is_open()) return includes;
+
+    static const std::regex include_re(R"(^\s*#\s*include\s*[<"]([^>"]+)[>"])");
+    std::string line;
+    while (std::getline(file, line)) {
+        std::smatch match;
+        if (std::regex_search(line, match, include_re) && match.size() > 1) {
+            std::string include = trim_copy(match[1].str());
+            if (!include.empty() && include.find('$') == std::string::npos) {
+                includes.push_back(include);
+            }
+        }
+    }
+
+    return includes;
+}
+
+static bool include_exists_under(const fs::path& root, const std::string& include_path) {
+    std::error_code ec;
+    return fs::exists((root / fs::path(include_path)).lexically_normal(), ec);
+}
+
+static bool config_has_include_root(const Configuration& cfg,
+                                    const fs::path& project_dir,
+                                    const fs::path& include_root) {
+    const auto target_key = normalized_abs_path_key(include_root);
+    for (const auto& dir : cfg.cl_compile.additional_include_directories) {
+        if (dir.empty() || path_contains_build_macro(dir)) continue;
+        if (normalized_abs_path_key(resolve_from_dir(project_dir, dir)) == target_key) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool include_resolves_for_config(const Configuration& cfg,
+                                        const fs::path& project_dir,
+                                        const fs::path& source_dir,
+                                        const std::string& include_path) {
+    if (include_exists_under(source_dir, include_path)) {
+        return true;
+    }
+
+    for (const auto& dir : cfg.cl_compile.additional_include_directories) {
+        if (dir.empty() || path_contains_build_macro(dir)) continue;
+        if (include_exists_under(resolve_from_dir(project_dir, dir), include_path)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static std::vector<fs::path> common_solution_include_roots(const fs::path& solution_dir) {
+    std::vector<fs::path> roots = {
+        solution_dir / "deps" / "include",
+        solution_dir / "dependencies" / "include",
+        solution_dir / "external" / "include",
+        solution_dir / "extern" / "include",
+        solution_dir / "third_party" / "include",
+        solution_dir / "thirdparty" / "include",
+        solution_dir / "vendor" / "include",
+        solution_dir / "include",
+    };
+
+    std::vector<fs::path> existing;
+    for (auto& root : roots) {
+        std::error_code ec;
+        if (fs::is_directory(root, ec)) {
+            existing.push_back(root.lexically_normal());
+        }
+    }
+    return existing;
+}
+
+static void infer_solution_local_include_dirs(Solution& solution, const fs::path& solution_dir) {
+    auto include_roots = common_solution_include_roots(solution_dir);
+    if (include_roots.empty()) return;
+
+    for (auto& project : solution.projects) {
+        if (project.vcxproj_path.empty()) continue;
+
+        fs::path vcxproj_path = fs::path(project.vcxproj_path);
+        if (!vcxproj_path.is_absolute()) {
+            vcxproj_path = solution_dir / vcxproj_path;
+        }
+        const fs::path project_dir = vcxproj_path.lexically_normal().parent_path();
+
+        struct IncludeUse {
+            fs::path source_dir;
+            std::string include_path;
+        };
+
+        std::vector<IncludeUse> include_uses;
+        for (const auto& source : project.sources) {
+            if (source.type != FileType::ClCompile && source.type != FileType::ClInclude) {
+                continue;
+            }
+            if (source.path.empty() || path_contains_build_macro(source.path)) {
+                continue;
+            }
+
+            fs::path source_path = resolve_from_dir(project_dir, source.path);
+            std::error_code ec;
+            if (!fs::is_regular_file(source_path, ec)) {
+                continue;
+            }
+
+            auto includes = read_include_directives(source_path);
+            for (const auto& include : includes) {
+                include_uses.push_back({source_path.parent_path(), include});
+            }
+        }
+
+        if (include_uses.empty()) continue;
+
+        for (auto& [config_key, cfg] : project.configurations) {
+            std::vector<std::string> added_dirs;
+
+            for (const auto& use : include_uses) {
+                if (include_resolves_for_config(cfg, project_dir, use.source_dir, use.include_path)) {
+                    continue;
+                }
+
+                for (const auto& include_root : include_roots) {
+                    if (!include_exists_under(include_root, use.include_path)) {
+                        continue;
+                    }
+                    if (config_has_include_root(cfg, project_dir, include_root)) {
+                        continue;
+                    }
+
+                    std::string relative = relative_path_string(include_root, project_dir);
+                    cfg.cl_compile.additional_include_directories.push_back(relative);
+                    added_dirs.push_back(relative);
+                    break;
+                }
+            }
+
+            for (const auto& dir : added_dirs) {
+                std::cout << "  " << project.name << " inferred include dir for "
+                          << config_key << ": " << dir << "\n";
+            }
+        }
+    }
+}
+
 static void infer_project_references_from_link_libraries(Solution& solution) {
     std::map<std::string, std::string> library_to_project;
 
@@ -1257,6 +1438,7 @@ Solution SlnReader::read_sln(const std::string& filepath) {
         }
     }
 
+    infer_solution_local_include_dirs(solution, sln_dir);
     infer_project_references_from_link_libraries(solution);
 
     // Extract solution name from filename
@@ -1470,6 +1652,7 @@ Solution SlnReader::read_slnx(const std::string& filepath) {
         }
     }
 
+    infer_solution_local_include_dirs(solution, sln_dir);
     infer_project_references_from_link_libraries(solution);
 
     for (const auto& path : folder_paths) {

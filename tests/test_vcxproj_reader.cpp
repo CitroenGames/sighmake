@@ -590,7 +590,8 @@ struct TempSlnxSolution {
                        const std::string& guid,
                        const std::string& config_type,
                        const std::vector<std::string>& config_keys = {"Debug|x64"},
-                       const std::vector<std::string>& link_dependencies = {}) {
+                       const std::vector<std::string>& link_dependencies = {},
+                       const std::vector<std::string>& sources = {}) {
         fs::create_directories((temp_dir / filename).parent_path());
         std::ofstream project_file(temp_dir / filename);
         project_file << R"(<?xml version="1.0" encoding="utf-8"?>
@@ -633,6 +634,16 @@ struct TempSlnxSolution {
 )";
             }
         }
+        if (!sources.empty()) {
+            project_file << R"(  <ItemGroup>
+)";
+            for (const auto& source : sources) {
+                project_file << R"(    <ClCompile Include=")" << source << R"(" />
+)";
+            }
+            project_file << R"(  </ItemGroup>
+)";
+        }
         project_file << R"(</Project>)";
     }
 };
@@ -673,6 +684,50 @@ TEST_CASE("SlnReader reads slnx projects configurations and dependencies", "[vcx
     CHECK(app_it->vcxproj_path == "App.vcxproj");
     REQUIRE(app_it->project_references.size() == 1);
     CHECK(app_it->project_references[0].name == "Lib");
+}
+
+TEST_CASE("SlnReader infers solution-local deps include directory from source includes", "[vcxproj_reader][slnx]") {
+    TempSlnxSolution temp;
+    fs::create_directories(temp.temp_dir / "deps" / "include" / "GLFW");
+    fs::create_directories(temp.temp_dir / "deps" / "include" / "RmlUi" / "Core");
+    {
+        std::ofstream header(temp.temp_dir / "deps" / "include" / "GLFW" / "glfw3.h");
+        header << "#pragma once\n";
+    }
+    {
+        std::ofstream header(temp.temp_dir / "deps" / "include" / "RmlUi" / "Core" / "Input.h");
+        header << "#pragma once\n";
+    }
+    fs::create_directories(temp.temp_dir / "vkr");
+    {
+        std::ofstream source(temp.temp_dir / "vkr" / "vkr.cpp");
+        source << "#include <GLFW/glfw3.h>\n"
+               << "#include <RmlUi/Core/Input.h>\n";
+    }
+
+    temp.write_project("vkr/vkr.vcxproj", "vkr", "11111111-1111-1111-1111-111111111111", "StaticLibrary",
+                       {"Debug|x64"}, {}, {"vkr.cpp"});
+
+    {
+        std::ofstream slnx(temp.slnx_path);
+        slnx << R"(<?xml version="1.0" encoding="UTF-8"?>
+<Solution>
+  <Configurations>
+    <BuildType Name="Debug" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="vkr/vkr.vcxproj" Id="11111111-1111-1111-1111-111111111111" />
+</Solution>)";
+    }
+
+    SlnReader reader;
+    auto solution = reader.read_slnx(temp.slnx_path.string());
+
+    REQUIRE(solution.projects.size() == 1);
+    auto& cfg = solution.projects[0].configurations.at("Debug|x64");
+    CHECK(std::find(cfg.cl_compile.additional_include_directories.begin(),
+                    cfg.cl_compile.additional_include_directories.end(),
+                    std::string("..\\deps\\include")) != cfg.cl_compile.additional_include_directories.end());
 }
 
 TEST_CASE("SlnReader rebases stale absolute slnx paths and infers missing build types", "[vcxproj_reader][slnx]") {
