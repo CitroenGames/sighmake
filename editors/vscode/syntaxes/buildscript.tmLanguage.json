@@ -82,7 +82,7 @@
       "patterns": [
         {
           "comment": "if(condition) {",
-          "match": "\\b(if)\\s*(\\()\\s*(!?)(windows|linux|osx|macos|darwin|win32|x64|Win32)\\s*(\\))\\s*(\\{)?",
+          "match": "\\b(if)\\s*(\\()\\s*(!?)(windows|linux|osx|macos|darwin|unix|posix|win32|x64|Win32)\\s*(\\))\\s*(\\{)?",
           "captures": {
             "1": { "name": "keyword.control.conditional.buildscript" },
             "2": { "name": "punctuation.definition.condition.begin.buildscript" },
@@ -118,7 +118,7 @@
           "patterns": [
             { "include": "#comments" },
             {
-              "match": "\\b(PUBLIC|PRIVATE|INTERFACE)\\b",
+              "match": "\\b(PUBLIC|PRIVATE|INTERFACE|WHOLE_ARCHIVE)\\b",
               "name": "storage.modifier.visibility.buildscript"
             },
             {
@@ -201,6 +201,31 @@
             { "include": "#comments" },
             { "include": "#strings" },
             { "include": "#values" }
+          ]
+        },
+        {
+          "comment": "custom_build(...)",
+          "begin": "\\b(custom_build)\\s*(\\()",
+          "end": "(\\))",
+          "beginCaptures": {
+            "1": { "name": "entity.name.function.buildscript" },
+            "2": { "name": "punctuation.definition.arguments.begin.buildscript" }
+          },
+          "endCaptures": {
+            "1": { "name": "punctuation.definition.arguments.end.buildscript" }
+          },
+          "patterns": [
+            { "include": "#comments" },
+            { "include": "#strings" },
+            { "include": "#key-value-simple" },
+            {
+              "match": "\\b(command|outputs|description|message|inputs|additional_inputs)\\b",
+              "name": "variable.other.property.buildscript"
+            },
+            {
+              "match": "[a-zA-Z0-9_.\\-/\\\\]+",
+              "name": "string.unquoted.filepath.buildscript"
+            }
           ]
         },
         {
@@ -385,12 +410,12 @@
         },
         {
           "comment": "Known enum values",
-          "match": "\\b(Disabled|MinSize|MaxSpeed|Full|Level0|Level1|Level2|Level3|Level4|MultiThreaded|MultiThreadedDebug|MultiThreadedDLL|MultiThreadedDebugDLL|None|ProgramDatabase|EditAndContinue|Sync|Async|Use|Create|NotUsing|Console|Windows|Default|CompileAsC|CompileAsCpp|exe|app|application|lib|static|staticlib|dll|shared|dynamiclib|interface|header-only|Utility|OnlyExplicitInline|AnySuitable|Neither|Size|Speed|AVX|AVX2|SSE|SSE2|Prompt|Queue|Send)\\b",
+          "match": "\\b(Disabled|MinSize|MaxSpeed|Full|Level0|Level1|Level2|Level3|Level4|MultiThreaded|MultiThreadedDebug|MultiThreadedDLL|MultiThreadedDebugDLL|None|ProgramDatabase|EditAndContinue|Sync|Async|Use|Create|NotUsing|Console|Windows|Native|Default|CompileAsC|CompileAsCpp|exe|app|application|lib|static|staticlib|dll|shared|dynamiclib|sys|driver|sys_lib|kernel_lib|interface|header-only|Utility|OnlyExplicitInline|AnySuitable|Neither|Size|Speed|AVX|AVX2|SSE|SSE2|Prompt|Queue|Send|Signed|Unsigned|bin|elf32|elf64|win32|win64|macho64|msvc2026|msvc2022|msvc2019|msvc2017|msvc2015|Unicode|MultiByte|NotSet)\\b",
           "name": "support.constant.enum.buildscript"
         },
         {
           "comment": "Platform condition in file lists [!platform]",
-          "match": "(\\[)(!?)(windows|linux|osx|macos|darwin|win32|x64|Win32|Release|Debug)(\\])",
+          "match": "(\\[)(!?)(windows|linux|osx|macos|darwin|unix|posix|win32|x64|Win32|Release|Debug)(\\])",
           "captures": {
             "1": { "name": "punctuation.definition.condition.begin.buildscript" },
             "2": { "name": "keyword.operator.logical.not.buildscript" },

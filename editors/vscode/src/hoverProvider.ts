@@ -28,6 +28,10 @@ export class BuildscriptHoverProvider implements vscode.HoverProvider {
             return this.getPlatformHover(word);
         }
 
+        if (word in VISIBILITY_KEYWORDS) {
+            return this.createVisibilityHover(word);
+        }
+
         // Determine if word is on key side or value side of "="
         const eqIndex = lineText.indexOf('=');
         const isKeywordSide = eqIndex === -1 || wordRange.end.character <= eqIndex;

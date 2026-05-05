@@ -49,7 +49,7 @@ export class BuildscriptCompletionProvider implements vscode.CompletionItemProvi
 
     private isInFunctionArgs(text: string, document: vscode.TextDocument, position: vscode.Position): boolean {
         // Check current line and lines above for an unclosed function call
-        const funcPattern = /\b(target_link_libraries|find_package|uses_pch|file_properties|set_file_properties)\s*\(/;
+        const funcPattern = /\b(target_link_libraries|find_package|uses_pch|file_properties|set_file_properties|custom_build)\s*\(/;
         for (let i = position.line; i >= Math.max(0, position.line - 20); i--) {
             const line = document.lineAt(i).text;
             const searchText = i === position.line ? text : line;
@@ -117,7 +117,7 @@ export class BuildscriptCompletionProvider implements vscode.CompletionItemProvi
         items.push(solution);
 
         const project = new vscode.CompletionItem('project:', vscode.CompletionItemKind.Module);
-        project.insertText = new vscode.SnippetString('project:${1:ProjectName}]\ntype = ${2|exe,lib,dll|}\nsources = ${3:src/**/*.cpp}\n');
+        project.insertText = new vscode.SnippetString('project:${1:ProjectName}]\ntype = ${2|exe,lib,dll,sys,sys_lib|}\nsources = ${3:src/**/*.cpp}\n');
         project.documentation = new vscode.MarkdownString(SECTION_TYPES['project']);
         items.push(project);
 
@@ -165,6 +165,14 @@ export class BuildscriptCompletionProvider implements vscode.CompletionItemProvi
             req.documentation = new vscode.MarkdownString('Make the package required. An error is raised if not found.');
             items.push(req);
             return items;
+        }
+        if (/custom_build/.test(text)) {
+            return ['command', 'outputs', 'description', 'inputs'].map(name => {
+                const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Property);
+                item.insertText = new vscode.SnippetString(`${name} = $0`);
+                item.documentation = new vscode.MarkdownString(`custom_build ${name} property`);
+                return item;
+            });
         }
         return [];
     }

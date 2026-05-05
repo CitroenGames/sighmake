@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { BuildscriptCompletionProvider } from './completionProvider';
 import { BuildscriptHoverProvider } from './hoverProvider';
+import { registerSighmakeCommands } from './commandRunner';
 
 export function activate(context: vscode.ExtensionContext) {
     const selector: vscode.DocumentSelector = { language: 'buildscript', scheme: 'file' };
@@ -20,6 +21,8 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.languages.registerHoverProvider(selector, hoverProvider)
     );
+
+    registerSighmakeCommands(context);
 }
 
 export function deactivate() {}

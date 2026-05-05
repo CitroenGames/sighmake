@@ -16,7 +16,17 @@
     "Snippets"
   ],
   "activationEvents": [
-    "onLanguage:buildscript"
+    "onLanguage:buildscript",
+    "onCommand:sighmake.generate",
+    "onCommand:sighmake.generateDependencyReport",
+    "onCommand:sighmake.build",
+    "onCommand:sighmake.buildTarget",
+    "onCommand:sighmake.rebuild",
+    "onCommand:sighmake.clean",
+    "onCommand:sighmake.convertSolution",
+    "onCommand:sighmake.convertVpc",
+    "onCommand:sighmake.listGenerators",
+    "onCommand:sighmake.listToolsets"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -45,7 +55,111 @@
         "language": "buildscript",
         "path": "./snippets/buildscript.json"
       }
-    ]
+    ],
+    "commands": [
+      {
+        "command": "sighmake.generate",
+        "title": "sighmake: Generate Project Files"
+      },
+      {
+        "command": "sighmake.generateDependencyReport",
+        "title": "sighmake: Generate Dependency Report"
+      },
+      {
+        "command": "sighmake.build",
+        "title": "sighmake: Build"
+      },
+      {
+        "command": "sighmake.buildTarget",
+        "title": "sighmake: Build Target"
+      },
+      {
+        "command": "sighmake.rebuild",
+        "title": "sighmake: Rebuild"
+      },
+      {
+        "command": "sighmake.clean",
+        "title": "sighmake: Clean"
+      },
+      {
+        "command": "sighmake.convertSolution",
+        "title": "sighmake: Convert .sln/.slnx to Buildscripts"
+      },
+      {
+        "command": "sighmake.convertVpc",
+        "title": "sighmake: Convert VPC to Buildscripts"
+      },
+      {
+        "command": "sighmake.listGenerators",
+        "title": "sighmake: List Generators"
+      },
+      {
+        "command": "sighmake.listToolsets",
+        "title": "sighmake: List Toolsets"
+      }
+    ],
+    "configuration": {
+      "title": "sighmake",
+      "properties": {
+        "sighmake.executablePath": {
+          "type": "string",
+          "default": "sighmake",
+          "description": "Path or command name for the sighmake executable."
+        },
+        "sighmake.defaultGenerator": {
+          "type": "string",
+          "enum": [
+            "vcxproj",
+            "cmake",
+            "makefile",
+            "buildscript"
+          ],
+          "default": "vcxproj",
+          "description": "Default generator used by the generate command."
+        },
+        "sighmake.defaultBuildDir": {
+          "type": "string",
+          "default": "build",
+          "description": "Default -B/--build-dir value for the vcxproj generator."
+        },
+        "sighmake.buildRoot": {
+          "type": "string",
+          "default": ".",
+          "description": "Directory passed to sighmake --build, relative to the workspace folder unless absolute."
+        },
+        "sighmake.defaultConfig": {
+          "type": "string",
+          "default": "Debug",
+          "description": "Default build configuration."
+        },
+        "sighmake.defaultParallelJobs": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Default --parallel job count. Use 0 to let sighmake choose."
+        },
+        "sighmake.defaultToolset": {
+          "type": "string",
+          "default": "",
+          "description": "Optional default -t/--toolset value, such as msvc2026 or msvc2022."
+        },
+        "sighmake.exportDeps": {
+          "type": "boolean",
+          "default": false,
+          "description": "Add --export-deps when generating or converting build files."
+        },
+        "sighmake.defines": {
+          "type": "object",
+          "default": {},
+          "description": "Variables passed as repeated -D NAME=VALUE arguments when generating from buildscript or CMake inputs."
+        },
+        "sighmake.terminalName": {
+          "type": "string",
+          "default": "sighmake",
+          "description": "Terminal name used for sighmake commands."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

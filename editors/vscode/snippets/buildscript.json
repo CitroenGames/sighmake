@@ -122,10 +122,20 @@
     ],
     "description": "CMake-style dependency declaration with visibility."
   },
+  "Whole Archive target_link_libraries": {
+    "prefix": ["whole-archive", "tll-whole"],
+    "body": [
+      "target_link_libraries(",
+      "\t${1:LibName} ${2|PRIVATE,PUBLIC,INTERFACE|} WHOLE_ARCHIVE ${3:StaticLib}",
+      ")",
+      ""
+    ],
+    "description": "Dependency declaration that whole-archives the next static library."
+  },
   "find_package": {
     "prefix": ["find_package"],
     "body": [
-      "find_package(${1|Vulkan,OpenGL,SDL2,SDL3,DirectX11,DirectX12|}, REQUIRED)",
+      "find_package(${1|Vulkan,OpenGL,SDL2,SDL3,DirectX9,DirectX10,DirectX11,DirectX12|}, REQUIRED)",
       ""
     ],
     "description": "Find and configure an external package."
@@ -139,6 +149,74 @@
     ],
     "description": "Per-file settings section."
   },
+  "Kernel Driver Project": {
+    "prefix": ["project-sys", "driver"],
+    "body": [
+      "[project:${1:MyDriver}]",
+      "type = sys",
+      "sources = ${2:src/**/*.c}",
+      "headers = ${3:include/**/*.h}",
+      "subsystem = Native",
+      "entry_point = ${4:DriverEntry}",
+      "ignore_all_default_libraries = true",
+      ""
+    ],
+    "description": "A kernel-mode driver project."
+  },
+  "NASM Support": {
+    "prefix": ["nasm", "asm-nasm"],
+    "body": [
+      "nasm = ${1:asm/**/*.asm}",
+      "nasm_format = ${2|win64,win32,elf64,elf32,bin,macho64|}",
+      "nasm_flags = ${3:-w+all}",
+      "nasm_includes = ${4:asm/include}",
+      ""
+    ],
+    "description": "NASM source and assembler settings."
+  },
+  "Message Compiler": {
+    "prefix": ["mc", "message-compiler"],
+    "body": [
+      "mc = ${1:src/messages.mc}",
+      "mc_header_dir = ${2:obj/messages}",
+      "mc_rc_dir = ${3:obj/messages}",
+      "mc_flags = ${4:-u}",
+      ""
+    ],
+    "description": "Windows Message Compiler source and output settings."
+  },
+  "MIDL": {
+    "prefix": ["midl", "idl"],
+    "body": [
+      "idl = ${1:src/interface.idl}",
+      "midl_output_dir = ${2:obj/midl}",
+      "midl_header = ${3:interface.h}",
+      "midl_type_library = ${4:interface.tlb}",
+      "midl_flags = ${5:-Oicf -robust}",
+      ""
+    ],
+    "description": "MIDL source and generated file settings."
+  },
+  "custom_build": {
+    "prefix": ["custom_build", "custom-build"],
+    "body": [
+      "custom_build(${1:src/input.file},",
+      "\tcommand = ${2:tool %(FullPath)},",
+      "\toutputs = ${3:obj/output.file},",
+      "\tdescription = ${4:Generating output}",
+      ")",
+      ""
+    ],
+    "description": "Attach a custom build command to a file."
+  },
+  "Module Definition": {
+    "prefix": ["module_def", "def_file"],
+    "body": [
+      "module_def = ${1:exports.def}",
+      ""
+    ],
+    "description": "DLL module definition file."
+  },
   "Complete Buildscript": {
     "prefix": ["buildscript-full", "sighmake"],
     "body": [
@@ -148,7 +226,7 @@
       "platforms = ${2:x64}",
       "",
       "[project:${3:MyProject}]",
-      "type = ${4|exe,lib,dll|}",
+      "type = ${4|exe,lib,dll,sys,sys_lib|}",
       "sources = ${5:src/**/*.cpp}",
       "headers = ${6:include/**/*.h}",
       "includes = ${7:include}",

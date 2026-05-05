@@ -57,9 +57,29 @@ Hover over any keyword, value, function, or section type to see documentation:
 | `if-windows` | Conditional block for Windows |
 | `if-linux` | Conditional block for Linux |
 | `target_link_libraries` | Dependency declaration with visibility |
+| `whole-archive` | Dependency declaration using `WHOLE_ARCHIVE` |
 | `find_package` | External package discovery |
 | `file` | Per-file settings section |
+| `project-sys` | Kernel-mode driver project |
+| `nasm` | NASM source and assembler settings |
+| `mc` | Windows Message Compiler settings |
+| `midl` | MIDL source and output settings |
+| `custom_build` | Custom build command for a file |
+| `module_def` | DLL module definition file |
 | `buildscript-full` | Complete buildscript template with solution and project |
+
+### Command Palette
+
+The extension can run current sighmake workflows from VS Code:
+
+- `sighmake: Generate Project Files` - runs `sighmake <input> -g <generator>` for `.buildscript`, `CMakeLists.txt`, or `.cmake` inputs
+- `sighmake: Generate Dependency Report` - generates with `--export-deps`
+- `sighmake: Build`, `sighmake: Build Target`, `sighmake: Rebuild`, and `sighmake: Clean` - run `sighmake --build`
+- `sighmake: Convert .sln/.slnx to Buildscripts` - runs `sighmake --convert`
+- `sighmake: Convert VPC to Buildscripts` - runs `sighmake convert vpc`
+- `sighmake: List Generators` and `sighmake: List Toolsets`
+
+Settings such as `sighmake.executablePath`, `sighmake.defaultGenerator`, `sighmake.defaultBuildDir`, `sighmake.defaultToolset`, `sighmake.defaultParallelJobs`, `sighmake.exportDeps`, and `sighmake.defines` control the command arguments.
 
 ### Other
 
