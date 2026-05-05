@@ -2666,8 +2666,11 @@ bool BuildscriptParser::parse_project_linker_setting(const std::string& key, con
             proj.configurations[config_key].link.ignore_all_default_libraries = val;
         }
     } else if (key == "module_def" || key == "module_definition_file" || key == "def_file") {
+        std::string module_def = (value.find("$(") != std::string::npos || value.find("%(") != std::string::npos)
+            ? value
+            : resolve_path(value, state.base_path);
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].link.module_definition_file = value;
+            proj.configurations[config_key].link.module_definition_file = module_def;
         }
     } else if (key == "show_progress" || key == "link_show_progress") {
         for (const auto& config_key : state.solution->get_config_keys()) {
@@ -3284,7 +3287,9 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
     } else if (key == "ignore_all_default_libraries" || key == "no_default_libs") {
         cfg.link.ignore_all_default_libraries = (value == "true" || value == "yes" || value == "1");
     } else if (key == "module_def" || key == "module_definition_file" || key == "def_file") {
-        cfg.link.module_definition_file = value;
+        cfg.link.module_definition_file = (value.find("$(") != std::string::npos || value.find("%(") != std::string::npos)
+            ? value
+            : resolve_path(value, state.base_path);
     } else if (key == "fixed_base_address") {
         cfg.link.fixed_base_address = (value == "true" || value == "yes" || value == "1");
     } else if (key == "randomized_base_address" || key == "dynamic_base") {

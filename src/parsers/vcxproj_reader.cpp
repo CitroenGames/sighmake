@@ -441,6 +441,10 @@ static bool looks_like_file_path(const std::string& token) {
 struct PropSheetSettings {
     std::vector<std::string> preprocessor_definitions;
     std::vector<std::string> additional_include_directories;
+    std::optional<std::string> language_standard;
+    std::vector<std::string> link_additional_dependencies;
+    std::vector<std::string> link_additional_library_directories;
+    std::optional<std::string> link_sub_system;
 };
 
 // Read a .props file and extract ItemDefinitionGroup settings
@@ -480,6 +484,44 @@ static PropSheetSettings read_props_file(const std::string& filepath) {
                     if (!item.empty() && item.find("%(") != 0) {
                         settings.additional_include_directories.push_back(item);
                     }
+                }
+            }
+
+            if (auto n = cl.child("LanguageStandard")) {
+                std::string val = n.text().as_string();
+                if (!val.empty()) {
+                    settings.language_standard = val;
+                }
+            }
+        }
+
+        if (auto link = item_def_group.child("Link")) {
+            if (auto n = link.child("AdditionalDependencies")) {
+                std::string val = n.text().as_string();
+                std::istringstream ss(val);
+                std::string item;
+                while (std::getline(ss, item, ';')) {
+                    if (!item.empty() && item.find("%(") != 0) {
+                        settings.link_additional_dependencies.push_back(item);
+                    }
+                }
+            }
+
+            if (auto n = link.child("AdditionalLibraryDirectories")) {
+                std::string val = n.text().as_string();
+                std::istringstream ss(val);
+                std::string item;
+                while (std::getline(ss, item, ';')) {
+                    if (!item.empty() && item.find("%(") != 0) {
+                        settings.link_additional_library_directories.push_back(item);
+                    }
+                }
+            }
+
+            if (auto n = link.child("SubSystem")) {
+                std::string val = n.text().as_string();
+                if (!val.empty()) {
+                    settings.link_sub_system = val;
                 }
             }
         }
@@ -683,8 +725,117 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
                 props_settings.additional_include_directories.begin(),
                 props_settings.additional_include_directories.end()
             );
+            if (props_settings.language_standard) {
+                settings.language_standard = props_settings.language_standard;
+            }
+            settings.link_additional_dependencies.insert(
+                settings.link_additional_dependencies.end(),
+                props_settings.link_additional_dependencies.begin(),
+                props_settings.link_additional_dependencies.end()
+            );
+            settings.link_additional_library_directories.insert(
+                settings.link_additional_library_directories.end(),
+                props_settings.link_additional_library_directories.begin(),
+                props_settings.link_additional_library_directories.end()
+            );
+            if (props_settings.link_sub_system) {
+                settings.link_sub_system = props_settings.link_sub_system;
+            }
         }
     }
+
+    auto append_prop_sheet_includes = [&](const std::string& config_key, std::vector<std::string>& includes) {
+        auto append_from = [&](const std::string& key) {
+            auto it = prop_sheet_settings.find(key);
+            if (it == prop_sheet_settings.end()) return;
+            includes.insert(includes.end(),
+                            it->second.additional_include_directories.begin(),
+                            it->second.additional_include_directories.end());
+        };
+
+        append_from("");
+        if (!config_key.empty()) {
+            append_from(config_key);
+        }
+    };
+
+    auto append_prop_sheet_defines = [&](const std::string& config_key, std::vector<std::string>& defines) {
+        auto append_from = [&](const std::string& key) {
+            auto it = prop_sheet_settings.find(key);
+            if (it == prop_sheet_settings.end()) return;
+            defines.insert(defines.end(),
+                           it->second.preprocessor_definitions.begin(),
+                           it->second.preprocessor_definitions.end());
+        };
+
+        append_from("");
+        if (!config_key.empty()) {
+            append_from(config_key);
+        }
+    };
+
+    auto apply_prop_sheet_language_standard = [&](const std::string& config_key, std::string& language_standard) {
+        auto apply_from = [&](const std::string& key) {
+            auto it = prop_sheet_settings.find(key);
+            if (it == prop_sheet_settings.end() || !it->second.language_standard) return;
+            language_standard = *it->second.language_standard;
+        };
+
+        apply_from("");
+        if (!config_key.empty()) {
+            apply_from(config_key);
+        }
+    };
+
+    auto append_prop_sheet_link_dependencies = [&](const std::string& config_key, std::vector<std::string>& dependencies) {
+        auto append_from = [&](const std::string& key) {
+            auto it = prop_sheet_settings.find(key);
+            if (it == prop_sheet_settings.end()) return;
+            dependencies.insert(dependencies.end(),
+                                it->second.link_additional_dependencies.begin(),
+                                it->second.link_additional_dependencies.end());
+        };
+
+        append_from("");
+        if (!config_key.empty()) {
+            append_from(config_key);
+        }
+    };
+
+    auto append_prop_sheet_link_library_dirs = [&](const std::string& config_key, std::vector<std::string>& directories) {
+        auto append_from = [&](const std::string& key) {
+            auto it = prop_sheet_settings.find(key);
+            if (it == prop_sheet_settings.end()) return;
+            directories.insert(directories.end(),
+                               it->second.link_additional_library_directories.begin(),
+                               it->second.link_additional_library_directories.end());
+        };
+
+        append_from("");
+        if (!config_key.empty()) {
+            append_from(config_key);
+        }
+    };
+
+    auto apply_prop_sheet_link_subsystem = [&](const std::string& config_key, std::string& sub_system) {
+        auto apply_from = [&](const std::string& key) {
+            auto it = prop_sheet_settings.find(key);
+            if (it == prop_sheet_settings.end() || !it->second.link_sub_system) return;
+            sub_system = *it->second.link_sub_system;
+        };
+
+        apply_from("");
+        if (!config_key.empty()) {
+            apply_from(config_key);
+        }
+    };
+
+    std::set<std::string> configs_with_project_include_dirs;
+    std::set<std::string> configs_with_project_defines;
+    std::set<std::string> configs_with_project_language_standard;
+    std::set<std::string> configs_with_project_link_dependencies;
+    std::set<std::string> configs_with_project_link_library_dirs;
+    std::set<std::string> configs_with_project_link_subsystem;
 
     // Parse ItemDefinitionGroup (compiler, linker, etc. settings)
     for (auto item_def : root.children("ItemDefinitionGroup")) {
@@ -718,18 +869,14 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
 
             // Parse AdditionalIncludeDirectories with %(AdditionalIncludeDirectories) expansion
             if (auto n = cl.child("AdditionalIncludeDirectories")) {
+                configs_with_project_include_dirs.insert(config_key);
                 std::string val = n.text().as_string();
                 std::istringstream ss(val);
                 std::string item;
                 while (std::getline(ss, item, ';')) {
                     if (!item.empty()) {
                         if (item == "%(AdditionalIncludeDirectories)") {
-                            // Expand to property sheet includes for this config
-                            if (prop_sheet_settings.count(config_key)) {
-                                for (const auto& inc : prop_sheet_settings[config_key].additional_include_directories) {
-                                    settings.additional_include_directories.push_back(inc);
-                                }
-                            }
+                            append_prop_sheet_includes(config_key, settings.additional_include_directories);
                         } else {
                             settings.additional_include_directories.push_back(item);
                         }
@@ -739,18 +886,14 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
 
             // Parse PreprocessorDefinitions with %(PreprocessorDefinitions) expansion
             if (auto n = cl.child("PreprocessorDefinitions")) {
+                configs_with_project_defines.insert(config_key);
                 std::string val = n.text().as_string();
                 std::istringstream ss(val);
                 std::string item;
                 while (std::getline(ss, item, ';')) {
                     if (!item.empty()) {
                         if (item == "%(PreprocessorDefinitions)") {
-                            // Expand to property sheet defines for this config
-                            if (prop_sheet_settings.count(config_key)) {
-                                for (const auto& def : prop_sheet_settings[config_key].preprocessor_definitions) {
-                                    settings.preprocessor_definitions.push_back(def);
-                                }
-                            }
+                            append_prop_sheet_defines(config_key, settings.preprocessor_definitions);
                         } else {
                             settings.preprocessor_definitions.push_back(item);
                         }
@@ -786,7 +929,10 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             READ_BOOL("MultiProcessorCompilation", multi_processor_compilation);
             READ_TEXT("ErrorReporting", error_reporting);
             READ_TEXT("AdditionalOptions", additional_options);
-            READ_TEXT("LanguageStandard", language_standard);
+            if (auto n = cl.child("LanguageStandard")) {
+                configs_with_project_language_standard.insert(config_key);
+                settings.language_standard = n.text().as_string();
+            }
 
             // Read C standard (LanguageStandard_C) and convert to sighmake format
             if (auto c_std_node = cl.child("LanguageStandard_C")) {
@@ -836,14 +982,45 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
                 settings.output_file = normalize_path(settings.output_file);
             }
             READ_BOOL("SuppressStartupBanner", suppress_startup_banner);
-            READ_VECTOR("AdditionalDependencies", additional_dependencies);
-            READ_VECTOR("AdditionalLibraryDirectories", additional_library_directories);
+            if (auto n = link.child("AdditionalDependencies")) {
+                configs_with_project_link_dependencies.insert(config_key);
+                std::string val = n.text().as_string();
+                std::istringstream ss(val);
+                std::string item;
+                while (std::getline(ss, item, ';')) {
+                    if (!item.empty()) {
+                        if (item == "%(AdditionalDependencies)") {
+                            append_prop_sheet_link_dependencies(config_key, settings.additional_dependencies);
+                        } else {
+                            settings.additional_dependencies.push_back(item);
+                        }
+                    }
+                }
+            }
+            if (auto n = link.child("AdditionalLibraryDirectories")) {
+                configs_with_project_link_library_dirs.insert(config_key);
+                std::string val = n.text().as_string();
+                std::istringstream ss(val);
+                std::string item;
+                while (std::getline(ss, item, ';')) {
+                    if (!item.empty()) {
+                        if (item == "%(AdditionalLibraryDirectories)") {
+                            append_prop_sheet_link_library_dirs(config_key, settings.additional_library_directories);
+                        } else {
+                            settings.additional_library_directories.push_back(item);
+                        }
+                    }
+                }
+            }
             READ_VECTOR("IgnoreSpecificDefaultLibraries", ignore_specific_default_libraries);
             READ_BOOL("IgnoreAllDefaultLibraries", ignore_all_default_libraries);
             READ_TEXT("ModuleDefinitionFile", module_definition_file);
             READ_BOOL("GenerateDebugInformation", generate_debug_info);
             READ_TEXT("ProgramDatabaseFile", program_database_file);
-            READ_TEXT("SubSystem", sub_system);
+            if (auto n = link.child("SubSystem")) {
+                configs_with_project_link_subsystem.insert(config_key);
+                settings.sub_system = n.text().as_string();
+            }
             READ_BOOL("OptimizeReferences", optimize_references);
             READ_BOOL("EnableCOMDATFolding", enable_comdat_folding);
             READ_BOOL("GenerateMapFile", generate_map_file);
@@ -1014,6 +1191,29 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             }
             if (auto n = post_build.child("Message"))
                 cfg.post_build_event.message = n.text().as_string();
+        }
+    }
+
+    for (auto& [config_key, cfg] : project.configurations) {
+        if (configs_with_project_include_dirs.find(config_key) == configs_with_project_include_dirs.end()) {
+            append_prop_sheet_includes(config_key, cfg.cl_compile.additional_include_directories);
+        }
+        if (configs_with_project_defines.find(config_key) == configs_with_project_defines.end()) {
+            append_prop_sheet_defines(config_key, cfg.cl_compile.preprocessor_definitions);
+        }
+        if (configs_with_project_language_standard.find(config_key) == configs_with_project_language_standard.end() &&
+            cfg.cl_compile.language_standard.empty()) {
+            apply_prop_sheet_language_standard(config_key, cfg.cl_compile.language_standard);
+        }
+        if (configs_with_project_link_dependencies.find(config_key) == configs_with_project_link_dependencies.end()) {
+            append_prop_sheet_link_dependencies(config_key, cfg.link.additional_dependencies);
+        }
+        if (configs_with_project_link_library_dirs.find(config_key) == configs_with_project_link_library_dirs.end()) {
+            append_prop_sheet_link_library_dirs(config_key, cfg.link.additional_library_directories);
+        }
+        if (configs_with_project_link_subsystem.find(config_key) == configs_with_project_link_subsystem.end() &&
+            cfg.link.sub_system.empty()) {
+            apply_prop_sheet_link_subsystem(config_key, cfg.link.sub_system);
         }
     }
 
@@ -1247,7 +1447,18 @@ static std::string project_name_from_vcxproj_path(const std::string& path) {
     return fs::path(path).stem().string();
 }
 
-static fs::path resolve_slnx_project_path(const fs::path& sln_dir, const std::string& project_path) {
+static fs::path solution_directory(const std::string& filepath) {
+    fs::path path(filepath);
+    fs::path dir = path.parent_path();
+    if (dir.empty()) {
+        dir = fs::current_path();
+    } else if (!dir.is_absolute()) {
+        dir = fs::current_path() / dir;
+    }
+    return dir.lexically_normal();
+}
+
+static fs::path resolve_solution_project_path(const fs::path& sln_dir, const std::string& project_path) {
     fs::path raw_path(project_path);
     fs::path direct = raw_path.is_absolute()
         ? raw_path
@@ -1312,6 +1523,18 @@ static std::string path_relative_to_solution(const fs::path& path, const fs::pat
         return rel.string();
     }
     return path.string();
+}
+
+static std::string path_relative_to_base_for_include(const fs::path& path, const fs::path& base_dir) {
+    std::error_code ec;
+    fs::path rel = fs::relative(path, base_dir, ec);
+    if (ec || rel.empty()) {
+        rel = path;
+    }
+
+    auto value = rel.lexically_normal().string();
+    std::replace(value.begin(), value.end(), '\\', '/');
+    return value;
 }
 
 static std::optional<std::string> resolve_slnx_reference(
@@ -1392,10 +1615,10 @@ Solution SlnReader::read_sln(const std::string& filepath) {
     // Parse project dependencies (UUID -> list of dependent UUIDs)
     auto dependencies = parse_project_dependencies(content);
 
-    fs::path sln_dir = fs::path(filepath).parent_path();
+    fs::path sln_dir = solution_directory(filepath);
 
     for (const auto& proj_info : projects) {
-        fs::path proj_path = sln_dir / proj_info.path;
+        fs::path proj_path = resolve_solution_project_path(sln_dir, proj_info.path);
 
         if (fs::exists(proj_path)) {
             try {
@@ -1403,7 +1626,7 @@ Solution SlnReader::read_sln(const std::string& filepath) {
                 Project proj = reader.read_vcxproj(proj_path.string());
                 proj.name = proj_info.name;
                 proj.uuid = proj_info.uuid;
-                proj.vcxproj_path = proj_info.path;  // Store relative path from .sln
+                proj.vcxproj_path = path_relative_to_solution(proj_path, sln_dir);
                 solution.projects.push_back(proj);
             } catch (const std::exception& e) {
                 std::cerr << "Warning: Failed to read project " << proj_info.name
@@ -1530,11 +1753,11 @@ Solution SlnReader::read_slnx(const std::string& filepath) {
 
     std::cout << "Found " << projects.size() << " project(s) in solution\n";
 
-    fs::path sln_dir = fs::path(filepath).parent_path();
+    fs::path sln_dir = solution_directory(filepath);
     std::vector<std::pair<size_t, SlnProject>> loaded_projects;
 
     for (const auto& proj_info : projects) {
-        fs::path proj_path = resolve_slnx_project_path(sln_dir, proj_info.path);
+        fs::path proj_path = resolve_solution_project_path(sln_dir, proj_info.path);
 
         if (fs::exists(proj_path)) {
             try {
@@ -3070,7 +3293,7 @@ static void write_solution_section(
 
 bool BuildscriptWriter::write_solution_buildscripts(const Solution& solution, const std::string& base_dir) {
     fs::path sln_base = fs::path(base_dir);
-    std::vector<std::string> buildscript_paths;
+    std::vector<fs::path> buildscript_paths;
     std::vector<size_t> merged_project_indices;
 
     // Phase 1: Process projects - detect which ones should be merged
@@ -3095,9 +3318,7 @@ bool BuildscriptWriter::write_solution_buildscripts(const Solution& solution, co
                 return false;
             }
 
-            // Store relative path from solution directory for include directive
-            fs::path rel_include_path = vcxproj_rel_path.parent_path() / (project.name + ".buildscript");
-            buildscript_paths.push_back(rel_include_path.string());
+            buildscript_paths.push_back(buildscript_path);
         }
     }
 
@@ -3131,6 +3352,10 @@ bool BuildscriptWriter::write_solution_buildscripts(const Solution& solution, co
     // Phase 3: Generate root buildscript only if there are non-merged projects
     if (!buildscript_paths.empty()) {
         fs::path root_buildscript = sln_base / (solution.name + ".buildscript");
+        fs::path root_buildscript_dir = root_buildscript.parent_path();
+        if (root_buildscript_dir.empty()) {
+            root_buildscript_dir = ".";
+        }
         bool append_to_merged_root = !merged_project_indices.empty();
         std::ofstream root_out(root_buildscript,
                                append_to_merged_root ? std::ios::app : std::ios::out);
@@ -3154,9 +3379,7 @@ bool BuildscriptWriter::write_solution_buildscripts(const Solution& solution, co
 
         // Write include directives for non-merged projects
         for (const auto& include_path : buildscript_paths) {
-            std::string normalized_path = include_path;
-            std::replace(normalized_path.begin(), normalized_path.end(), '\\', '/');
-            root_out << "include = " << normalized_path << "\n";
+            root_out << "include = " << path_relative_to_base_for_include(include_path, root_buildscript_dir) << "\n";
         }
 
         root_out.close();

@@ -119,6 +119,32 @@ static std::string make_relative_path(const std::string& file_path, const std::s
     }
 }
 
+static bool project_matches_dependency_name(const Project& project, const std::string& dependency_name) {
+    std::string key = to_lower(dependency_name);
+    if (key.empty()) return false;
+
+    if (to_lower(project.name) == key || to_lower(project.project_name) == key) {
+        return true;
+    }
+
+    for (const auto& [_, cfg] : project.configurations) {
+        if (!cfg.target_name.empty() && to_lower(cfg.target_name) == key) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static const Project* find_dependency_project(const Solution& solution, const std::string& dependency_name) {
+    for (const auto& project : solution.projects) {
+        if (project_matches_dependency_name(project, dependency_name)) {
+            return &project;
+        }
+    }
+    return nullptr;
+}
+
 std::string VcxprojGenerator::escape_xml(const std::string& str) {
     std::string result;
     result.reserve(str.size());
@@ -1308,37 +1334,34 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             // Find the referenced project in the solution to get its GUID and actual path
             std::string ref_path;
             bool found = false;
-            for (const auto& sol_proj : solution.projects) {
-                if (sol_proj.name == dep.name) {
-                    found = true;
+            if (const Project* sol_proj = find_dependency_project(solution, dep.name)) {
+                found = true;
 
-                    // All .vcxproj files for a solution live side-by-side in the
-                    // effective build root, so the reference is always a bare filename.
-                    ref_path = sol_proj.name + GENERATED_VCXPROJ;
+                // All .vcxproj files for a solution live side-by-side in the
+                // effective build root, so the reference is always a bare filename.
+                ref_path = sol_proj->name + GENERATED_VCXPROJ;
 
-                    ref_elem.append_attribute("Include") = ref_path.c_str();
+                ref_elem.append_attribute("Include") = ref_path.c_str();
 
-                    // Add the Project GUID element
-                    ref_elem.append_child("Project").text() = ("{" + sol_proj.uuid + "}").c_str();
+                // Add the Project GUID element
+                ref_elem.append_child("Project").text() = ("{" + sol_proj->uuid + "}").c_str();
 
-                    // Check if the referenced project actually produces a library to link.
-                    // If it has no linkable sources (only headers or nothing), disable automatic linking.
-                    // This is crucial for wrapper projects that only propagate public_libs.
-                    bool has_linkable_content = false;
-                    for (const auto& src : sol_proj.sources) {
-                        if (src.type == FileType::ClCompile ||
-                            src.type == FileType::ObjCxx ||
-                            src.type == FileType::ResourceCompile ||
-                            src.type == FileType::CustomBuild ||
-                            src.type == FileType::NASM) {
-                            has_linkable_content = true;
-                            break;
-                        }
+                // Check if the referenced project actually produces a library to link.
+                // If it has no linkable sources (only headers or nothing), disable automatic linking.
+                // This is crucial for wrapper projects that only propagate public_libs.
+                bool has_linkable_content = false;
+                for (const auto& src : sol_proj->sources) {
+                    if (src.type == FileType::ClCompile ||
+                        src.type == FileType::ObjCxx ||
+                        src.type == FileType::ResourceCompile ||
+                        src.type == FileType::CustomBuild ||
+                        src.type == FileType::NASM) {
+                        has_linkable_content = true;
+                        break;
                     }
-                    if (!has_linkable_content) {
-                        ref_elem.append_child("LinkLibraryDependencies").text() = "false";
-                    }
-                    break;
+                }
+                if (!has_linkable_content) {
+                    ref_elem.append_child("LinkLibraryDependencies").text() = "false";
                 }
             }
 
@@ -1411,12 +1434,6 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
         file << "MinimumVisualStudioVersion = " << ver.min_vs_version << "\n";
     }
 
-    // Build a map from project name to UUID for dependency resolution
-    std::map<std::string, std::string> name_to_uuid;
-    for (const auto& proj : solution.projects) {
-        name_to_uuid[proj.name] = proj.uuid;
-    }
-
     // Projects
     for (const auto& proj : solution.projects) {
         if (proj.is_package_project) continue;  // Skip synthetic find_package projects
@@ -1437,9 +1454,8 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
                 }
 
                 // Look up the UUID for the dependency
-                if (name_to_uuid.count(dep.name)) {
-                    std::string dep_uuid = name_to_uuid[dep.name];
-                    file << "\t\t{" << dep_uuid << "} = {" << dep_uuid << "}\n";
+                if (const Project* dep_project = find_dependency_project(solution, dep.name)) {
+                    file << "\t\t{" << dep_project->uuid << "} = {" << dep_project->uuid << "}\n";
                 }
             }
             file << "\tEndProjectSection\n";
@@ -1569,12 +1585,9 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
             }
 
             std::string dep_path;
-            for (const auto& dep_proj : solution.projects) {
-                if (dep_proj.name == dep.name) {
-                    // All vcxproj files live next to this .slnx in the build root.
-                    dep_path = dep_proj.name + GENERATED_VCXPROJ;
-                    break;
-                }
+            if (const Project* dep_proj = find_dependency_project(solution, dep.name)) {
+                // All vcxproj files live next to this .slnx in the build root.
+                dep_path = dep_proj->name + GENERATED_VCXPROJ;
             }
 
             if (!dep_path.empty()) {

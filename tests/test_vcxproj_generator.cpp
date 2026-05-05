@@ -1264,6 +1264,41 @@ depends = LibA
     fs::remove_all(temp_dir, ec);
 }
 
+TEST_CASE("VcxprojGenerator resolves ProjectReference by target_name alias", "[vcxproj_generator]") {
+    auto result = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64
+
+[project:Tool_TextureTool]
+type = dll
+target_name = TextureTool
+sources = texture.cpp
+
+[project:Tool_Importer]
+type = dll
+sources = importer.cpp
+target_link_libraries(TextureTool)
+)");
+
+    fs::path importer_vcxproj = result.temp_dir / "build" / "Tool_Importer_.vcxproj";
+    REQUIRE(fs::exists(importer_vcxproj));
+
+    pugi::xml_document doc;
+    doc.load_file(importer_vcxproj.string().c_str());
+
+    bool found_ref = false;
+    for (auto& ig : doc.child("Project").children("ItemGroup")) {
+        for (auto& pr : ig.children("ProjectReference")) {
+            if (std::string(pr.attribute("Include").as_string()) == "Tool_TextureTool_.vcxproj") {
+                found_ref = true;
+            }
+        }
+    }
+    CHECK(found_ref);
+}
+
 TEST_CASE("VcxprojGenerator emits IgnoreAllDefaultLibraries", "[vcxproj_generator]") {
     auto result = generate_from_buildscript(R"(
 [solution]

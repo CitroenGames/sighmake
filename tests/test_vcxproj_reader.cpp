@@ -5,6 +5,26 @@
 using namespace vcxproj;
 namespace fs = std::filesystem;
 
+static std::string read_file(const fs::path& path) {
+    std::ifstream f(path);
+    return std::string((std::istreambuf_iterator<char>(f)),
+                       std::istreambuf_iterator<char>());
+}
+
+struct ScopedCurrentPath {
+    fs::path old_path;
+
+    explicit ScopedCurrentPath(const fs::path& new_path)
+        : old_path(fs::current_path()) {
+        fs::current_path(new_path);
+    }
+
+    ~ScopedCurrentPath() {
+        std::error_code ec;
+        fs::current_path(old_path, ec);
+    }
+};
+
 // RAII temp vcxproj for testing
 struct TempVcxproj {
     fs::path temp_dir;
@@ -504,6 +524,68 @@ TEST_CASE("VcxprojReader loads conditional import when file exists", "[vcxproj_r
     CHECK(std::find(defs.begin(), defs.end(), "FROM_PROPS") != defs.end());
 }
 
+TEST_CASE("VcxprojReader inherits property sheet include directories without project override", "[vcxproj_reader]") {
+    std::string xml = R"xml(<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{12345678-1234-1234-1234-123456789012}</ProjectGuid>
+    <ProjectName>TestInheritedProps</ProjectName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+  </PropertyGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="common.props" />
+  </ImportGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <PreprocessorDefinitions>LOCAL_DEF;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+  </ItemGroup>
+</Project>)xml";
+
+    TempVcxproj temp(xml);
+
+    {
+        std::ofstream props_file(temp.temp_dir / "common.props");
+        props_file << R"xml(<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>..\..\TerathonCode;..\..\SlugCode</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>FROM_COMMON;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>opengl32.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <SubSystem>Windows</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>)xml";
+    }
+
+    VcxprojReader reader;
+    auto proj = reader.read_vcxproj(temp.vcxproj_path.string());
+
+    const auto& cfg = proj.configurations["Debug|x64"];
+    const auto& includes = cfg.cl_compile.additional_include_directories;
+    CHECK(std::find(includes.begin(), includes.end(), "..\\..\\TerathonCode") != includes.end());
+    CHECK(std::find(includes.begin(), includes.end(), "..\\..\\SlugCode") != includes.end());
+
+    const auto& defs = cfg.cl_compile.preprocessor_definitions;
+    CHECK(std::find(defs.begin(), defs.end(), "LOCAL_DEF") != defs.end());
+    CHECK(std::find(defs.begin(), defs.end(), "FROM_COMMON") != defs.end());
+    CHECK(cfg.cl_compile.language_standard == "stdcpp17");
+
+    const auto& deps = cfg.link.additional_dependencies;
+    CHECK(std::find(deps.begin(), deps.end(), "opengl32.lib") != deps.end());
+    CHECK(std::find(deps.begin(), deps.end(), "ws2_32.lib") != deps.end());
+    CHECK(cfg.link.sub_system == "Windows");
+}
+
 TEST_CASE("VcxprojReader drops default OutDir/IntDir on readback", "[vcxproj_reader]") {
     // If the generator emitted the exact default paths, readback should NOT
     // populate out_dir/int_dir — so a regenerated buildscript stays clean.
@@ -571,6 +653,7 @@ TEST_CASE("VcxprojReader keeps non-default OutDir/IntDir on readback", "[vcxproj
 struct TempSlnxSolution {
     fs::path temp_dir;
     fs::path slnx_path;
+    fs::path sln_path;
 
     TempSlnxSolution() {
         temp_dir = fs::temp_directory_path() / "sighmake_test_slnx_reader";
@@ -578,6 +661,7 @@ struct TempSlnxSolution {
         fs::remove_all(temp_dir, ec);
         fs::create_directories(temp_dir);
         slnx_path = temp_dir / "Engine.slnx";
+        sln_path = temp_dir / "Engine.sln";
     }
 
     ~TempSlnxSolution() {
@@ -684,6 +768,110 @@ TEST_CASE("SlnReader reads slnx projects configurations and dependencies", "[vcx
     CHECK(app_it->vcxproj_path == "App.vcxproj");
     REQUIRE(app_it->project_references.size() == 1);
     CHECK(app_it->project_references[0].name == "Lib");
+}
+
+TEST_CASE("SlnReader converts bare slnx absolute project paths to relative root includes", "[vcxproj_reader][slnx][buildscript_writer]") {
+    TempSlnxSolution temp;
+    temp.write_project("Launcher/GameLauncher.vcxproj", "GameLauncher", "11111111-1111-1111-1111-111111111111", "Application");
+    temp.write_project("engine/hyMain.vcxproj", "hyMain", "22222222-2222-2222-2222-222222222222", "DynamicLibrary");
+
+    const std::string launcher_path = (temp.temp_dir / "Launcher" / "GameLauncher.vcxproj").generic_string();
+    const std::string engine_path = (temp.temp_dir / "engine" / "hyMain.vcxproj").generic_string();
+
+    {
+        std::ofstream slnx(temp.slnx_path);
+        slnx << R"(<?xml version="1.0" encoding="UTF-8"?>
+<Solution>
+  <Configurations>
+    <BuildType Name="Debug" />
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path=")" << launcher_path << R"(" Id="11111111-1111-1111-1111-111111111111" />
+  <Project Path=")" << engine_path << R"(" Id="22222222-2222-2222-2222-222222222222" />
+</Solution>)";
+    }
+
+    Solution solution;
+    {
+        ScopedCurrentPath cwd(temp.temp_dir);
+        SlnReader reader;
+        solution = reader.read_slnx(temp.slnx_path.filename().string());
+    }
+
+    REQUIRE(solution.projects.size() == 2);
+
+    auto launcher_it = std::find_if(solution.projects.begin(), solution.projects.end(),
+                                    [](const Project& project) { return project.name == "GameLauncher"; });
+    REQUIRE(launcher_it != solution.projects.end());
+    CHECK(fs::path(launcher_it->vcxproj_path) == fs::path("Launcher") / "GameLauncher.vcxproj");
+
+    auto engine_it = std::find_if(solution.projects.begin(), solution.projects.end(),
+                                  [](const Project& project) { return project.name == "hyMain"; });
+    REQUIRE(engine_it != solution.projects.end());
+    CHECK(fs::path(engine_it->vcxproj_path) == fs::path("engine") / "hyMain.vcxproj");
+
+    BuildscriptWriter writer;
+    REQUIRE(writer.write_solution_buildscripts(solution, temp.temp_dir.string()));
+
+    const std::string root_content = read_file(temp.temp_dir / "Engine.buildscript");
+    CHECK(root_content.find("include = Launcher/GameLauncher.buildscript") != std::string::npos);
+    CHECK(root_content.find("include = engine/hyMain.buildscript") != std::string::npos);
+    CHECK(root_content.find((temp.temp_dir / "Launcher" / "GameLauncher.buildscript").generic_string()) == std::string::npos);
+    CHECK(root_content.find((temp.temp_dir / "engine" / "hyMain.buildscript").generic_string()) == std::string::npos);
+}
+
+TEST_CASE("SlnReader converts bare sln absolute project paths to relative root includes", "[vcxproj_reader][buildscript_writer]") {
+    TempSlnxSolution temp;
+    temp.write_project("client/client.vcxproj", "client", "11111111-1111-1111-1111-111111111111", "Application");
+    temp.write_project("vkr/vkr.vcxproj", "vkr", "22222222-2222-2222-2222-222222222222", "StaticLibrary");
+
+    const std::string client_path = (temp.temp_dir / "client" / "client.vcxproj").generic_string();
+    const std::string vkr_path = (temp.temp_dir / "vkr" / "vkr.vcxproj").generic_string();
+
+    {
+        std::ofstream sln(temp.sln_path);
+        sln << R"(Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "client", ")" << client_path << R"(", "{11111111-1111-1111-1111-111111111111}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "vkr", ")" << vkr_path << R"(", "{22222222-2222-2222-2222-222222222222}"
+EndProject
+Global
+    GlobalSection(SolutionConfigurationPlatforms) = preSolution
+        Debug|x64 = Debug|x64
+    EndGlobalSection
+EndGlobal
+)";
+    }
+
+    Solution solution;
+    {
+        ScopedCurrentPath cwd(temp.temp_dir);
+        SlnReader reader;
+        solution = reader.read_sln(temp.sln_path.filename().string());
+    }
+
+    REQUIRE(solution.projects.size() == 2);
+
+    auto client_it = std::find_if(solution.projects.begin(), solution.projects.end(),
+                                  [](const Project& project) { return project.name == "client"; });
+    REQUIRE(client_it != solution.projects.end());
+    CHECK(fs::path(client_it->vcxproj_path) == fs::path("client") / "client.vcxproj");
+
+    auto vkr_it = std::find_if(solution.projects.begin(), solution.projects.end(),
+                               [](const Project& project) { return project.name == "vkr"; });
+    REQUIRE(vkr_it != solution.projects.end());
+    CHECK(fs::path(vkr_it->vcxproj_path) == fs::path("vkr") / "vkr.vcxproj");
+
+    BuildscriptWriter writer;
+    REQUIRE(writer.write_solution_buildscripts(solution, temp.temp_dir.string()));
+
+    const std::string root_content = read_file(temp.temp_dir / "Engine.buildscript");
+    CHECK(root_content.find("include = client/client.buildscript") != std::string::npos);
+    CHECK(root_content.find("include = vkr/vkr.buildscript") != std::string::npos);
+    CHECK(root_content.find((temp.temp_dir / "client" / "client.buildscript").generic_string()) == std::string::npos);
+    CHECK(root_content.find((temp.temp_dir / "vkr" / "vkr.buildscript").generic_string()) == std::string::npos);
 }
 
 TEST_CASE("SlnReader infers solution-local deps include directory from source includes", "[vcxproj_reader][slnx]") {

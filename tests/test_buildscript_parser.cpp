@@ -2528,6 +2528,39 @@ module_def = exports.def
     CHECK(cfg.link.module_definition_file.find("exports.def") != std::string::npos);
 }
 
+TEST_CASE("Parser resolves module_def relative to included buildscript", "[buildscript_parser]") {
+    auto temp_dir = std::filesystem::temp_directory_path() / "sighmake_test_module_def_include";
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+    std::filesystem::create_directories(temp_dir / "Engine", ec);
+    std::filesystem::create_directories(temp_dir / "EngineCode", ec);
+
+    std::ofstream(temp_dir / "EngineCode" / "C4Module.def") << "EXPORTS\n";
+    std::ofstream(temp_dir / "root.buildscript") << R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64
+
+include = Engine/Engine.buildscript
+)";
+    std::ofstream(temp_dir / "Engine" / "Engine.buildscript") << R"(
+[project:Engine]
+type = dll
+module_def = ../EngineCode/C4Module.def
+)";
+
+    BuildscriptParser parser;
+    auto sol = parser.parse((temp_dir / "root.buildscript").string());
+
+    REQUIRE(sol.projects.size() == 1);
+    const auto& cfg = sol.projects[0].configurations["Debug|x64"];
+    CHECK(std::filesystem::path(cfg.link.module_definition_file) ==
+          std::filesystem::canonical(temp_dir / "EngineCode" / "C4Module.def"));
+
+    std::filesystem::remove_all(temp_dir, ec);
+}
+
 TEST_CASE("Parser handles sys_lib type", "[buildscript_parser]") {
     BuildscriptParser parser;
     auto sol = parser.parse_string(R"(
