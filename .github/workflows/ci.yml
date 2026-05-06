@@ -44,11 +44,15 @@ jobs:
           $version = if ("${{ startsWith(github.ref, 'refs/tags/v') }}" -eq "true") { "${{ github.ref_name }}".TrimStart("v") } else { "0.0.0-dev" }
           New-Item -ItemType Directory -Force -Path dist, build\ci | Out-Null
           Get-ChildItem src -Recurse -Filter *.cpp | ForEach-Object { '"' + $_.FullName + '"' } | Set-Content build\ci\sources.rsp
+          @(
+            '/DSIGHMAKE_VERSION=\"' + $version + '\"'
+            '/DSIGHMAKE_RELEASE_REPO=\"CitroenGames/sighmake\"'
+          ) | Set-Content build\ci\defines.rsp
 
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vsPath = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $vsDev = Join-Path $vsPath 'Common7\Tools\VsDevCmd.bat'
-          $command = "`"$vsDev`" -arch=amd64 -no_logo && cl /nologo /std:c++17 /O2 /EHsc /W3 /MP /Isrc /FI src\pch.h /DSIGHMAKE_VERSION=\`"$version\`" /DSIGHMAKE_RELEASE_REPO=\`"CitroenGames/sighmake\`" /Fe:dist\sighmake.exe @build\ci\sources.rsp /link advapi32.lib winhttp.lib"
+          $command = "`"$vsDev`" -arch=amd64 -no_logo && cl /nologo /std:c++17 /O2 /EHsc /W3 /MP /Isrc /FI pch.h @build\ci\defines.rsp /Fe:dist\sighmake.exe @build\ci\sources.rsp /link advapi32.lib winhttp.lib"
           cmd /s /c $command
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -81,7 +85,7 @@ jobs:
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vsPath = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $vsDev = Join-Path $vsPath 'Common7\Tools\VsDevCmd.bat'
-          $command = "`"$vsDev`" -arch=amd64 -no_logo && cl /nologo /std:c++17 /EHsc /W3 /MP /Itests /Isrc /FI src\pch.h /Fe:dist\sighmake_tests.exe @build\ci\test_sources.rsp /link advapi32.lib winhttp.lib"
+          $command = "`"$vsDev`" -arch=amd64 -no_logo && cl /nologo /std:c++17 /EHsc /W3 /MP /Itests /Isrc /FI pch.h /Fe:dist\sighmake_tests.exe @build\ci\test_sources.rsp /link advapi32.lib winhttp.lib"
           cmd /s /c $command
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

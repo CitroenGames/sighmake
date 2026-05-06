@@ -504,7 +504,7 @@ std::string normalize_version(std::string version) {
 int compare_versions(const std::string& lhs, const std::string& rhs) {
     auto left = parse_version_numbers(lhs);
     auto right = parse_version_numbers(rhs);
-    size_t count = std::max(left.size(), right.size());
+    size_t count = left.size() > right.size() ? left.size() : right.size();
     left.resize(count, 0);
     right.resize(count, 0);
 

@@ -55,8 +55,8 @@ std = 17
 warning_level = Level3
 multiprocessor = true
 subsystem = Console
-libs[Win32] = winhttp.lib
-libs[x64] = winhttp.lib
+libs[Win32] = advapi32.lib, winhttp.lib
+libs[x64] = advapi32.lib, winhttp.lib
 
 # Output directories
 outdir[Debug|Win32] = .\build\bin\Debug
