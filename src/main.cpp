@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "config.hpp"
+#include "version.hpp"
 #include "parsers/buildscript_parser.hpp"
 #include "parsers/cmake_parser.hpp"
 #include "parsers/vpc_parser.hpp"
@@ -10,6 +11,7 @@
 #include "parsers/vcxproj_reader.hpp"
 #include "common/toolset_registry.hpp"
 #include "common/build_runner.hpp"
+#include "common/updater.hpp"
 
 namespace fs = std::filesystem;
 
@@ -41,6 +43,8 @@ void print_usage(const char* program_name) {
     std::cout << "  -c, --convert              Convert Visual Studio .sln/.slnx to buildscripts\n";
     std::cout << "  convert vpc <file.vpc>     Convert Valve VPC file to buildscript\n\n";
     std::cout << "Info:\n";
+    std::cout << "      --version             Show sighmake version\n";
+    std::cout << "      update [options]      Update sighmake from GitHub releases\n";
     std::cout << "      --list-toolsets        List available toolsets\n";
     std::cout << "  -l, --list                 List available generators\n";
     std::cout << "  -h, --help                 Show this help message\n\n";
@@ -53,9 +57,19 @@ void print_usage(const char* program_name) {
     std::cout << "  " << program_name << " CMakeLists.txt -g makefile\n";
     std::cout << "  " << program_name << " --build . --config Release -j 8\n";
     std::cout << "  " << program_name << " --convert solution.slnx\n";
+    std::cout << "  " << program_name << " update --check-only\n";
     std::cout << "  " << program_name << " convert vpc project.vpc\n\n";
     std::cout << "Environment variables:\n";
     std::cout << "  SIGHMAKE_DEFAULT_TOOLSET   Default toolset when -t is not specified\n";
+    std::cout << "  SIGHMAKE_UPDATE_MANIFEST_URL Override updater manifest URL\n";
+}
+
+void print_update_usage(const char* program_name) {
+    std::cout << "Usage: " << program_name << " update [options]\n\n";
+    std::cout << "Options:\n";
+    std::cout << "      --check-only           Check latest GitHub release without installing\n";
+    std::cout << "      --force                Install latest release even if versions match\n";
+    std::cout << "  -h, --help                 Show this help message\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -71,6 +85,38 @@ int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage(argv[0]);
         return 1;
+    }
+
+    if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0) {
+        std::cout << "sighmake " << SIGHMAKE_VERSION << "\n";
+        std::cout << "release repo: " << SIGHMAKE_RELEASE_REPO << "\n";
+        return 0;
+    }
+
+    if (strcmp(argv[1], "update") == 0 || strcmp(argv[1], "--update") == 0) {
+        vcxproj::updater::UpdateOptions options;
+        options.current_version = SIGHMAKE_VERSION;
+        options.repository = SIGHMAKE_RELEASE_REPO;
+        options.executable_path = vcxproj::updater::current_executable_path(argv[0]);
+        options.out = &std::cout;
+        options.err = &std::cerr;
+
+        for (int i = 2; i < argc; ++i) {
+            if (strcmp(argv[i], "--check-only") == 0) {
+                options.check_only = true;
+            } else if (strcmp(argv[i], "--force") == 0) {
+                options.force = true;
+            } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+                print_update_usage(argv[0]);
+                return 0;
+            } else {
+                std::cerr << "Error: Unknown update option: " << argv[i] << "\n";
+                print_update_usage(argv[0]);
+                return 1;
+            }
+        }
+
+        return vcxproj::updater::run_update(options);
     }
 
     // Handle "convert" subcommand

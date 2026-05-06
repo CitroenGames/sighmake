@@ -81,12 +81,21 @@ This minimal buildscript automatically gets optimized Debug and Release configur
 
 ### Quick Install
 
+#### From GitHub Releases
+Download the latest archive for your platform from:
+
+```text
+https://github.com/CitroenGames/sighmake/releases/latest
+```
+
+Extract `sighmake` or `sighmake.exe` into a directory on your PATH.
+
 #### Windows
-Run from an **elevated** Developer Command Prompt (right-click, "Run as administrator"):
+Run from a Developer Command Prompt:
 ```batch
 install.bat
 ```
-Installs to `C:\Program Files\sighmake` and adds it to the system PATH.
+Installs to `%LOCALAPPDATA%\sighmake` and adds it to the user PATH.
 
 Set `SIGHMAKE_INSTALL_DIR` to customize the install location:
 ```batch
@@ -103,6 +112,15 @@ Installs to `/usr/local/bin/sighmake` by default. Will prompt for `sudo` if need
 Set `PREFIX` to customize the install location:
 ```bash
 PREFIX=$HOME/.local ./install.sh
+```
+
+### Updating
+
+Installed release builds can update themselves from GitHub Releases:
+
+```bash
+sighmake update
+sighmake update --check-only
 ```
 
 ### Building from Source (without installing)
@@ -131,6 +149,7 @@ make -f build/sighmake.Release
 sighmake <buildscript|CMakeLists.txt> [options]
 sighmake --build <dir> [--config <cfg>] [--clean]
 sighmake --convert <solution.sln|solution.slnx> [options]
+sighmake update [--check-only] [--force]
 
 Options:
   -g, --generator <type>     Generator type (vcxproj, makefile)
@@ -143,6 +162,8 @@ Options:
   -j, --parallel <N>         Parallel build jobs (with --build)
   -c, --convert              Convert Visual Studio .sln/.slnx to buildscripts
       --export-deps          Export project dependency report as HTML
+      --version              Show sighmake version
+      update                 Update from GitHub Releases
       --list-toolsets        List available toolsets
   -l, --list                 List available generators
   -h, --help                 Show help message
@@ -173,6 +194,11 @@ sighmake --convert solution.slnx
 **Export dependency report:**
 ```batch
 sighmake project.buildscript --export-deps
+```
+
+**Check for a sighmake update:**
+```bash
+sighmake update --check-only
 ```
 
 **Generate Makefiles:**

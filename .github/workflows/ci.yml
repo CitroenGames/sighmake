@@ -1,0 +1,194 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025-vs2026
+            platform: windows_x64
+            asset: sighmake-windows-x64.zip
+          - os: ubuntu-24.04
+            platform: linux_x64
+            asset: sighmake-linux-x64.tar.gz
+          - os: macos-26-intel
+            platform: macos_x64
+            asset: sighmake-macos-x64.tar.gz
+          - os: macos-26
+            platform: macos_arm64
+            asset: sighmake-macos-arm64.tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build sighmake
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = if ("${{ startsWith(github.ref, 'refs/tags/v') }}" -eq "true") { "${{ github.ref_name }}".TrimStart("v") } else { "0.0.0-dev" }
+          New-Item -ItemType Directory -Force -Path dist, build\ci | Out-Null
+          Get-ChildItem src -Recurse -Filter *.cpp | ForEach-Object { '"' + $_.FullName + '"' } | Set-Content build\ci\sources.rsp
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $vsDev = Join-Path $vsPath 'Common7\Tools\VsDevCmd.bat'
+          $command = "`"$vsDev`" -arch=amd64 -no_logo && cl /nologo /std:c++17 /O2 /EHsc /W3 /MP /Isrc /FI src\pch.h /DSIGHMAKE_VERSION=\`"$version\`" /DSIGHMAKE_RELEASE_REPO=\`"CitroenGames/sighmake\`" /Fe:dist\sighmake.exe @build\ci\sources.rsp /link advapi32.lib winhttp.lib"
+          cmd /s /c $command
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build sighmake
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="0.0.0-dev"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          mkdir -p dist
+          c++ -std=c++17 -O2 -Wall -Isrc -include src/pch.h \
+            -DSIGHMAKE_VERSION="\"${version}\"" \
+            -DSIGHMAKE_RELEASE_REPO="\"CitroenGames/sighmake\"" \
+            $(find src -name '*.cpp' | sort) \
+            -o dist/sighmake
+          chmod +x dist/sighmake
+
+      - name: Build tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Get-ChildItem src -Recurse -Filter *.cpp | Where-Object { $_.Name -notin @('main.cpp', 'pch.cpp') }
+          $tests = Get-ChildItem tests -Filter *.cpp
+          ($tests + $src) | ForEach-Object { '"' + $_.FullName + '"' } | Set-Content build\ci\test_sources.rsp
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $vsDev = Join-Path $vsPath 'Common7\Tools\VsDevCmd.bat'
+          $command = "`"$vsDev`" -arch=amd64 -no_logo && cl /nologo /std:c++17 /EHsc /W3 /MP /Itests /Isrc /FI src\pch.h /Fe:dist\sighmake_tests.exe @build\ci\test_sources.rsp /link advapi32.lib winhttp.lib"
+          cmd /s /c $command
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build tests
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          c++ -std=c++17 -O2 -Wall -Itests -Isrc -include src/pch.h \
+            $(find tests -maxdepth 1 -name '*.cpp' | sort) \
+            $(find src -name '*.cpp' ! -name 'main.cpp' ! -name 'pch.cpp' | sort) \
+            -o dist/sighmake_tests
+          chmod +x dist/sighmake_tests
+
+      - name: Smoke test CLI
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ./dist/sighmake.exe --version
+            ./dist/sighmake.exe --list
+          else
+            ./dist/sighmake --version
+            ./dist/sighmake --list
+          fi
+
+      - name: Run tests
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ./dist/sighmake_tests.exe -r compact
+          else
+            ./dist/sighmake_tests -r compact
+          fi
+
+      - name: Package release asset
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Compress-Archive -Path dist\sighmake.exe -DestinationPath artifacts\${{ matrix.asset }} -Force
+
+      - name: Package release asset
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          tar -czf "artifacts/${{ matrix.asset }}" -C dist sighmake
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.platform }}
+          path: artifacts/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download release assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate release manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum sighmake-* > checksums.txt
+
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "asset_base_url=https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
+            echo "windows_x64=sighmake-windows-x64.zip"
+            echo "windows_x64_sha256=$(sha256sum sighmake-windows-x64.zip | awk '{print $1}')"
+            echo "linux_x64=sighmake-linux-x64.tar.gz"
+            echo "linux_x64_sha256=$(sha256sum sighmake-linux-x64.tar.gz | awk '{print $1}')"
+            echo "macos_x64=sighmake-macos-x64.tar.gz"
+            echo "macos_x64_sha256=$(sha256sum sighmake-macos-x64.tar.gz | awk '{print $1}')"
+            echo "macos_arm64=sighmake-macos-arm64.tar.gz"
+            echo "macos_arm64_sha256=$(sha256sum sighmake-macos-arm64.tar.gz | awk '{print $1}')"
+          } > sighmake-release.ini
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" release-assets/* \
+            --verify-tag \
+            --generate-notes \
+            --title "${GITHUB_REF_NAME}"

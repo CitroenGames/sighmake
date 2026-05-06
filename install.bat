@@ -64,10 +64,10 @@ for /r src %%f in (*.cpp) do (
     set "SOURCES=!SOURCES! %%f"
 )
 
-cl.exe /nologo /std:c++17 /O2 /EHsc /W3 /MP /I"%~dp0src" /FI "%~dp0src\pch.h" /Fe:sighmake.exe !SOURCES! /link /OUT:sighmake.exe advapi32.lib >nul 2>&1
+cl.exe /nologo /std:c++17 /O2 /EHsc /W3 /MP /I"%~dp0src" /FI "%~dp0src\pch.h" /Fe:sighmake.exe !SOURCES! /link /OUT:sighmake.exe advapi32.lib winhttp.lib >nul 2>&1
 if %errorlevel% neq 0 (
     echo       Compilation failed. Trying with verbose output...
-    cl.exe /std:c++17 /O2 /EHsc /W3 /MP /I"%~dp0src" /FI "%~dp0src\pch.h" /Fe:sighmake.exe !SOURCES! /link /OUT:sighmake.exe advapi32.lib
+    cl.exe /std:c++17 /O2 /EHsc /W3 /MP /I"%~dp0src" /FI "%~dp0src\pch.h" /Fe:sighmake.exe !SOURCES! /link /OUT:sighmake.exe advapi32.lib winhttp.lib
     exit /b 1
 )
 echo       OK

@@ -24,6 +24,7 @@ sources = {
     test_buildscript_generator.cpp
     test_generator_factory.cpp
     test_cmake_generator.cpp
+    test_updater.cpp
 }
 
 # Source files under test (exclude main.cpp to avoid duplicate main)
@@ -40,6 +41,7 @@ sources = {
     ../src/common/toolset_registry.cpp
     ../src/common/vs_detector.cpp
     ../src/common/build_cache.cpp
+    ../src/common/updater.cpp
     ../src/pugixml.cpp
 }
 
@@ -53,6 +55,8 @@ std = 17
 warning_level = Level3
 multiprocessor = true
 subsystem = Console
+libs[Win32] = winhttp.lib
+libs[x64] = winhttp.lib
 
 # Output directories
 outdir[Debug|Win32] = .\build\bin\Debug

@@ -58,6 +58,8 @@ rtti = true
 
 # Linker settings
 subsystem = Console
+libs[Win32] = winhttp.lib
+libs[x64] = winhttp.lib
 
 # Precompiled header settings
 pch = Use

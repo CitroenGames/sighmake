@@ -140,6 +140,7 @@ Perfect for quick prototyping! To customize configurations, define your own `[co
 sighmake <buildscript|CMakeLists.txt> [options]
 sighmake --build <dir> [--config <cfg>] [--clean]
 sighmake --convert <solution.sln|solution.slnx> [options]
+sighmake update [--check-only] [--force]
 ```
 
 ### Options Reference
@@ -158,6 +159,8 @@ sighmake --convert <solution.sln|solution.slnx> [options]
 | `-j <N>` | `--parallel <N>` | Parallel build jobs (with --build) |
 | | `--list-toolsets` | List all available Visual Studio toolsets |
 | | `--export-deps` | Export project dependency report as HTML |
+| | `--version` | Show the installed sighmake version |
+| | `update` | Update sighmake from GitHub Releases |
 | `-l` | `--list` | List all available generators |
 | `-h` | `--help` | Display help message |
 
@@ -334,6 +337,16 @@ sudo ./install.sh
 
 # Install to a custom prefix
 PREFIX=~/.local ./install.sh
+```
+
+Release builds can update themselves from GitHub Releases:
+
+```bash
+# Check without installing
+sighmake update --check-only
+
+# Download and install the latest release asset for this platform
+sighmake update
 ```
 
 It also works in conversion mode:
@@ -5506,83 +5519,11 @@ chmod +x .git/hooks/pre-commit
 
 sighmake integrates easily into continuous integration and deployment pipelines.
 
-### GitHub Actions (Windows)
-
-**.github/workflows/build-windows.yml:**
-```yaml
-name: Build Windows
-
-on: [push, pull_request]
-
-jobs:
-  build:
-    runs-on: windows-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-
-    - name: Setup MSBuild
-      uses: microsoft/setup-msbuild@v1
-
-    - name: Generate Visual Studio solution
-      run: sighmake project.buildscript -t msvc2022
-
-    - name: Build Debug
-      run: msbuild Project_.sln /p:Configuration=Debug /p:Platform=x64
-
-    - name: Build Release
-      run: msbuild Project_.sln /p:Configuration=Release /p:Platform=x64
-
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: windows-build
-        path: bin/Release/
-```
-
-### GitHub Actions (Linux)
-
-**.github/workflows/build-linux.yml:**
-```yaml
-name: Build Linux
-
-on: [push, pull_request]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential
-
-    - name: Generate Makefiles
-      run: ./sighmake project.buildscript -g makefile
-
-    - name: Build Debug
-      run: make -f build/Project.Debug -j$(nproc)
-
-    - name: Build Release
-      run: make -f build/Project.Release -j$(nproc)
-
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: linux-build
-        path: bin/Release/
-```
-
-### GitHub Actions (Multi-Platform)
+### GitHub Actions
 
 **.github/workflows/build.yml:**
 ```yaml
-name: Build
+name: Build With sighmake
 
 on: [push, pull_request]
 
@@ -5590,22 +5531,14 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-2025-vs2026, ubuntu-24.04]
         configuration: [Debug, Release]
 
     runs-on: ${{ matrix.os }}
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
-
-    - name: Setup MSBuild (Windows)
-      if: runner.os == 'Windows'
-      uses: microsoft/setup-msbuild@v1
-
-    - name: Install GCC (Linux)
-      if: runner.os == 'Linux'
-      run: sudo apt-get update && sudo apt-get install -y build-essential
+      uses: actions/checkout@v6
 
     - name: Generate project files
       shell: bash
@@ -5623,7 +5556,15 @@ jobs:
     - name: Build (Linux)
       if: runner.os == 'Linux'
       run: make -f build/Project.${{ matrix.configuration }} -j$(nproc)
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v7
+      with:
+        name: build-${{ matrix.os }}-${{ matrix.configuration }}
+        path: build/
 ```
+
+The sighmake repository also includes `.github/workflows/ci.yml`, which builds Windows, Linux, macOS x64, and macOS arm64 release assets and publishes them when a `v*` tag is pushed.
 
 ### GitLab CI
 
