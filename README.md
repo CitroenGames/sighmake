@@ -763,6 +763,10 @@ snakegame/
 - Multi-directory buildscript organization
 - Public includes for library API exposure
 
+### [garden-framework](https://github.com/CitroenGames/garden-framework)
+
+Another project using sighmake as its build system.
+
 ## Documentation
 
 For comprehensive documentation on all features, see [usage.md](usage.md):
