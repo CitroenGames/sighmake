@@ -2,8 +2,6 @@ name: CI
 
 on:
   push:
-    branches:
-      - master
     tags:
       - "v*"
   pull_request:
@@ -239,13 +237,10 @@ jobs:
   release:
     name: Publish GitHub release
     needs: build
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-    concurrency:
-      group: release-${{ github.ref }}
-      cancel-in-progress: false
 
     steps:
       - name: Checkout
@@ -260,30 +255,6 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Determine release metadata
-        id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            tag="${GITHUB_REF_NAME}"
-            version="${tag#v}"
-            prerelease=false
-            title="${tag}"
-          else
-            short="${GITHUB_SHA:0:7}"
-            tag="nightly"
-            version="0.0.0-dev+${short}"
-            prerelease=true
-            title="Nightly (${short})"
-          fi
-          {
-            echo "tag=${tag}"
-            echo "version=${version}"
-            echo "prerelease=${prerelease}"
-            echo "title=${title}"
-          } >> "$GITHUB_OUTPUT"
-
       - name: Generate release manifest
         shell: bash
         run: |
@@ -291,8 +262,8 @@ jobs:
           cd release-assets
           sha256sum sighmake-* > checksums.txt
 
-          tag="${{ steps.meta.outputs.tag }}"
-          version="${{ steps.meta.outputs.version }}"
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
           {
             echo "version=${version}"
             echo "tag=${tag}"
@@ -315,30 +286,13 @@ jobs:
             echo "macos_arm64_setup_sha256=$(sha256sum sighmake-macos-arm64-setup.dmg | awk '{print $1}')"
           } > sighmake-release.ini
 
-      - name: Publish stable release
-        if: steps.meta.outputs.prerelease == 'false'
+      - name: Publish release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create "${{ steps.meta.outputs.tag }}" release-assets/* \
+          gh release create "${GITHUB_REF_NAME}" release-assets/* \
             --verify-tag \
             --generate-notes \
-            --title "${{ steps.meta.outputs.title }}"
-
-      - name: Publish nightly prerelease
-        if: steps.meta.outputs.prerelease == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          tag="${{ steps.meta.outputs.tag }}"
-          # Remove the previous nightly release + tag so we can re-point at HEAD.
-          gh release delete "${tag}" --yes --cleanup-tag 2>/dev/null || true
-          gh release create "${tag}" release-assets/* \
-            --prerelease \
-            --target "${GITHUB_SHA}" \
-            --title "${{ steps.meta.outputs.title }}" \
-            --notes "Automated nightly build from ${GITHUB_SHA:0:7}. For stable releases, see the latest \`v*\` tag."
+            --title "${GITHUB_REF_NAME}"
