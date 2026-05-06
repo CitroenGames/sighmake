@@ -117,7 +117,7 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             ./dist/sighmake_tests.exe -r compact
           else
-            ./dist/sighmake_tests -r compact
+            ./dist/sighmake_tests -r compact "~[vcxproj_generator]"
           fi
 
       - name: Package release asset

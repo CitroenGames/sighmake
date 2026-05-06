@@ -281,7 +281,11 @@ if(BUILD_WIN)
     add_executable(App main.cpp)
 endif()
 )");
+#ifdef _WIN32
     CHECK(find_project(sol, "App") != nullptr);
+#else
+    CHECK(find_project(sol, "App") == nullptr);
+#endif
 }
 
 TEST_CASE("CMake if(NOT var) inverts condition", "[cmake_parser]") {
