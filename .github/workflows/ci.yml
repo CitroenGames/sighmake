@@ -22,15 +22,19 @@ jobs:
           - os: windows-2025-vs2026
             platform: windows_x64
             asset: sighmake-windows-x64.zip
+            installer: sighmake-windows-x64-setup.exe
           - os: ubuntu-24.04
             platform: linux_x64
             asset: sighmake-linux-x64.tar.gz
+            installer: sighmake-linux-x64.deb
           - os: macos-26-intel
             platform: macos_x64
             asset: sighmake-macos-x64.tar.gz
+            installer: sighmake-macos-x64-setup.dmg
           - os: macos-26
             platform: macos_arm64
             asset: sighmake-macos-arm64.tar.gz
+            installer: sighmake-macos-arm64-setup.dmg
 
     steps:
       - name: Checkout
@@ -137,11 +141,99 @@ jobs:
           mkdir -p artifacts
           tar -czf "artifacts/${{ matrix.asset }}" -C dist sighmake
 
+      - name: Build installer (Inno Setup)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = if ("${{ startsWith(github.ref, 'refs/tags/v') }}" -eq "true") { "${{ github.ref_name }}".TrimStart("v") } else { "0.0.0-dev" }
+
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) {
+            foreach ($c in @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "${env:ProgramFiles}\Inno Setup 6\ISCC.exe")) {
+              if (Test-Path $c) { $iscc = $c; break }
+            }
+          }
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y --limit-output
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          & $iscc /Qp "/DAppVersion=$version" installer\windows\sighmake.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          if (-not (Test-Path "artifacts\${{ matrix.installer }}")) {
+            Write-Error "Installer not produced at artifacts\${{ matrix.installer }}"
+            exit 1
+          }
+
+      - name: Build installer (.deb)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="0.0.0-dev"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          fi
+
+          stage="$(mktemp -d)"
+          mkdir -p "$stage/DEBIAN" "$stage/usr/bin"
+          install -m 0755 dist/sighmake "$stage/usr/bin/sighmake"
+
+          cat > "$stage/DEBIAN/control" <<EOF
+          Package: sighmake
+          Version: ${version}
+          Section: devel
+          Priority: optional
+          Architecture: amd64
+          Maintainer: CitroenGames <noreply@github.com>
+          Homepage: https://github.com/CitroenGames/sighmake
+          Description: Buildsystem-as-code project generator
+           sighmake generates Visual Studio, Makefile, and CMake projects from
+           a single declarative buildscript.
+          EOF
+
+          mkdir -p artifacts
+          dpkg-deb --build --root-owner-group "$stage" "artifacts/${{ matrix.installer }}"
+
+      - name: Build installer (.dmg)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="0.0.0-dev"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          fi
+
+          pkgroot="$(mktemp -d)"
+          mkdir -p "$pkgroot/usr/local/bin"
+          install -m 0755 dist/sighmake "$pkgroot/usr/local/bin/sighmake"
+
+          stage="$(mktemp -d)"
+          pkgbuild \
+            --root "$pkgroot" \
+            --identifier "com.citroengames.sighmake" \
+            --version "$version" \
+            --install-location "/" \
+            "$stage/sighmake.pkg"
+
+          mkdir -p artifacts
+          hdiutil create \
+            -volname "sighmake $version" \
+            -srcfolder "$stage" \
+            -ov -format UDZO \
+            "artifacts/${{ matrix.installer }}"
+
       - name: Upload release asset
         uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.platform }}
-          path: artifacts/${{ matrix.asset }}
+          path: |
+            artifacts/${{ matrix.asset }}
+            artifacts/${{ matrix.installer }}
           if-no-files-found: error
 
   release:
@@ -180,12 +272,20 @@ jobs:
             echo "asset_base_url=https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
             echo "windows_x64=sighmake-windows-x64.zip"
             echo "windows_x64_sha256=$(sha256sum sighmake-windows-x64.zip | awk '{print $1}')"
+            echo "windows_x64_setup=sighmake-windows-x64-setup.exe"
+            echo "windows_x64_setup_sha256=$(sha256sum sighmake-windows-x64-setup.exe | awk '{print $1}')"
             echo "linux_x64=sighmake-linux-x64.tar.gz"
             echo "linux_x64_sha256=$(sha256sum sighmake-linux-x64.tar.gz | awk '{print $1}')"
+            echo "linux_x64_deb=sighmake-linux-x64.deb"
+            echo "linux_x64_deb_sha256=$(sha256sum sighmake-linux-x64.deb | awk '{print $1}')"
             echo "macos_x64=sighmake-macos-x64.tar.gz"
             echo "macos_x64_sha256=$(sha256sum sighmake-macos-x64.tar.gz | awk '{print $1}')"
+            echo "macos_x64_setup=sighmake-macos-x64-setup.dmg"
+            echo "macos_x64_setup_sha256=$(sha256sum sighmake-macos-x64-setup.dmg | awk '{print $1}')"
             echo "macos_arm64=sighmake-macos-arm64.tar.gz"
             echo "macos_arm64_sha256=$(sha256sum sighmake-macos-arm64.tar.gz | awk '{print $1}')"
+            echo "macos_arm64_setup=sighmake-macos-arm64-setup.dmg"
+            echo "macos_arm64_setup_sha256=$(sha256sum sighmake-macos-arm64-setup.dmg | awk '{print $1}')"
           } > sighmake-release.ini
 
       - name: Publish release
