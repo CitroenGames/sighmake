@@ -630,7 +630,7 @@ sources = main.cpp
     }
 }
 
-TEST_CASE("MakefileGenerator includes --gc-sections for linker optimization", "[makefile_generator]") {
+TEST_CASE("MakefileGenerator includes --gc-sections for linker optimization", "[makefile_generator][gnu_ld]") {
     auto result = generate_makefile(R"(
 [solution]
 name = Test
@@ -647,7 +647,7 @@ sources = main.cpp
     }
 }
 
-TEST_CASE("MakefileGenerator emits base_address in linker flags", "[makefile_generator]") {
+TEST_CASE("MakefileGenerator emits base_address in linker flags", "[makefile_generator][gnu_ld]") {
     auto result = generate_makefile(R"(
 [solution]
 name = Test
@@ -681,7 +681,7 @@ ignore_all_default_libraries = true
     }
 }
 
-TEST_CASE("MakefileGenerator emits version-script for module_def", "[makefile_generator]") {
+TEST_CASE("MakefileGenerator emits version-script for module_def", "[makefile_generator][gnu_ld]") {
     auto result = generate_makefile(R"(
 [solution]
 name = Test
