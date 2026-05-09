@@ -409,10 +409,14 @@ SourceFile* BuildscriptParser::find_or_create_source(const std::string& path, Pa
 
     // Resolve path relative to base_path to get absolute path
     std::string abs_path_str = resolve_path(path, state.base_path);
+    std::string active_filter = state.get_current_file_filter_path();
 
     // Look for existing entry using absolute path
     for (auto& src : state.current_project->sources) {
         if (src.path == abs_path_str) {
+            if (!active_filter.empty()) {
+                src.filter = active_filter;
+            }
             return &src;
         }
     }
@@ -422,6 +426,7 @@ SourceFile* BuildscriptParser::find_or_create_source(const std::string& path, Pa
     auto& src = state.current_project->sources.back();
     src.path = abs_path_str;
     src.type = get_file_type(abs_path_str);
+    src.filter = active_filter;
     return &src;
 }
 
@@ -1055,9 +1060,10 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
 
     // Handle opening brace for pending folder block (brace on next line)
     if (trimmed == "{" && state.pending_folder_brace) {
-        state.folder_stack.push_back(state.pending_folder_name);
+        state.push_folder(state.pending_folder_name, state.pending_folder_kind);
         state.pending_folder_brace = false;
         state.pending_folder_name.clear();
+        state.pending_folder_kind = ParseState::FolderKind::Solution;
         return;
     }
 
@@ -1087,12 +1093,18 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
             if (folder_name.size() >= 2 && folder_name.front() == '"' && folder_name.back() == '"')
                 folder_name = folder_name.substr(1, folder_name.size() - 2);
 
+            ParseState::FolderKind folder_kind =
+                state.current_section == ParseState::SectionContext::Project
+                    ? ParseState::FolderKind::FileFilter
+                    : ParseState::FolderKind::Solution;
+
             size_t brace_pos = trimmed.rfind('{');
             if (brace_pos != std::string::npos && brace_pos > end_paren) {
-                state.folder_stack.push_back(folder_name);
+                state.push_folder(folder_name, folder_kind);
             } else {
                 state.pending_folder_brace = true;
                 state.pending_folder_name = folder_name;
+                state.pending_folder_kind = folder_kind;
             }
             return;
         }
@@ -1112,8 +1124,7 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
         }
 
         // Folder block closing
-        if (!state.folder_stack.empty()) {
-            state.folder_stack.pop_back();
+        if (state.pop_folder()) {
             return;
         }
     }
@@ -1425,6 +1436,7 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
         state.current_project = nullptr;
         state.current_file = nullptr;
         state.current_config.clear();
+        state.current_section = ParseState::SectionContext::Solution;
         return true;
     }
 
@@ -1440,6 +1452,7 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
         state.current_project->solution_folder = state.get_current_folder_path();
         state.current_file = nullptr;
         state.current_config.clear();
+        state.current_section = ParseState::SectionContext::Project;
         return true;
     }
 
@@ -1448,6 +1461,7 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
         std::string file_path = trim(section.substr(5));
         state.current_file = find_or_create_source(file_path, state);
         state.current_config.clear();
+        state.current_section = ParseState::SectionContext::File;
         return true;
     }
     
@@ -1467,6 +1481,7 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
         }
 
         state.current_config = config_spec;
+        state.current_section = ParseState::SectionContext::Config;
 
         // Parse config|platform and track them for solution-level configuration generation
         size_t pipe_pos = state.current_config.find('|');
@@ -1782,6 +1797,8 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
     // Save and restore current_project and current_file to prevent included files from affecting parent context
     Project* saved_current_project = state.current_project;
     SourceFile* saved_current_file = state.current_file;
+    std::string saved_current_config = state.current_config;
+    auto saved_current_section = state.current_section;
 
     while (std::getline(stream, line)) {
         state.line_number++;
@@ -1793,6 +1810,8 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
     state.base_path = saved_base_path;
     state.current_project = saved_current_project;
     state.current_file = saved_current_file;
+    state.current_config = saved_current_config;
+    state.current_section = saved_current_section;
 }
 
 void BuildscriptParser::parse_solution_setting(const std::string& key, const std::string& value,

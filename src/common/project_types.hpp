@@ -53,6 +53,7 @@ struct FileSettings {
 struct SourceFile {
     std::string path;
     FileType type = FileType::ClCompile;
+    std::string filter;  // Visual Studio file filter path (empty = project root)
     FileSettings settings;
 
     // Custom build tool settings

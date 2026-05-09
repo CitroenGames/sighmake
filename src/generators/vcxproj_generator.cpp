@@ -145,6 +145,57 @@ static const Project* find_dependency_project(const Solution& solution, const st
     return nullptr;
 }
 
+static std::string normalize_filter_path(std::string filter) {
+    std::replace(filter.begin(), filter.end(), '\\', '/');
+    while (!filter.empty() && filter.front() == '/') {
+        filter.erase(filter.begin());
+    }
+    while (!filter.empty() && filter.back() == '/') {
+        filter.pop_back();
+    }
+    return filter;
+}
+
+static std::string to_msvc_filter_path(std::string filter) {
+    filter = normalize_filter_path(filter);
+    std::replace(filter.begin(), filter.end(), '/', '\\');
+    return filter;
+}
+
+static uint64_t fnv1a64(const std::string& value) {
+    uint64_t hash = 14695981039346656037ull;
+    for (unsigned char c : value) {
+        hash ^= c;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+static std::string make_stable_filter_guid(const std::string& seed) {
+    uint64_t high = fnv1a64(seed);
+    uint64_t low = fnv1a64(seed + "#filter");
+    std::stringstream ss;
+    ss << std::uppercase << std::hex << std::setfill('0');
+    ss << std::setw(8) << static_cast<uint32_t>(high >> 32) << "-";
+    ss << std::setw(4) << static_cast<uint16_t>(high >> 16) << "-";
+    ss << std::setw(4) << static_cast<uint16_t>(high) << "-";
+    ss << std::setw(4) << static_cast<uint16_t>(low >> 48) << "-";
+    ss << std::setw(12) << (low & 0x0000FFFFFFFFFFFFull);
+    return ss.str();
+}
+
+static void collect_filter_and_parents(const std::string& filter, std::set<std::string>& filters) {
+    std::string path = normalize_filter_path(filter);
+    while (!path.empty()) {
+        filters.insert(path);
+        size_t slash = path.rfind('/');
+        if (slash == std::string::npos) {
+            break;
+        }
+        path = path.substr(0, slash);
+    }
+}
+
 std::string VcxprojGenerator::escape_xml(const std::string& str) {
     std::string result;
     result.reserve(str.size());
@@ -1413,7 +1464,65 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     }
 
     // Save to file
-    return doc.save_file(output_path.c_str(), "  ", pugi::format_default | pugi::format_write_bom);
+    bool saved = doc.save_file(output_path.c_str(), "  ", pugi::format_default | pugi::format_write_bom);
+    if (!saved) {
+        return false;
+    }
+    return generate_vcxproj_filters(project, output_path);
+}
+
+bool VcxprojGenerator::generate_vcxproj_filters(const Project& project, const std::string& vcxproj_path) {
+    pugi::xml_document doc;
+
+    auto decl = doc.prepend_child(pugi::node_declaration);
+    decl.append_attribute("version") = "1.0";
+    decl.append_attribute("encoding") = "utf-8";
+
+    auto root = doc.append_child("Project");
+    root.append_attribute("ToolsVersion") = "4.0";
+
+    std::set<std::string> filters;
+    for (const auto& src : project.sources) {
+        if (!src.filter.empty()) {
+            collect_filter_and_parents(src.filter, filters);
+        }
+    }
+
+    if (!filters.empty()) {
+        auto filter_group = root.append_child("ItemGroup");
+        for (const auto& filter : filters) {
+            auto filter_elem = filter_group.append_child("Filter");
+            std::string msvc_filter = to_msvc_filter_path(filter);
+            filter_elem.append_attribute("Include") = msvc_filter.c_str();
+            std::string guid = "{" + make_stable_filter_guid(project.uuid + "|" + filter) + "}";
+            filter_elem.append_child("UniqueIdentifier").text() = guid.c_str();
+        }
+    }
+
+    std::map<FileType, std::vector<const SourceFile*>> files_by_type;
+    for (const auto& src : project.sources) {
+        if (!src.filter.empty()) {
+            files_by_type[src.type].push_back(&src);
+        }
+    }
+
+    for (const auto& [type, files] : files_by_type) {
+        if (files.empty()) continue;
+
+        auto item_group = root.append_child("ItemGroup");
+        std::string type_name = get_file_type_name(type);
+        for (const auto* src : files) {
+            auto file_elem = item_group.append_child(type_name.c_str());
+            std::string relative_path = make_relative_path(src->path, vcxproj_path);
+            file_elem.append_attribute("Include") = relative_path.c_str();
+            std::string msvc_filter = to_msvc_filter_path(src->filter);
+            file_elem.append_child("Filter").text() = msvc_filter.c_str();
+        }
+    }
+
+    fs::path filters_path = vcxproj_path;
+    filters_path += ".filters";
+    return doc.save_file(filters_path.string().c_str(), "  ", pugi::format_default | pugi::format_write_bom);
 }
 
 bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string& output_path) {

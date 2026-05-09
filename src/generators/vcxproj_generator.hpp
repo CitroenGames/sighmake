@@ -32,6 +32,9 @@ public:
     bool generate_vcxproj(const Project& project, const Solution& solution,
                           const std::string& output_path);
 
+    // Generate a .vcxproj.filters file from project file filter metadata
+    bool generate_vcxproj_filters(const Project& project, const std::string& vcxproj_path);
+
     // Generate a .sln file from a Solution
     bool generate_sln(const Solution& solution, const std::string& output_path);
 

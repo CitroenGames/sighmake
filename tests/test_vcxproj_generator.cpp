@@ -1484,6 +1484,69 @@ midl_flags = -Oicf
     fs::remove_all(temp_dir, ec);
 }
 
+TEST_CASE("VcxprojGenerator emits project file filters", "[vcxproj_generator]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = FileFilterTest
+configurations = Debug
+platforms = Win32
+
+[project:App]
+type = exe
+sources = main.cpp
+folder("graphics") {
+    sources = renderer.cpp
+    headers = renderer.hpp
+    folder("shaders") {
+        resources = shader.rc
+    }
+}
+)");
+
+    REQUIRE(!gen.vcxproj_path.empty());
+    fs::path filters_path = gen.vcxproj_path;
+    filters_path += ".filters";
+    REQUIRE(fs::exists(filters_path));
+
+    pugi::xml_document doc;
+    auto result = doc.load_file(filters_path.string().c_str());
+    REQUIRE(result.status == pugi::status_ok);
+
+    auto root = doc.child("Project");
+    REQUIRE(root);
+
+    bool found_graphics = false;
+    bool found_shaders = false;
+    bool renderer_filtered = false;
+    bool header_filtered = false;
+    bool resource_filtered = false;
+    bool main_filtered = false;
+
+    for (auto& ig : root.children("ItemGroup")) {
+        for (auto& filter : ig.children("Filter")) {
+            std::string include = filter.attribute("Include").as_string();
+            if (include == "graphics") found_graphics = true;
+            if (include == "graphics\\shaders") found_shaders = true;
+        }
+        for (auto& file : ig.children()) {
+            std::string include = file.attribute("Include").as_string();
+            std::string filename = fs::path(include).filename().string();
+            std::string filter = file.child("Filter").text().as_string();
+            if (filename == "renderer.cpp" && filter == "graphics") renderer_filtered = true;
+            if (filename == "renderer.hpp" && filter == "graphics") header_filtered = true;
+            if (filename == "shader.rc" && filter == "graphics\\shaders") resource_filtered = true;
+            if (filename == "main.cpp" && !filter.empty()) main_filtered = true;
+        }
+    }
+
+    CHECK(found_graphics);
+    CHECK(found_shaders);
+    CHECK(renderer_filtered);
+    CHECK(header_filtered);
+    CHECK(resource_filtered);
+    CHECK_FALSE(main_filtered);
+}
+
 // ============================================================================
 // Nested solution folders
 // ============================================================================

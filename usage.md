@@ -4937,6 +4937,27 @@ folder(Tools) {      # unquoted
 }
 ```
 
+### Project File Filters
+
+Inside a project section, `folder()` uses the same block syntax to create Visual Studio file filters in the generated `.vcxproj.filters` file. Files listed inside the block appear under that filter in Solution Explorer.
+
+```ini
+[project:Game]
+type = exe
+sources = src/main.cpp
+
+folder("graphics") {
+    sources = src/render.cpp
+    headers = include/render.hpp
+
+    folder("shaders") {
+        resources = resources/shaders.rc
+    }
+}
+```
+
+Outside a project section, `folder()` still creates solution folders for projects.
+
 **Pass-through buildscripts:**
 
 Folder context flows through includes. A buildscript that only includes other buildscripts will pass the folder assignment to all projects defined in those included files:

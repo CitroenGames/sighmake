@@ -20,6 +20,7 @@ A flexible build system generator that converts buildscript files and CMakeLists
 - **find_package()** - Locate external SDKs (Vulkan, SDL2, SDL3, DirectX, OpenGL)
 - **File inclusion** - Share common settings across buildscripts
 - **Solution folders** - Organize projects in Visual Studio Solution Explorer
+- **Project file filters** - Organize files inside generated Visual Studio projects
 - **Dependency export** - Generate HTML dependency reports with `--export-deps`
 - **Assembly support** - MASM and NASM assembler integration
 - **Kernel-mode drivers** - Build Windows kernel drivers (sys) and kernel-mode static libraries (sys_lib)
@@ -524,6 +525,25 @@ folder("Engine") {
 
 folder("Tools") {
     include = tools/editor.buildscript
+}
+```
+
+### Project File Filters
+
+Inside a project, use the same `folder()` block syntax to organize files in the generated `.vcxproj.filters` file:
+
+```ini
+[project:Game]
+type = exe
+sources = src/main.cpp
+
+folder("graphics") {
+    sources = src/render.cpp
+    headers = include/render.hpp
+
+    folder("shaders") {
+        resources = resources/shaders.rc
+    }
 }
 ```
 

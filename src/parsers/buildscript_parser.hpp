@@ -58,18 +58,65 @@ private:
         bool pending_if_result = false;     // Result of evaluate_condition() for pending if
         std::string pending_if_platform_filter;  // Platform filter for pending if (e.g., "Win32", "x64")
 
-        // Folder block tracking (stack for nested folders)
-        std::vector<std::string> folder_stack;
+        enum class SectionContext {
+            None,
+            Solution,
+            Project,
+            File,
+            Config
+        };
+
+        enum class FolderKind {
+            Solution,
+            FileFilter
+        };
+
+        SectionContext current_section = SectionContext::None;
+
+        // Folder block tracking (solution folders and project-local file filters)
+        std::vector<std::string> solution_folder_stack;
+        std::vector<std::string> file_filter_stack;
+        std::vector<FolderKind> folder_kind_stack;
         bool pending_folder_brace = false;
         std::string pending_folder_name;
+        FolderKind pending_folder_kind = FolderKind::Solution;
 
-        std::string get_current_folder_path() const {
+        static std::string join_folder_path(const std::vector<std::string>& stack) {
             std::string result;
-            for (size_t i = 0; i < folder_stack.size(); ++i) {
+            for (size_t i = 0; i < stack.size(); ++i) {
                 if (i > 0) result += '/';
-                result += folder_stack[i];
+                result += stack[i];
             }
             return result;
+        }
+
+        std::string get_current_folder_path() const {
+            return join_folder_path(solution_folder_stack);
+        }
+
+        std::string get_current_file_filter_path() const {
+            return join_folder_path(file_filter_stack);
+        }
+
+        void push_folder(const std::string& name, FolderKind kind) {
+            if (kind == FolderKind::FileFilter) {
+                file_filter_stack.push_back(name);
+            } else {
+                solution_folder_stack.push_back(name);
+            }
+            folder_kind_stack.push_back(kind);
+        }
+
+        bool pop_folder() {
+            if (folder_kind_stack.empty()) return false;
+            FolderKind kind = folder_kind_stack.back();
+            folder_kind_stack.pop_back();
+            if (kind == FolderKind::FileFilter) {
+                if (!file_filter_stack.empty()) file_filter_stack.pop_back();
+            } else {
+                if (!solution_folder_stack.empty()) solution_folder_stack.pop_back();
+            }
+            return true;
         }
 
         struct ScopeState {

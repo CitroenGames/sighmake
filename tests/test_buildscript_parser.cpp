@@ -3,6 +3,7 @@
 #include "parsers/buildscript_parser.hpp"
 
 using namespace vcxproj;
+namespace fs = std::filesystem;
 
 // Helper to find a project by name
 static const Project* find_project(const Solution& sol, const std::string& name) {
@@ -1257,6 +1258,43 @@ folder("Core") {
 }
 )");
     CHECK(sol.projects[0].sources.size() >= 2);
+}
+
+TEST_CASE("Project folder() block assigns file filters", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:App]
+type = exe
+sources = main.cpp
+folder("graphics") {
+    sources = renderer.cpp
+    headers = renderer.hpp
+    folder("shaders") {
+        resources = shader.rc
+    }
+}
+)");
+    REQUIRE(sol.projects.size() == 1);
+    const auto& sources = sol.projects[0].sources;
+
+    auto find_filter = [&](const std::string& filename) -> std::string {
+        for (const auto& src : sources) {
+            if (fs::path(src.path).filename().string() == filename) {
+                return src.filter;
+            }
+        }
+        return "<missing>";
+    };
+
+    CHECK(find_filter("main.cpp").empty());
+    CHECK(find_filter("renderer.cpp") == "graphics");
+    CHECK(find_filter("renderer.hpp") == "graphics");
+    CHECK(find_filter("shader.rc") == "graphics/shaders");
 }
 
 TEST_CASE("Nested folder assigns correct solution_folder", "[buildscript_parser]") {

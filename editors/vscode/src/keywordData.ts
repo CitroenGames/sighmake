@@ -1343,7 +1343,7 @@ export const FUNCTIONS: FunctionInfo[] = [
     },
     {
         name: 'folder',
-        signature: 'folder("FolderName") {\\n    [project:...]\\n    ...\\n}',
-        documentation: 'Organize projects into a Visual Studio solution folder. Projects defined inside the block are placed in the named folder.',
+        signature: 'folder("FolderName") {\\n    ...\\n}',
+        documentation: 'Organize projects into Visual Studio solution folders, or organize files into Visual Studio project filters when used inside a `[project:...]` section.',
     },
 ];
