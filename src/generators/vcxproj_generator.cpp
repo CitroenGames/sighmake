@@ -1937,12 +1937,24 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
             if (project.is_package_project) continue;
 
             const std::string filename = project.name + GENERATED_VCXPROJ;
-            BuildProjectEntry entry;
-            entry.name = project.name;
-            entry.file = build_dir_.empty()
+            const std::string project_file = build_dir_.empty()
                 ? filename
                 : (fs::path(build_dir_) / filename).string();
-            cache.projects.push_back(std::move(entry));
+
+            std::set<std::string> names;
+            names.insert(project.name);
+            for (const auto& [_, config] : project.configurations) {
+                if (!config.target_name.empty()) {
+                    names.insert(config.target_name);
+                }
+            }
+
+            for (const auto& name : names) {
+                BuildProjectEntry entry;
+                entry.name = name;
+                entry.file = project_file;
+                cache.projects.push_back(std::move(entry));
+            }
         }
         cache.build_dir = build_dir_;
         cache.write(output_dir);
