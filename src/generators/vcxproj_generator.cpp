@@ -1933,6 +1933,17 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
         cache.platform_toolset = vs_info->platform_toolset;
         cache.configurations = solution.configurations;
         cache.platforms = solution.platforms;
+        for (const auto& project : solution.projects) {
+            if (project.is_package_project) continue;
+
+            const std::string filename = project.name + GENERATED_VCXPROJ;
+            BuildProjectEntry entry;
+            entry.name = project.name;
+            entry.file = build_dir_.empty()
+                ? filename
+                : (fs::path(build_dir_) / filename).string();
+            cache.projects.push_back(std::move(entry));
+        }
         cache.build_dir = build_dir_;
         cache.write(output_dir);
     }

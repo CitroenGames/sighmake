@@ -63,6 +63,9 @@ bool BuildCache::write(const std::string& output_dir) const {
     if (!build_dir.empty()) {
         out << "build_dir=" << build_dir << "\n";
     }
+    for (const auto& project : projects) {
+        out << "project=" << project.name << "|" << project.file << "\n";
+    }
 
     return true;
 }
@@ -109,6 +112,12 @@ std::optional<BuildCache> BuildCache::read(const std::string& dir) {
             cache.platforms = split(value, ',');
         } else if (key == "build_dir") {
             cache.build_dir = value;
+        } else if (key == "project") {
+            size_t sep = value.find('|');
+            if (sep != std::string::npos) {
+                cache.projects.push_back(
+                    { value.substr(0, sep), value.substr(sep + 1) });
+            }
         }
     }
 

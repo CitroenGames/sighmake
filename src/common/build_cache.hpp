@@ -6,6 +6,11 @@
 
 namespace vcxproj {
 
+struct BuildProjectEntry {
+    std::string name;                // Logical project name from the build graph
+    std::string file;                // Generated project file path, relative to cache dir
+};
+
 struct BuildCache {
     std::string generator;              // "vcxproj" or "makefile"
     std::string solution_file;          // Relative path to .sln/.slnx (vcxproj only)
@@ -16,6 +21,7 @@ struct BuildCache {
     std::vector<std::string> configurations;
     std::vector<std::string> platforms;
     std::string build_dir;              // Relative path to makefile build dir (makefile only)
+    std::vector<BuildProjectEntry> projects;
 
     // Write cache to output_dir/.sighmake_cache
     bool write(const std::string& output_dir) const;

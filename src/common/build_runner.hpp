@@ -9,8 +9,10 @@ struct BuildOptions {
     std::string directory;          // The --build <dir> argument
     std::string config;             // --config <cfg> (optional)
     std::string target;             // --target <tgt> (optional)
+    std::string project;            // --project <name|file> (optional)
     bool clean_first = false;       // --clean-first (optional)
     bool clean_only = false;        // --clean (optional, clean without building)
+    bool build_project_references = true; // false with --no-project-references
     int parallel = 0;               // --parallel <N> (optional, 0 = default)
 };
 

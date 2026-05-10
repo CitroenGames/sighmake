@@ -36,6 +36,8 @@ void print_usage(const char* program_name) {
     std::cout << "  -b, --build <dir>          Build using previously generated project files\n";
     std::cout << "      --config <cfg>         Build configuration (e.g. Debug, Release)\n";
     std::cout << "      --target <tgt>         Build specific target\n";
+    std::cout << "      --project <name|file>  Build a generated project instead of the whole graph\n";
+    std::cout << "      --no-project-references Do not build referenced projects with --project\n";
     std::cout << "      --clean                Clean build artifacts without building\n";
     std::cout << "      --clean-first          Clean before building\n";
     std::cout << "  -j, --parallel <N>         Parallel build jobs\n\n";
@@ -56,6 +58,7 @@ void print_usage(const char* program_name) {
     std::cout << "  " << program_name << " project.buildscript -D ENGINE=C:/Engine\n";
     std::cout << "  " << program_name << " CMakeLists.txt -g makefile\n";
     std::cout << "  " << program_name << " --build . --config Release -j 8\n";
+    std::cout << "  " << program_name << " --build . --config Debug --project MyPlugin --no-project-references\n";
     std::cout << "  " << program_name << " --convert solution.slnx\n";
     std::cout << "  " << program_name << " update --check-only\n";
     std::cout << "  " << program_name << " convert vpc project.vpc\n\n";
@@ -186,10 +189,14 @@ int main(int argc, char* argv[]) {
                 options.config = argv[++i];
             } else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
                 options.target = argv[++i];
+            } else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) {
+                options.project = argv[++i];
             } else if (strcmp(argv[i], "--clean-first") == 0) {
                 options.clean_first = true;
             } else if (strcmp(argv[i], "--clean") == 0) {
                 options.clean_only = true;
+            } else if (strcmp(argv[i], "--no-project-references") == 0 || strcmp(argv[i], "--no-deps") == 0) {
+                options.build_project_references = false;
             } else if ((strcmp(argv[i], "--parallel") == 0 || strcmp(argv[i], "-j") == 0) && i + 1 < argc) {
                 options.parallel = std::atoi(argv[++i]);
             } else {

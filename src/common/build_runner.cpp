@@ -5,6 +5,69 @@ namespace fs = std::filesystem;
 
 namespace vcxproj {
 
+static std::string to_lower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
+}
+
+static bool contains_path_separator(const std::string& value) {
+    return value.find('/') != std::string::npos ||
+           value.find('\\') != std::string::npos;
+}
+
+static std::optional<fs::path> existing_path(const fs::path& path) {
+    std::error_code ec;
+    if (fs::exists(path, ec)) {
+        return path;
+    }
+    return std::nullopt;
+}
+
+static std::optional<fs::path> resolve_msbuild_project(
+    const BuildCache& cache,
+    const std::string& cache_dir,
+    const std::string& requested_project)
+{
+    if (requested_project.empty()) {
+        return std::nullopt;
+    }
+
+    fs::path requested_path(requested_project);
+    if (requested_path.has_extension() || contains_path_separator(requested_project)) {
+        fs::path candidate = requested_path.is_absolute()
+            ? requested_path
+            : fs::path(cache_dir) / requested_path;
+        if (auto found = existing_path(candidate)) {
+            return found;
+        }
+    }
+
+    const std::string requested_lower = to_lower(requested_project);
+    for (const auto& project : cache.projects) {
+        fs::path project_file(project.file);
+        if (to_lower(project.name) == requested_lower ||
+            to_lower(project_file.stem().string()) == requested_lower) {
+            return fs::path(cache_dir) / project_file;
+        }
+    }
+
+    // Backward-compatible fallback for caches generated before project files
+    // were recorded. Debug sighmake builds historically append '_' before the
+    // .vcxproj extension; release builds do not.
+    const fs::path build_dir = cache.build_dir.empty()
+        ? fs::path()
+        : fs::path(cache.build_dir);
+    for (const char* suffix : { "_.vcxproj", ".vcxproj" }) {
+        fs::path candidate = fs::path(cache_dir) / build_dir / (requested_project + suffix);
+        if (auto found = existing_path(candidate)) {
+            return found;
+        }
+    }
+
+    return std::nullopt;
+}
+
 std::string BuildRunner::find_msbuild(const std::string& vs_installation_path) {
     // Standard MSBuild location for VS 2017+
     fs::path msbuild = fs::path(vs_installation_path) / "MSBuild" / "Current" / "Bin" / "MSBuild.exe";
@@ -33,12 +96,30 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
         return 1;
     }
 
-    // Verify solution file exists
-    fs::path sln_path = fs::path(cache_dir) / cache.solution_file;
-    if (!fs::exists(sln_path)) {
-        std::cerr << "Error: Solution file not found: " << sln_path << "\n";
-        std::cerr << "  Run sighmake to regenerate project files.\n";
-        return 1;
+    const bool building_project = !options.project.empty();
+    fs::path build_path;
+    if (building_project) {
+        auto project_path = resolve_msbuild_project(cache, cache_dir, options.project);
+        if (!project_path) {
+            std::cerr << "Error: Project '" << options.project << "' not found in build cache.\n";
+            if (!cache.projects.empty()) {
+                std::cerr << "  Available projects: ";
+                for (size_t i = 0; i < cache.projects.size(); ++i) {
+                    if (i > 0) std::cerr << ", ";
+                    std::cerr << cache.projects[i].name;
+                }
+                std::cerr << "\n";
+            }
+            return 1;
+        }
+        build_path = *project_path;
+    } else {
+        build_path = fs::path(cache_dir) / cache.solution_file;
+        if (!fs::exists(build_path)) {
+            std::cerr << "Error: Solution file not found: " << build_path << "\n";
+            std::cerr << "  Run sighmake to regenerate project files.\n";
+            return 1;
+        }
     }
 
     // Determine configuration
@@ -85,7 +166,7 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
     }
 
     // Build MSBuild command
-    std::string cmd = "\"\"" + msbuild_path + "\" \"" + sln_path.string() + "\"";
+    std::string cmd = "\"\"" + msbuild_path + "\" \"" + build_path.string() + "\"";
     cmd += " /p:Configuration=" + config;
     cmd += " /p:Platform=" + platform;
 
@@ -98,6 +179,10 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
         cmd += " /t:Rebuild";
     }
 
+    if (building_project && !options.build_project_references) {
+        cmd += " /p:BuildProjectReferences=false";
+    }
+
     // Parallel build
     if (options.parallel > 0) {
         cmd += " /m:" + std::to_string(options.parallel);
@@ -107,7 +192,11 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
 
     cmd += "\"";
 
-    std::cout << (options.clean_only ? "Cleaning: " : "Building: ") << cache.solution_name << " [" << config << "|" << platform << "]\n";
+    std::cout << (options.clean_only ? "Cleaning: " : "Building: ") << cache.solution_name;
+    if (building_project) {
+        std::cout << " project " << options.project;
+    }
+    std::cout << " [" << config << "|" << platform << "]\n";
     std::cout << "MSBuild: " << msbuild_path << "\n" << std::endl;
 
     return std::system(cmd.c_str());
@@ -154,6 +243,7 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
         }
     }
 
+    const std::string requested_target = options.project.empty() ? options.target : options.project;
     // Build make command
     std::string cmd = "make -C \"" + build_dir.string() + "\"";
 
@@ -176,8 +266,8 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
     }
 
     // Add target or config
-    if (!options.target.empty()) {
-        cmd += " " + options.target;
+    if (!requested_target.empty()) {
+        cmd += " " + requested_target;
     } else {
         cmd += " " + config;
     }
@@ -245,6 +335,8 @@ int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,
         }
     }
 
+    const std::string requested_target = options.project.empty() ? options.target : options.project;
+
     // Build cmake --build command
     std::string cmd = "cmake --build \"" + build_dir.string() + "\" --config " + config;
 
@@ -258,8 +350,8 @@ int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,
         cmd += " --clean-first";
     }
 
-    if (!options.target.empty()) {
-        cmd += " --target " + options.target;
+    if (!requested_target.empty()) {
+        cmd += " --target " + requested_target;
     }
 
     if (options.parallel > 0) {
