@@ -1,15 +1,10 @@
 #include "pch.h"
 #include "build_runner.hpp"
+#include "project_types.hpp"
 
 namespace fs = std::filesystem;
 
 namespace vcxproj {
-
-static std::string to_lower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(),
-        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return value;
-}
 
 static bool contains_path_separator(const std::string& value) {
     return value.find('/') != std::string::npos ||
