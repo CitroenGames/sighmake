@@ -235,20 +235,17 @@ std::tuple<std::string, std::string> MakefileGenerator::get_file_pch_mode(
 
 // Get all compiler flags for a configuration
 std::string MakefileGenerator::get_compiler_flags(const Configuration& config, const Project& project,
-                                                   const std::filesystem::path& makefile_dir) {
+                                                   const std::filesystem::path& makefile_dir, bool c_flags) {
     std::stringstream ss;
 
-    // Language standard - detect project language and use appropriate standard
-    std::string detected_language = detect_project_language(project);
-    if (detected_language == "C") {
-        // C project - use C standard
+    // Language standard. Mixed C/C++ projects need distinct flags for each compiler.
+    if (c_flags) {
         if (!project.c_standard.empty()) {
             ss << map_c_standard(project.c_standard) << " ";
         } else {
             ss << "-std=c17 "; // Default C standard
         }
     } else {
-        // C++ project - use C++ standard
         if (!config.cl_compile.language_standard.empty()) {
             ss << map_language_standard(config.cl_compile.language_standard) << " ";
         } else {
@@ -524,7 +521,8 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     }
 
     // Compiler flags
-    std::string cxxflags = get_compiler_flags(config, project, makefile_dir);
+    std::string cxxflags = get_compiler_flags(config, project, makefile_dir, false);
+    std::string cflags = get_compiler_flags(config, project, makefile_dir, true);
     std::string ldflags = get_linker_flags(config, makefile_dir);
     std::string ldlibs = get_linker_libs(config);
 
@@ -628,7 +626,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
         out << "CXXFLAGS = " << cxxflags << "\n";
     }
     if (has_c_files) {
-        out << "CFLAGS = " << cxxflags << "\n";
+        out << "CFLAGS = " << cflags << "\n";
     }
     if (has_objcxx_files) {
         out << "OBJCXXFLAGS = $(CXXFLAGS)";

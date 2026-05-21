@@ -588,6 +588,49 @@ sources = main.c
     fs::remove_all(temp_dir, ec);
 }
 
+TEST_CASE("MakefileGenerator mixed C and C++ projects use separate standards", "[makefile_generator]") {
+    auto temp_dir = fs::temp_directory_path() / "sighmake_test_makefile_mixed_c_cpp_standards";
+    std::error_code ec;
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir);
+    std::ofstream(temp_dir / "main.cpp") << "int main() { return helper(); }\nextern int helper();\n";
+    std::ofstream(temp_dir / "helper.c") << "int helper(void) { return 0; }";
+
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = exe
+std = 20
+c_standard = 11
+sources = main.cpp, helper.c
+)", temp_dir.string());
+
+    MakefileGenerator generator;
+    generator.generate(sol, temp_dir.string());
+
+    auto build_dir = temp_dir / "build";
+    std::string content;
+    if (fs::exists(build_dir)) {
+        for (auto& entry : fs::directory_iterator(build_dir)) {
+            if (entry.is_regular_file() && entry.path().filename().string() != "Makefile") {
+                content = read_file(entry.path());
+                if (!content.empty()) break;
+            }
+        }
+    }
+    if (!content.empty()) {
+        CHECK(content.find("CXXFLAGS = -std=c++20") != std::string::npos);
+        CHECK(content.find("CFLAGS = -std=c11") != std::string::npos);
+    }
+
+    fs::remove_all(temp_dir, ec);
+}
+
 // ============================================================================
 // UTF-8 flag mapping
 // ============================================================================
