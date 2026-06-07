@@ -132,6 +132,60 @@ TEST_CASE("BuildscriptWriter writes includes", "[buildscript_writer]") {
     CHECK(result.content.find("src") != std::string::npos);
 }
 
+TEST_CASE("BuildscriptWriter converts VS directory macros to buildscript-relative paths", "[buildscript_writer]") {
+    auto temp_dir = fs::temp_directory_path() / "sighmake_test_writer_macros";
+    std::error_code ec;
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir / "App");
+
+    Project proj;
+    proj.name = "App";
+    proj.vcxproj_path = "App/App.vcxproj";
+
+    auto& cfg = proj.configurations["Debug|Win32"];
+    cfg.config_type = "Application";
+    cfg.out_dir = "$(SolutionDir)bin\\$(Configuration)\\";
+    cfg.int_dir = "$(SolutionDir)obj\\$(Configuration)\\";
+    cfg.cl_compile.additional_include_directories = {"$(SolutionDir)", "$(ProjectDir)include"};
+
+    const auto buildscript_path = temp_dir / "App" / "App.buildscript";
+    BuildscriptWriter writer;
+    REQUIRE(writer.write_buildscript(proj, buildscript_path.string()));
+
+    const auto content = read_file(buildscript_path);
+    CHECK(content.find("includes = .., include") != std::string::npos);
+    CHECK(content.find("outdir = ..\\bin\\$(Configuration)\\") != std::string::npos);
+    CHECK(content.find("intdir = ..\\obj\\$(Configuration)\\") != std::string::npos);
+
+    fs::remove_all(temp_dir, ec);
+}
+
+TEST_CASE("BuildscriptWriter resolves MSBuildProjectName using original vcxproj stem", "[buildscript_writer]") {
+    auto temp_dir = fs::temp_directory_path() / "sighmake_test_writer_project_name_macro";
+    std::error_code ec;
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir / "App");
+
+    Project proj;
+    proj.name = "GeneratedApp";
+    proj.vcxproj_path = "App/App.vcxproj";
+
+    auto& cfg = proj.configurations["Debug|Win32"];
+    cfg.config_type = "Application";
+    cfg.out_dir = "$(SolutionDir)$(Configuration)\\$(MSBuildProjectName)\\";
+    cfg.int_dir = "$(ProjectDir)obj\\$(MSBuildProjectName)\\";
+
+    const auto buildscript_path = temp_dir / "App" / "GeneratedApp.buildscript";
+    BuildscriptWriter writer;
+    REQUIRE(writer.write_buildscript(proj, buildscript_path.string()));
+
+    const auto content = read_file(buildscript_path);
+    CHECK(content.find("outdir = ..\\$(Configuration)\\App\\") != std::string::npos);
+    CHECK(content.find("intdir = obj\\App\\") != std::string::npos);
+
+    fs::remove_all(temp_dir, ec);
+}
+
 TEST_CASE("BuildscriptWriter writes defines", "[buildscript_writer]") {
     Project proj;
     proj.name = "App";
@@ -162,6 +216,23 @@ TEST_CASE("BuildscriptWriter writes dependencies", "[buildscript_writer]") {
 
     auto result = write_project(proj);
     CHECK(result.content.find("target_link_libraries(LibA)") != std::string::npos);
+}
+
+TEST_CASE("BuildscriptWriter writes build-order-only dependencies", "[buildscript_writer]") {
+    Project proj;
+    proj.name = "App";
+    proj.configurations["Debug|Win32"].config_type = "Application";
+    proj.project_references.push_back(ProjectDependency("AssetDll", DependencyVisibility::PUBLIC, false, false));
+
+    auto result = write_project(proj);
+    CHECK(result.content.find("depends = AssetDll") != std::string::npos);
+    CHECK(result.content.find("target_link_libraries(AssetDll)") == std::string::npos);
+
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(result.content, result.temp_dir.string());
+    REQUIRE(sol.projects.size() >= 1);
+    REQUIRE(sol.projects[0].project_references.size() == 1);
+    CHECK_FALSE(sol.projects[0].project_references[0].link_library_dependencies);
 }
 
 TEST_CASE("BuildscriptWriter round-trip with BuildscriptParser", "[buildscript_writer]") {

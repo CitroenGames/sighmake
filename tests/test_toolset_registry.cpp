@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "catch_amalgamated.hpp"
 #include "common/toolset_registry.hpp"
+#include "common/vs_detector.hpp"
 
 using namespace vcxproj;
 
@@ -130,4 +131,27 @@ TEST_CASE("ToolsetRegistry marks older toolsets as legacy", "[toolset]") {
     if (info.has_value()) {
         CHECK(info->is_legacy == true);
     }
+}
+
+TEST_CASE("VSDetector checks PlatformToolset folders", "[toolset]") {
+    auto temp_dir = std::filesystem::temp_directory_path() / "sighmake_test_toolsets";
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+
+    auto toolset_dir = temp_dir / "MSBuild" / "Microsoft" / "VC" / "v180" /
+        "Platforms" / "Win32" / "PlatformToolsets" / "v145";
+    std::filesystem::create_directories(toolset_dir);
+
+    VSInstallation installation;
+    installation.installation_path = temp_dir.string();
+
+#ifdef _WIN32
+    CHECK(VSDetector::has_platform_toolset(installation, "v145"));
+    CHECK_FALSE(VSDetector::has_platform_toolset(installation, "v143"));
+#else
+    CHECK(VSDetector::has_platform_toolset(installation, "v145"));
+    CHECK(VSDetector::has_platform_toolset(installation, "v143"));
+#endif
+
+    std::filesystem::remove_all(temp_dir, ec);
 }

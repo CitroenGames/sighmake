@@ -30,6 +30,11 @@ static std::string normalize_path(const std::string& path) {
     }
 }
 
+static bool contains_msbuild_macro(const std::string& value) {
+    return value.find("$(") != std::string::npos ||
+           value.find("%(") != std::string::npos;
+}
+
 std::string BuildscriptParser::trim(const std::string& str) {
     size_t first = str.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) return "";
@@ -367,6 +372,10 @@ std::vector<std::string> BuildscriptParser::expand_wildcards(const std::string& 
 }
 
 std::string BuildscriptParser::resolve_path(const std::string& path, const std::string& base_path) {
+    if (contains_msbuild_macro(path)) {
+        return path;
+    }
+
     // Check if original path has trailing slash/backslash
     bool has_trailing_slash = !path.empty() && (path.back() == '/' || path.back() == '\\');
 
@@ -3046,11 +3055,12 @@ bool BuildscriptParser::parse_project_misc_setting(const std::string& key, const
     // Project references
     else if (key == "depends" || key == "dependencies" || key == "project_references") {
         auto deps = split(value, ',');
-        // Convert string dependencies to ProjectDependency objects (default visibility: PUBLIC)
+        const bool link_dependency = (key == "project_references");
         for (const auto& dep_name : deps) {
             std::string trimmed_name = trim(dep_name);
             if (!trimmed_name.empty()) {
-                proj.project_references.push_back(ProjectDependency(trimmed_name));
+                proj.project_references.push_back(
+                    ProjectDependency(trimmed_name, DependencyVisibility::PUBLIC, false, link_dependency));
             }
         }
     } else {
@@ -3939,6 +3949,9 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
 
         // Initialize with direct dependencies
         for (const auto& dep : proj.project_references) {
+            if (!dep.link_library_dependencies) {
+                continue;
+            }
             to_process.push_back({dep.name, dep.visibility});
         }
 
@@ -4059,6 +4072,9 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
 
             // Handle transitive dependencies (dependencies of dependencies)
             for (const auto& trans_dep : dep->project_references) {
+                if (!trans_dep.link_library_dependencies) {
+                    continue;
+                }
                 if (!processed.count(trans_dep.name)) {
                     // Determine effective visibility for transitive dependency
                     DependencyVisibility effective_vis;

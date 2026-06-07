@@ -265,12 +265,13 @@ struct ProjectDependency {
     std::string name;                          // Name of the dependent project
     DependencyVisibility visibility = DependencyVisibility::PUBLIC;  // Default for backward compat
     bool whole_archive = false;                // Link with whole-archive semantics (include all .obj files)
+    bool link_library_dependencies = true;     // false for build-order-only references
 
     // Constructors for convenience
     ProjectDependency() = default;
     ProjectDependency(const std::string& n, DependencyVisibility v = DependencyVisibility::PUBLIC,
-                      bool wa = false)
-        : name(n), visibility(v), whole_archive(wa) {}
+                      bool wa = false, bool link = true)
+        : name(n), visibility(v), whole_archive(wa), link_library_dependencies(link) {}
 };
 
 // Helper to parse visibility keyword to enum

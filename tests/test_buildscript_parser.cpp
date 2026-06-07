@@ -378,6 +378,7 @@ depends = LibA
     REQUIRE(app != nullptr);
     REQUIRE(app->project_references.size() == 1);
     CHECK(app->project_references[0].name == "LibA");
+    CHECK_FALSE(app->project_references[0].link_library_dependencies);
 }
 
 TEST_CASE("Parse multiple projects", "[buildscript_parser]") {
@@ -665,6 +666,8 @@ target_link_libraries(LibA LibB)
     REQUIRE(app->project_references.size() == 2);
     CHECK(app->project_references[0].name == "LibA");
     CHECK(app->project_references[1].name == "LibB");
+    CHECK(app->project_references[0].link_library_dependencies);
+    CHECK(app->project_references[1].link_library_dependencies);
 }
 
 TEST_CASE("Parse target_link_libraries with visibility", "[buildscript_parser]") {

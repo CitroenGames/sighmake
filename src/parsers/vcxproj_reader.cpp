@@ -1353,7 +1353,11 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             // Extract project name from path (remove .vcxproj extension)
             fs::path p(include);
             std::string proj_name = p.stem().string();
-            project.project_references.push_back(ProjectDependency(proj_name));
+            ProjectDependency dep(proj_name);
+            if (auto link_libs = ref.child("LinkLibraryDependencies")) {
+                dep.link_library_dependencies = link_libs.text().as_bool(true);
+            }
+            project.project_references.push_back(dep);
         }
     }
 
@@ -1652,7 +1656,8 @@ Solution SlnReader::read_sln(const std::string& filepath) {
             for (const auto& dep_uuid : dependencies[proj.uuid]) {
                 if (uuid_to_name.count(dep_uuid)) {
                     std::string dep_name = uuid_to_name[dep_uuid];
-                    proj.project_references.push_back(ProjectDependency(dep_name));
+                    proj.project_references.push_back(
+                        ProjectDependency(dep_name, DependencyVisibility::PUBLIC, false, false));
                     std::cout << "    -> " << dep_name << "\n";
                 } else {
                     std::cout << "    -> (unknown UUID: " << dep_uuid << ")\n";
@@ -1866,7 +1871,8 @@ Solution SlnReader::read_slnx(const std::string& filepath) {
                     [&](const ProjectDependency& dep) { return dep.name == *dep_name; });
 
                 if (already_added == proj.project_references.end()) {
-                    proj.project_references.push_back(ProjectDependency(*dep_name));
+                    proj.project_references.push_back(
+                        ProjectDependency(*dep_name, DependencyVisibility::PUBLIC, false, false));
                     std::cout << "    -> " << *dep_name << "\n";
                 }
             } else {
@@ -2200,6 +2206,107 @@ static std::string cpp_standard_to_buildscript_value(std::string value) {
     return value;
 }
 
+static bool starts_with_ci(const std::string& value, const std::string& prefix) {
+    if (value.size() < prefix.size()) {
+        return false;
+    }
+
+    for (size_t i = 0; i < prefix.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(value[i])) !=
+            std::tolower(static_cast<unsigned char>(prefix[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static std::string path_to_buildscript_string(fs::path path) {
+    path = path.lexically_normal();
+    std::string result = path.string();
+    std::replace(result.begin(), result.end(), '/', '\\');
+    return result.empty() ? "." : result;
+}
+
+static std::string solution_dir_relative_to_project_buildscript(const Project& project) {
+    fs::path project_rel_dir = fs::path(project.vcxproj_path).parent_path();
+    fs::path relative;
+
+    for (const auto& part : project_rel_dir) {
+        const auto text = part.string();
+        if (text.empty() || text == ".") {
+            continue;
+        }
+        relative /= "..";
+    }
+
+    return path_to_buildscript_string(relative);
+}
+
+static std::string append_converted_macro_suffix(std::string prefix, std::string suffix) {
+    if (suffix.empty()) {
+        return prefix.empty() ? "." : prefix;
+    }
+
+    while (!suffix.empty() && (suffix.front() == '\\' || suffix.front() == '/')) {
+        suffix.erase(suffix.begin());
+    }
+
+    if (prefix.empty() || prefix == ".") {
+        return suffix;
+    }
+
+    if (prefix.back() != '\\' && prefix.back() != '/') {
+        prefix += '\\';
+    }
+    return prefix + suffix;
+}
+
+static void replace_all_ci(std::string& value,
+                           const std::string& needle,
+                           const std::string& replacement) {
+    if (needle.empty()) {
+        return;
+    }
+
+    for (size_t pos = 0; pos + needle.size() <= value.size();) {
+        if (starts_with_ci(value.substr(pos), needle)) {
+            value.replace(pos, needle.size(), replacement);
+            pos += replacement.size();
+        } else {
+            ++pos;
+        }
+    }
+}
+
+static std::string original_msbuild_project_name(const Project& project) {
+    if (!project.vcxproj_path.empty()) {
+        auto stem = fs::path(project.vcxproj_path).stem().string();
+        if (!stem.empty()) {
+            return stem;
+        }
+    }
+    return project.name;
+}
+
+static std::string convert_msbuild_dir_macros_for_buildscript(const Project& project,
+                                                              const std::string& value) {
+    constexpr const char* solution_macro = "$(SolutionDir)";
+    constexpr const char* project_macro = "$(ProjectDir)";
+    constexpr const char* project_name_macro = "$(MSBuildProjectName)";
+
+    std::string converted = value;
+    if (starts_with_ci(value, solution_macro)) {
+        converted = append_converted_macro_suffix(
+            solution_dir_relative_to_project_buildscript(project),
+            value.substr(std::strlen(solution_macro)));
+    } else if (starts_with_ci(value, project_macro)) {
+        converted = append_converted_macro_suffix(".", value.substr(std::strlen(project_macro)));
+    }
+
+    replace_all_ci(converted, project_name_macro, original_msbuild_project_name(project));
+    return converted;
+}
+
 void BuildscriptWriter::write_project_content(std::ostream& out, const Project& project,
                                              const std::string& filepath,
                                              const std::vector<std::string>& configurations,
@@ -2207,6 +2314,19 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
     // Suppress unused parameter warnings (these may be used in future enhancements)
     (void)configurations;
     (void)platforms;
+
+    auto convert_path = [&](const std::string& value) {
+        return convert_msbuild_dir_macros_for_buildscript(project, value);
+    };
+
+    auto join_paths = [&](const std::vector<std::string>& values) {
+        std::vector<std::string> converted;
+        converted.reserve(values.size());
+        for (const auto& value : values) {
+            converted.push_back(convert_path(value));
+        }
+        return join_vector(converted, ", ");
+    };
 
     out << "[project:" << project.name << "]\n";
 
@@ -2272,12 +2392,21 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
     if (!project.project_references.empty()) {
         std::cout << "    Writing dependencies for " << project.project_name << ": "
                   << project.project_references.size() << " deps\n";
-        // Extract dependency names for join_vector
-        std::vector<std::string> dep_names;
+        std::vector<std::string> link_dep_names;
+        std::vector<std::string> build_dep_names;
         for (const auto& dep : project.project_references) {
-            dep_names.push_back(dep.name);
+            if (dep.link_library_dependencies) {
+                link_dep_names.push_back(dep.name);
+            } else {
+                build_dep_names.push_back(dep.name);
+            }
         }
-        out << "target_link_libraries(" << join_vector(dep_names, ", ") << ")\n";
+        if (!link_dep_names.empty()) {
+            out << "target_link_libraries(" << join_vector(link_dep_names, ", ") << ")\n";
+        }
+        if (!build_dep_names.empty()) {
+            out << "depends = " << join_vector(build_dep_names, ", ") << "\n";
+        }
     }
 
     // Analyze libraries to separate those with exclusions from those without
@@ -2308,9 +2437,9 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
 
         // Compiler settings
         if (!cl.additional_include_directories.empty())
-            out << "includes = " << join_vector(cl.additional_include_directories, ", ") << "\n";
+            out << "includes = " << join_paths(cl.additional_include_directories) << "\n";
         if (!cl.forced_include_files.empty())
-            out << "forced_includes = " << join_vector(cl.forced_include_files, ", ") << "\n";
+            out << "forced_includes = " << join_paths(cl.forced_include_files) << "\n";
 
         // Find common preprocessor definitions across all configurations
         // Configuration-specific defines like _DEBUG, DEBUG, NDEBUG will be written per-config
@@ -2465,7 +2594,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             out << "libs = " << join_vector(all_libs, ", ") << "\n";
 
         if (!link.additional_library_directories.empty())
-            out << "libdirs = " << join_vector(link.additional_library_directories, ", ") << "\n";
+            out << "libdirs = " << join_paths(link.additional_library_directories) << "\n";
 
         // Write Library elements with ExcludedFromBuild as excluded_library entries
         for (const auto* lib : excluded_libs) {
@@ -2574,6 +2703,8 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
                 } catch (...) {
                     // If conversion fails, use original path
                 }
+            } else {
+                converted_out_dir = convert_path(converted_out_dir);
             }
             out << "outdir = " << converted_out_dir << "\n";
         }
@@ -2610,6 +2741,8 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
                 } catch (...) {
                     // If conversion fails, use original path
                 }
+            } else {
+                converted_int_dir = convert_path(converted_int_dir);
             }
             out << "intdir = " << converted_int_dir << "\n";
         }
@@ -2626,11 +2759,11 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         }
         if (!cfg.cl_compile.additional_include_directories.empty() &&
             cfg.cl_compile.additional_include_directories != first_cfg.cl_compile.additional_include_directories) {
-            out << "includes = " << join_vector(cfg.cl_compile.additional_include_directories, ", ") << "\n";
+            out << "includes = " << join_paths(cfg.cl_compile.additional_include_directories) << "\n";
         }
         if (!cfg.cl_compile.forced_include_files.empty() &&
             cfg.cl_compile.forced_include_files != first_cfg.cl_compile.forced_include_files) {
-            out << "forced_includes = " << join_vector(cfg.cl_compile.forced_include_files, ", ") << "\n";
+            out << "forced_includes = " << join_paths(cfg.cl_compile.forced_include_files) << "\n";
         }
         if (!cfg.executable_path.empty())
             out << "executable_path = " << cfg.executable_path << "\n";
@@ -2681,7 +2814,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         }
         if (!cfg.link.additional_library_directories.empty() &&
             cfg.link.additional_library_directories != first_cfg.link.additional_library_directories) {
-            out << "libdirs = " << join_vector(cfg.link.additional_library_directories, ", ") << "\n";
+            out << "libdirs = " << join_paths(cfg.link.additional_library_directories) << "\n";
         }
         if (!cfg.link.sub_system.empty() && cfg.link.sub_system != first_cfg.link.sub_system) {
             out << "subsystem = " << cfg.link.sub_system << "\n";
@@ -2715,7 +2848,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         if (!cfg.resource_compile.preprocessor_definitions.empty())
             out << "rc_defines = " << join_vector(cfg.resource_compile.preprocessor_definitions, ", ") << "\n";
         if (!cfg.resource_compile.additional_include_directories.empty())
-            out << "rc_includes = " << join_vector(cfg.resource_compile.additional_include_directories, ", ") << "\n";
+            out << "rc_includes = " << join_paths(cfg.resource_compile.additional_include_directories) << "\n";
 
         // Message Compiler settings
         if (!cfg.mc.header_file_path.empty())

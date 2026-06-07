@@ -768,6 +768,7 @@ TEST_CASE("SlnReader reads slnx projects configurations and dependencies", "[vcx
     CHECK(app_it->vcxproj_path == "App.vcxproj");
     REQUIRE(app_it->project_references.size() == 1);
     CHECK(app_it->project_references[0].name == "Lib");
+    CHECK_FALSE(app_it->project_references[0].link_library_dependencies);
 }
 
 TEST_CASE("SlnReader converts bare slnx absolute project paths to relative root includes", "[vcxproj_reader][slnx][buildscript_writer]") {
@@ -961,6 +962,7 @@ TEST_CASE("SlnReader rebases stale absolute slnx paths and infers missing build 
     REQUIRE(app_it != solution.projects.end());
     REQUIRE(app_it->project_references.size() == 1);
     CHECK(app_it->project_references[0].name == "Lib");
+    CHECK_FALSE(app_it->project_references[0].link_library_dependencies);
     CHECK(app_it->solution_folder == "engine");
 }
 
@@ -991,4 +993,5 @@ TEST_CASE("SlnReader infers project dependency from matching linked lib", "[vcxp
     REQUIRE(app_it != solution.projects.end());
     REQUIRE(app_it->project_references.size() == 1);
     CHECK(app_it->project_references[0].name == "Lib");
+    CHECK(app_it->project_references[0].link_library_dependencies);
 }

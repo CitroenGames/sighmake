@@ -15,6 +15,10 @@ public:
     // Detect latest VS installation
     static std::optional<VSInstallation> detect_latest_vs();
 
+    // Check whether a PlatformToolset is installed under a detected VS layout.
+    static bool has_platform_toolset(const VSInstallation& installation,
+                                     const std::string& toolset);
+
 private:
     // Detection via vswhere.exe (VS 2017+)
     static std::optional<VSInstallation> detect_via_vswhere();

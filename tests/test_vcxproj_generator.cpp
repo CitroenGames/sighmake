@@ -1253,12 +1253,18 @@ depends = LibA
         doc.load_file(app_vcxproj.string().c_str());
 
         bool found_ref = false;
+        bool found_build_only_ref = false;
         for (auto& ig : doc.child("Project").children("ItemGroup")) {
             for (auto& pr : ig.children("ProjectReference")) {
                 found_ref = true;
+                auto link_libs = pr.child("LinkLibraryDependencies");
+                if (link_libs && std::string(link_libs.text().as_string()) == "false") {
+                    found_build_only_ref = true;
+                }
             }
         }
         CHECK(found_ref);
+        CHECK(found_build_only_ref);
     }
 
     fs::remove_all(temp_dir, ec);
@@ -1787,6 +1793,7 @@ platforms = x64
 type = exe
 outdir[Debug|x64] = $(SolutionDir)out\$(Configuration)\
 intdir[Debug|x64] = $(SolutionDir)obj\$(Configuration)\
+includes[Debug|x64] = $(SolutionDir), $(ProjectDir)inc
 libdirs[Debug|x64] = $(OutDir), $(SolutionDir)deps\lib
 )");
 
@@ -1795,8 +1802,52 @@ libdirs[Debug|x64] = $(OutDir), $(SolutionDir)deps\lib
 
     CHECK(find_prop_group_value(doc, "OutDir", "Debug|x64") == "$(SolutionDir)out\\$(Configuration)\\");
     CHECK(find_prop_group_value(doc, "IntDir", "Debug|x64") == "$(SolutionDir)obj\\$(Configuration)\\");
+    CHECK(find_item_definition_value(doc, "ClCompile", "AdditionalIncludeDirectories", "Debug|x64") ==
+          "$(SolutionDir);$(ProjectDir)inc");
     CHECK(find_item_definition_value(doc, "Link", "AdditionalLibraryDirectories", "Debug|x64") ==
           "$(OutDir);$(SolutionDir)deps\\lib");
+}
+
+TEST_CASE("VcxprojGenerator does not add contradictory default debug defines", "[vcxproj_generator]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+defines[Debug|x64] = NDEBUG, NEPS_DEBUG
+defines[Release|x64] = _DEBUG, CUSTOM_DEBUG
+)");
+
+    pugi::xml_document doc;
+    doc.load_file(gen.vcxproj_path.string().c_str());
+
+    CHECK(find_item_definition_value(doc, "ClCompile", "PreprocessorDefinitions", "Debug|x64") ==
+          "NDEBUG;NEPS_DEBUG");
+    CHECK(find_item_definition_value(doc, "ClCompile", "PreprocessorDefinitions", "Release|x64") ==
+          "_DEBUG;CUSTOM_DEBUG");
+}
+
+TEST_CASE("VcxprojGenerator applies Unicode charset defines to ClCompile", "[vcxproj_generator]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Win32
+
+[project:App]
+type = exe
+charset = Unicode
+defines[Debug|Win32] = NDEBUG, WIN32
+)");
+
+    pugi::xml_document doc;
+    doc.load_file(gen.vcxproj_path.string().c_str());
+
+    CHECK(find_item_definition_value(doc, "ClCompile", "PreprocessorDefinitions", "Debug|Win32") ==
+          "NDEBUG;WIN32;_UNICODE;UNICODE");
 }
 
 TEST_CASE("VcxprojGenerator emits defaults for multiple platforms distinctly", "[vcxproj_generator]") {

@@ -570,15 +570,33 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
         }
         std::vector<std::string> current_defines = cfg.cl_compile.preprocessor_definitions;
 
-        // Automatically add _DEBUG for Debug configurations and NDEBUG for Release configurations
+        auto has_define = [&](const std::string& define) {
+            return std::find(current_defines.begin(), current_defines.end(), define) != current_defines.end();
+        };
+        auto add_define_if_missing = [&](const std::string& define) {
+            if (!has_define(define)) {
+                current_defines.push_back(define);
+            }
+        };
+
+        const bool has_debug_define = has_define("_DEBUG");
+        const bool has_ndebug_define = has_define("NDEBUG");
+
+        // Fill in the conventional default only when the project has not made
+        // the debug/release assertion explicit itself.
         if (config_name == "Debug") {
-            if (std::find(current_defines.begin(), current_defines.end(), "_DEBUG") == current_defines.end()) {
+            if (!has_debug_define && !has_ndebug_define) {
                 current_defines.push_back("_DEBUG");
             }
         } else if (config_name == "Release") {
-            if (std::find(current_defines.begin(), current_defines.end(), "NDEBUG") == current_defines.end()) {
+            if (!has_ndebug_define && !has_debug_define) {
                 current_defines.push_back("NDEBUG");
             }
+        }
+
+        if (to_lower(cfg.character_set) == "unicode") {
+            add_define_if_missing("_UNICODE");
+            add_define_if_missing("UNICODE");
         }
 
         if (!current_defines.empty()) {
@@ -760,6 +778,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                 // Build whole-archive linker flags for dependencies marked WHOLE_ARCHIVE
                 std::string whole_archive_opts;
                 for (const auto& dep : project.project_references) {
+                    if (!dep.link_library_dependencies) continue;
                     if (!dep.whole_archive) continue;
                     // Find the dependency project to determine its output library name
                     for (const auto& sol_proj : solution.projects) {
@@ -1411,7 +1430,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                         break;
                     }
                 }
-                if (!has_linkable_content) {
+                if (!dep.link_library_dependencies || !has_linkable_content) {
                     ref_elem.append_child("LinkLibraryDependencies").text() = "false";
                 }
             }
@@ -1798,6 +1817,39 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
     }
 
     bool already_logged = false;
+    std::set<std::string> retargeted_toolsets;
+
+    auto retarget_unavailable_toolset = [&](const std::string& project_name,
+                                            Configuration& cfg) -> bool {
+        if (cfg.platform_toolset.empty()) {
+            return true;
+        }
+
+        int specified_year = toolset_registry.get_toolset_year(cfg.platform_toolset);
+        if (specified_year > vs_info->year) {
+            std::cerr << "Error: Project '" << project_name << "' requires toolset "
+                      << cfg.platform_toolset << " (Visual Studio " << specified_year << ")\n";
+            std::cerr << "       but only Visual Studio " << vs_info->year
+                      << " is installed.\n";
+            std::cerr << "       Please install Visual Studio " << specified_year
+                      << " or newer, or change the toolset in the buildscript.\n";
+            return false;
+        }
+
+        if (specified_year > 0 &&
+            !VSDetector::has_platform_toolset(*vs_info, cfg.platform_toolset)) {
+            const std::string requested_toolset = cfg.platform_toolset;
+            cfg.platform_toolset = vs_info->platform_toolset;
+            if (retargeted_toolsets.insert(requested_toolset).second) {
+                std::cerr << "Warning: Platform toolset " << requested_toolset
+                          << " is not installed in Visual Studio " << vs_info->year
+                          << "; retargeting generated projects to "
+                          << cfg.platform_toolset << ".\n";
+            }
+        }
+
+        return true;
+    };
 
     for (auto& proj : solution.projects) {
         if (proj.is_package_project) continue;  // Skip synthetic find_package projects
@@ -1843,23 +1895,10 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
 #ifndef NDEBUG
                 std::cout << "[DEBUG]   -> Keeping explicit toolset: " << cfg.platform_toolset << "\n";
 #endif
-                // Validate explicitly specified toolset
-                int specified_year = toolset_registry.get_toolset_year(cfg.platform_toolset);
+            }
 
-#ifndef NDEBUG
-                std::cout << "[DEBUG]   -> Toolset year: " << specified_year
-                          << ", detected VS year: " << vs_info->year << "\n";
-#endif
-
-                if (specified_year > vs_info->year) {
-                    std::cerr << "Error: Project '" << proj.name << "' requires toolset "
-                              << cfg.platform_toolset << " (Visual Studio " << specified_year << ")\n";
-                    std::cerr << "       but only Visual Studio " << vs_info->year
-                              << " is installed.\n";
-                    std::cerr << "       Please install Visual Studio " << specified_year
-                              << " or newer, or change the toolset in the buildscript.\n";
-                    return false;
-                }
+            if (!retarget_unavailable_toolset(proj.name, cfg)) {
+                return false;
             }
         }
     }

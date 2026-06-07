@@ -89,6 +89,57 @@ std::string VSDetector::year_to_toolset(int year) {
     }
 }
 
+bool VSDetector::has_platform_toolset(const VSInstallation& installation,
+                                      const std::string& toolset) {
+    if (toolset.empty()) {
+        return true;
+    }
+
+#ifdef _WIN32
+    if (installation.installation_path.empty()) {
+        return true;
+    }
+
+    fs::path vc_msbuild_root = fs::path(installation.installation_path) /
+        "MSBuild" / "Microsoft" / "VC";
+    if (!fs::exists(vc_msbuild_root)) {
+        return true;
+    }
+
+    try {
+        for (const auto& version_dir : fs::directory_iterator(vc_msbuild_root)) {
+            if (!version_dir.is_directory()) {
+                continue;
+            }
+
+            fs::path platforms_root = version_dir.path() / "Platforms";
+            if (!fs::exists(platforms_root)) {
+                continue;
+            }
+
+            for (const auto& platform_dir : fs::directory_iterator(platforms_root)) {
+                if (!platform_dir.is_directory()) {
+                    continue;
+                }
+
+                fs::path toolset_dir = platform_dir.path() /
+                    "PlatformToolsets" / toolset;
+                if (fs::exists(toolset_dir)) {
+                    return true;
+                }
+            }
+        }
+    } catch (...) {
+        return true;
+    }
+
+    return false;
+#else
+    (void)installation;
+    return true;
+#endif
+}
+
 // Detection via vswhere.exe (VS 2017+)
 std::optional<VSInstallation> VSDetector::detect_via_vswhere() {
 #ifdef _WIN32
