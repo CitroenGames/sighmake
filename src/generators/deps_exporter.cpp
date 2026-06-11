@@ -241,6 +241,10 @@ bool export_dependencies_html(const Solution& solution, const std::string& outpu
     out << "</html>\n";
 
     out.close();
+    if (!out) {
+        std::cerr << "Error: Failed to write dependency report: " << out_path.string() << "\n";
+        return false;
+    }
 
     std::cout << "Dependency report: " << out_path.string() << "\n";
     return true;

@@ -69,6 +69,85 @@ static std::string trim_local(const std::string& str) {
     return str.substr(first, last - first + 1);
 }
 
+// Check whether all parentheses outside quoted strings are balanced,
+// used to detect when a multi-line function call is complete.
+static bool parens_balanced(const std::string& str) {
+    int paren_count = 0;
+    bool in_string = false;
+    for (size_t i = 0; i < str.size(); ++i) {
+        char c = str[i];
+        if (c == '"' && (i == 0 || str[i-1] != '\\')) {
+            in_string = !in_string;
+        } else if (!in_string) {
+            if (c == '(') paren_count++;
+            else if (c == ')') paren_count--;
+        }
+    }
+    return paren_count == 0;
+}
+
+// Parse the parameter list of a complete target_link_libraries() call and
+// record the dependencies on `project`. Tokens may be whitespace- or
+// comma-separated; PUBLIC/PRIVATE/INTERFACE set the visibility of the
+// following dependencies and WHOLE_ARCHIVE applies to the next one.
+static void apply_target_link_libraries(const std::string& call_text, Project& project) {
+    size_t start_paren = call_text.find('(');
+    size_t end_paren = call_text.rfind(')');
+    if (start_paren == std::string::npos || end_paren == std::string::npos || end_paren <= start_paren) {
+        return;
+    }
+    std::string params = call_text.substr(start_paren + 1, end_paren - start_paren - 1);
+
+    std::vector<std::string> tokens;
+    std::istringstream iss(params);
+    std::string token;
+    while (iss >> token) {
+        while (!token.empty() && token.back() == ',') {
+            token.pop_back();
+        }
+        if (!token.empty()) {
+            tokens.push_back(token);
+        }
+    }
+
+    // State machine: track current visibility keyword (default PUBLIC for backward compat)
+    DependencyVisibility current_visibility = DependencyVisibility::PUBLIC;
+    bool next_is_whole_archive = false;
+
+    for (const auto& t : tokens) {
+        std::string trimmed_token = trim_local(t);
+        if (trimmed_token.empty()) continue;
+
+        if (trimmed_token == "PUBLIC") {
+            current_visibility = DependencyVisibility::PUBLIC;
+        } else if (trimmed_token == "PRIVATE") {
+            current_visibility = DependencyVisibility::PRIVATE;
+        } else if (trimmed_token == "INTERFACE") {
+            current_visibility = DependencyVisibility::INTERFACE;
+        } else if (trimmed_token == "WHOLE_ARCHIVE") {
+            next_is_whole_archive = true;
+        } else {
+            // It's a dependency name - add with current visibility
+            ProjectDependency dep(trimmed_token, current_visibility, next_is_whole_archive);
+            next_is_whole_archive = false;  // Reset after consuming
+
+            // Check for duplicates (last one wins)
+            auto it = std::find_if(
+                project.project_references.begin(),
+                project.project_references.end(),
+                [&](const ProjectDependency& d) { return d.name == dep.name; }
+            );
+
+            if (it == project.project_references.end()) {
+                project.project_references.push_back(dep);
+            } else {
+                it->visibility = current_visibility;  // Update visibility
+                it->whole_archive = dep.whole_archive;  // Update whole_archive
+            }
+        }
+    }
+}
+
 std::string preprocess_multiline(const std::string& content) {
     std::string processed_content;
     std::istringstream preprocess_stream(content);
@@ -922,20 +1001,7 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
     // If we're accumulating a uses_pch() call, continue accumulating
     if (state.in_uses_pch) {
         state.uses_pch_accumulator += " " + trimmed;
-        // Check if this line closes the function call by counting parentheses in the full accumulator
-        int paren_count = 0;
-        bool in_string = false;
-        for (size_t i = 0; i < state.uses_pch_accumulator.size(); ++i) {
-            char c = state.uses_pch_accumulator[i];
-            if (c == '"' && (i == 0 || state.uses_pch_accumulator[i-1] != '\\')) {
-                in_string = !in_string;
-            } else if (!in_string) {
-                if (c == '(') paren_count++;
-                else if (c == ')') paren_count--;
-            }
-        }
-
-        if (paren_count == 0) {
+        if (parens_balanced(state.uses_pch_accumulator)) {
             // Function call complete, parse it
             parse_uses_pch(state.uses_pch_accumulator, state);
             state.uses_pch_accumulator.clear();
@@ -947,81 +1013,9 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
     // If we're accumulating a target_link_libraries() call, continue accumulating
     if (state.in_target_link_libraries) {
         state.target_link_libraries_accumulator += " " + trimmed;
-        // Check if this line closes the function call by counting parentheses in the full accumulator
-        int paren_count = 0;
-        bool in_string = false;
-        for (size_t i = 0; i < state.target_link_libraries_accumulator.size(); ++i) {
-            char c = state.target_link_libraries_accumulator[i];
-            if (c == '"' && (i == 0 || state.target_link_libraries_accumulator[i-1] != '\\')) {
-                in_string = !in_string;
-            } else if (!in_string) {
-                if (c == '(') paren_count++;
-                else if (c == ')') paren_count--;
-            }
-        }
-
-        if (paren_count == 0) {
+        if (parens_balanced(state.target_link_libraries_accumulator)) {
             // Function call complete, parse it
-            // Re-run the target_link_libraries parsing logic
-            std::string content = state.target_link_libraries_accumulator;
-            size_t start_paren = content.find('(');
-            size_t end_paren = content.rfind(')');
-            if (start_paren != std::string::npos && end_paren != std::string::npos && end_paren > start_paren) {
-                std::string params = content.substr(start_paren + 1, end_paren - start_paren - 1);
-
-                // Split by whitespace (CMake-style) or commas (buildscript-style)
-                std::vector<std::string> tokens;
-                std::istringstream iss(params);
-                std::string token;
-                while (iss >> token) {
-                    // Also handle comma-separated (remove trailing commas)
-                    while (!token.empty() && token.back() == ',') {
-                        token.pop_back();
-                    }
-                    if (!token.empty()) {
-                        tokens.push_back(token);
-                    }
-                }
-
-                // State machine: track current visibility keyword (default PUBLIC for backward compat)
-                DependencyVisibility current_visibility = DependencyVisibility::PUBLIC;
-                bool next_is_whole_archive = false;
-
-                for (const auto& token : tokens) {
-                    std::string trimmed_token = trim(token);
-                    if (trimmed_token.empty()) continue;
-
-                    // Check if it's a visibility keyword
-                    if (trimmed_token == "PUBLIC") {
-                        current_visibility = DependencyVisibility::PUBLIC;
-                    } else if (trimmed_token == "PRIVATE") {
-                        current_visibility = DependencyVisibility::PRIVATE;
-                    } else if (trimmed_token == "INTERFACE") {
-                        current_visibility = DependencyVisibility::INTERFACE;
-                    } else if (trimmed_token == "WHOLE_ARCHIVE") {
-                        next_is_whole_archive = true;
-                    } else {
-                        // It's a dependency name - add with current visibility
-                        ProjectDependency dep(trimmed_token, current_visibility, next_is_whole_archive);
-                        next_is_whole_archive = false;  // Reset after consuming
-
-                        // Check for duplicates (last one wins)
-                        auto it = std::find_if(
-                            state.current_project->project_references.begin(),
-                            state.current_project->project_references.end(),
-                            [&](const ProjectDependency& d) { return d.name == dep.name; }
-                        );
-
-                        if (it == state.current_project->project_references.end()) {
-                            state.current_project->project_references.push_back(dep);
-                        } else {
-                            it->visibility = current_visibility;  // Update visibility
-                            it->whole_archive = dep.whole_archive;  // Update whole_archive
-                        }
-                    }
-                }
-            }
-
+            apply_target_link_libraries(state.target_link_libraries_accumulator, *state.current_project);
             state.target_link_libraries_accumulator.clear();
             state.in_target_link_libraries = false;
         }
@@ -1305,79 +1299,9 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
             return;
         }
 
-        // Check if the function call is complete on this line by counting parentheses
-        int paren_count = 0;
-        bool in_string = false;
-        for (size_t i = 0; i < trimmed.size(); ++i) {
-            char c = trimmed[i];
-            if (c == '"' && (i == 0 || trimmed[i-1] != '\\')) {
-                in_string = !in_string;
-            } else if (!in_string) {
-                if (c == '(') paren_count++;
-                else if (c == ')') paren_count--;
-            }
-        }
-
-        if (paren_count == 0) {
+        if (parens_balanced(trimmed)) {
             // Single-line function call (all parens matched)
-            // Extract content between parentheses
-            size_t start_paren = trimmed.find('(');
-            size_t end_paren = trimmed.rfind(')');
-            if (start_paren != std::string::npos && end_paren != std::string::npos && end_paren > start_paren) {
-                std::string content = trimmed.substr(start_paren + 1, end_paren - start_paren - 1);
-
-                // Split by whitespace (CMake-style) or commas (buildscript-style)
-                std::vector<std::string> tokens;
-                std::istringstream iss(content);
-                std::string token;
-                while (iss >> token) {
-                    // Also handle comma-separated (remove trailing commas)
-                    while (!token.empty() && token.back() == ',') {
-                        token.pop_back();
-                    }
-                    if (!token.empty()) {
-                        tokens.push_back(token);
-                    }
-                }
-
-                // State machine: track current visibility keyword (default PUBLIC for backward compat)
-                DependencyVisibility current_visibility = DependencyVisibility::PUBLIC;
-                bool next_is_whole_archive = false;
-
-                for (const auto& token : tokens) {
-                    std::string trimmed_token = trim(token);
-                    if (trimmed_token.empty()) continue;
-
-                    // Check if it's a visibility keyword
-                    if (trimmed_token == "PUBLIC") {
-                        current_visibility = DependencyVisibility::PUBLIC;
-                    } else if (trimmed_token == "PRIVATE") {
-                        current_visibility = DependencyVisibility::PRIVATE;
-                    } else if (trimmed_token == "INTERFACE") {
-                        current_visibility = DependencyVisibility::INTERFACE;
-                    } else if (trimmed_token == "WHOLE_ARCHIVE") {
-                        next_is_whole_archive = true;
-                    } else {
-                        // It's a dependency name - add with current visibility
-                        ProjectDependency dep(trimmed_token, current_visibility, next_is_whole_archive);
-                        next_is_whole_archive = false;  // Reset after consuming
-
-                        // Check for duplicates (last one wins)
-                        auto it = std::find_if(
-                            state.current_project->project_references.begin(),
-                            state.current_project->project_references.end(),
-                            [&](const ProjectDependency& d) { return d.name == dep.name; }
-                        );
-
-                        if (it == state.current_project->project_references.end()) {
-                            state.current_project->project_references.push_back(dep);
-                        } else {
-                            it->visibility = current_visibility;  // Update visibility
-                            it->whole_archive = dep.whole_archive;  // Update whole_archive
-                        }
-                    }
-                }
-            }
+            apply_target_link_libraries(trimmed, *state.current_project);
         } else {
             // Multi-line function call, start accumulating
             state.in_target_link_libraries = true;
@@ -1388,20 +1312,7 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
 
     // Check for uses_pch() function call
     if (trimmed.find("uses_pch(") == 0) {
-        // Check if the function call is complete on this line by counting parentheses
-        int paren_count = 0;
-        bool in_string = false;
-        for (size_t i = 0; i < trimmed.size(); ++i) {
-            char c = trimmed[i];
-            if (c == '"' && (i == 0 || trimmed[i-1] != '\\')) {
-                in_string = !in_string;
-            } else if (!in_string) {
-                if (c == '(') paren_count++;
-                else if (c == ')') paren_count--;
-            }
-        }
-
-        if (paren_count == 0) {
+        if (parens_balanced(trimmed)) {
             // Single-line function call (all parens matched)
             parse_uses_pch(trimmed, state);
         } else {
@@ -3854,7 +3765,7 @@ void BuildscriptParser::parse_uses_pch(const std::string& line, ParseState& stat
 
     // Parse file list from array format: ["file1.cpp", "file2.cpp"]
     std::vector<std::string> files;
-    if (file_list_str.front() == '[' && file_list_str.back() == ']') {
+    if (file_list_str.size() >= 2 && file_list_str.front() == '[' && file_list_str.back() == ']') {
         std::string list_content = file_list_str.substr(1, file_list_str.size() - 2);
 
         // Split by commas, handling quoted strings

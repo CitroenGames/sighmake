@@ -57,9 +57,6 @@ private:
     std::string map_cpp_standard(const std::string& std_str);
     std::string map_c_standard(const std::string& std_str);
 
-    // Unescape escaped newlines in build event commands
-    static std::string unescape_newlines(const std::string& str);
-
     // Collect unique config names from a project (without platform)
     std::vector<std::string> get_config_names(const Solution& solution) const;
 

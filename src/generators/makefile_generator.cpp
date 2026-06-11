@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "makefile_generator.hpp"
 #include "common/build_cache.hpp"
+#include "common/string_utils.hpp"
 
 namespace vcxproj {
 
@@ -9,13 +10,6 @@ std::string MakefileGenerator::to_unix_path(const std::string& path) {
     std::string result = path;
     std::replace(result.begin(), result.end(), '\\', '/');
     return result;
-}
-
-// Make path relative or keep as-is
-std::string MakefileGenerator::make_relative_or_keep(const std::string& path, const std::string& /*base*/) {
-    // For simplicity, just convert to Unix path
-    // In a more complete implementation, we would compute relative paths
-    return to_unix_path(path);
 }
 
 // Helper to compute relative path from makefile directory
@@ -91,26 +85,6 @@ std::string MakefileGenerator::compute_relative_path(const std::string& path, co
             return result;
         }
     }
-}
-
-// Split a CMake-style semicolon-separated list into individual entries
-static std::vector<std::string> split_semicolons(const std::string& value) {
-    std::vector<std::string> result;
-    std::string current;
-    for (char c : value) {
-        if (c == ';') {
-            if (!current.empty()) {
-                result.push_back(current);
-                current.clear();
-            }
-        } else {
-            current += c;
-        }
-    }
-    if (!current.empty()) {
-        result.push_back(current);
-    }
-    return result;
 }
 
 // Strip .lib or .dll extension from library names

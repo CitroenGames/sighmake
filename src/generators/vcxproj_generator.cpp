@@ -4,6 +4,7 @@
 #include "common/vs_detector.hpp"
 #include "common/toolset_registry.hpp"
 #include "common/build_cache.hpp"
+#include "common/string_utils.hpp"
 #define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"
 
@@ -20,30 +21,6 @@
 namespace fs = std::filesystem;
 
 namespace vcxproj {
-
-// Helper to unescape escaped newlines in strings
-static std::string unescape_newlines(const std::string& str) {
-    std::string result;
-    result.reserve(str.length());
-
-    for (size_t i = 0; i < str.length(); ++i) {
-        if (i + 1 < str.length() && str[i] == '\x01') {
-            if (str[i + 1] == 'n') {
-                result += '\n';
-                ++i;
-            } else if (str[i + 1] == '\\') {
-                result += '\\';
-                ++i;
-            } else {
-                result += str[i];
-            }
-        } else {
-            result += str[i];
-        }
-    }
-
-    return result;
-}
 
 // Map buildscript warning_level values to MSBuild WarningLevel enum values
 static std::string map_warning_level(const std::string& level) {

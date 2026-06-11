@@ -97,28 +97,8 @@ void ToolsetRegistry::set_default(const std::string& toolset) {
 }
 
 int ToolsetRegistry::get_toolset_year(const std::string& toolset) const {
-#ifndef NDEBUG
-    std::cout << "[DEBUG] get_toolset_year('" << toolset << "'): ";
-#endif
-
-    // Map toolset to year for comparison
-    int year = 0;
-    if (toolset == "v145" || toolset == "v144") year = 2026;
-    else if (toolset == "v143") year = 2022;
-    else if (toolset == "v142") year = 2019;
-    else if (toolset == "v141") year = 2017;
-    else if (toolset == "v140") year = 2015;
-    else if (toolset == "v120") year = 2013;
-    else if (toolset == "v110") year = 2012;
-    else if (toolset == "v100") year = 2010;
-    // XP toolsets use same year as their base toolset
-    else if (toolset == "v110_xp") year = 2012;
-
-#ifndef NDEBUG
-    std::cout << year << "\n";
-#endif
-
-    return year;
+    auto it = toolsets_.find(toolset);
+    return it != toolsets_.end() ? it->second.year : 0;
 }
 
 } // namespace vcxproj

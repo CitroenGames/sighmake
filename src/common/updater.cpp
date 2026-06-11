@@ -36,12 +36,6 @@ std::string trim(const std::string& value) {
     return value.substr(start, end - start);
 }
 
-std::string to_lower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return value;
-}
-
 bool starts_with(const std::string& value, const std::string& prefix) {
     return value.size() >= prefix.size() &&
            std::equal(prefix.begin(), prefix.end(), value.begin());
@@ -310,14 +304,15 @@ bool download_url_to_file(const std::string& url,
 std::optional<std::string> download_url_to_string(const std::string& url, std::string* error) {
     fs::path temp_dir = unique_temp_dir();
     fs::path temp_file = temp_dir / "download.txt";
+    std::error_code ec;
     if (!download_url_to_file(url, temp_file.string(), error)) {
+        fs::remove_all(temp_dir, ec);
         return std::nullopt;
     }
 
     std::ifstream in(temp_file, std::ios::binary);
     std::stringstream ss;
     ss << in.rdbuf();
-    std::error_code ec;
     fs::remove_all(temp_dir, ec);
     return ss.str();
 }
@@ -734,6 +729,19 @@ int run_update(const UpdateOptions& options) {
     }
 
     fs::path temp_dir = unique_temp_dir();
+    // Removes the temp dir on every exit path unless keep() is called
+    // (the Windows handoff script runs out of it after this process exits).
+    struct TempDirGuard {
+        fs::path dir;
+        bool active = true;
+        void keep() { active = false; }
+        ~TempDirGuard() {
+            if (active) {
+                std::error_code ec;
+                fs::remove_all(dir, ec);
+            }
+        }
+    } temp_guard{temp_dir};
     fs::path archive_path = temp_dir / asset->name;
     fs::path extract_dir = temp_dir / "extract";
     fs::create_directories(extract_dir);
@@ -770,14 +778,13 @@ int run_update(const UpdateOptions& options) {
         err << "Error: " << error << "\n";
         return 1;
     }
+    temp_guard.keep();
     out << "Update scheduled. Restart your terminal after this process exits.\n";
 #else
     if (!replace_unix_binary(*binary, executable, &error)) {
         err << "Error: " << error << "\n";
         return 1;
     }
-    std::error_code ec;
-    fs::remove_all(temp_dir, ec);
     out << "Updated sighmake to " << manifest->tag << ".\n";
 #endif
 

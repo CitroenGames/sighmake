@@ -41,9 +41,6 @@ private:
     // Helper to convert Windows paths to Unix paths
     std::string to_unix_path(const std::string& path);
 
-    // Helper to make path relative if it's absolute
-    std::string make_relative_or_keep(const std::string& path, const std::string& base);
-
     // Helper to compute relative path from makefile directory
     std::string compute_relative_path(const std::string& path, const std::filesystem::path& makefile_dir);
 

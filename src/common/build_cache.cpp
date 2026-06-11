@@ -67,6 +67,11 @@ bool BuildCache::write(const std::string& output_dir) const {
         out << "project=" << project.name << "|" << project.file << "\n";
     }
 
+    out.flush();
+    if (!out) {
+        std::cerr << "Warning: Failed to write build cache: " << cache_path << "\n";
+        return false;
+    }
     return true;
 }
 

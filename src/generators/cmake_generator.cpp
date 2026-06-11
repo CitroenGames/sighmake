@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "cmake_generator.hpp"
 #include "common/build_cache.hpp"
+#include "common/string_utils.hpp"
 
 namespace vcxproj {
 
@@ -25,28 +26,6 @@ std::string CMakeGenerator::compute_relative_path(const std::string& path, const
     } catch (...) {
         return to_cmake_path(path);
     }
-}
-
-// Unescape escaped newlines
-std::string CMakeGenerator::unescape_newlines(const std::string& str) {
-    std::string result;
-    result.reserve(str.length());
-    for (size_t i = 0; i < str.length(); ++i) {
-        if (i + 1 < str.length() && str[i] == '\x01') {
-            if (str[i + 1] == 'n') {
-                result += '\n';
-                ++i;
-            } else if (str[i + 1] == '\\') {
-                result += '\\';
-                ++i;
-            } else {
-                result += str[i];
-            }
-        } else {
-            result += str[i];
-        }
-    }
-    return result;
 }
 
 // Map C++ standard string to CMake standard number
@@ -81,26 +60,6 @@ const Configuration* CMakeGenerator::find_config(const Project& project, const s
         if (cfg == config_name) return &config;
     }
     return nullptr;
-}
-
-// Split semicolon-separated values
-static std::vector<std::string> split_semicolons(const std::string& value) {
-    std::vector<std::string> result;
-    std::string current;
-    for (char c : value) {
-        if (c == ';') {
-            if (!current.empty()) {
-                result.push_back(current);
-                current.clear();
-            }
-        } else {
-            current += c;
-        }
-    }
-    if (!current.empty()) {
-        result.push_back(current);
-    }
-    return result;
 }
 
 // ============================================================================
