@@ -34,17 +34,20 @@ https://github.com/CitroenGames/sighmake/releases/latest
 
 Linux and macOS can install the prebuilt binary directly into `/usr/local/bin`:
 
+### Linux x64
 ```bash
-# Linux x64
 curl -fsSL https://github.com/CitroenGames/sighmake/releases/latest/download/sighmake-linux-x64.tar.gz | sudo tar -xz -C /usr/local/bin
-
-# Linux arm64
+```
+### Linux arm64
+```bash
 curl -fsSL https://github.com/CitroenGames/sighmake/releases/latest/download/sighmake-linux-arm64.tar.gz | sudo tar -xz -C /usr/local/bin
-
-# macOS Apple Silicon
+```
+### macOS (Apple Silicon)
+```bash
 curl -fsSL https://github.com/CitroenGames/sighmake/releases/latest/download/sighmake-macos-arm64.tar.gz | sudo tar -xz -C /usr/local/bin
-
-# macOS Intel
+```
+### macOS (Intel)
+```bash
 curl -fsSL https://github.com/CitroenGames/sighmake/releases/latest/download/sighmake-macos-x64.tar.gz | sudo tar -xz -C /usr/local/bin
 ```
 
