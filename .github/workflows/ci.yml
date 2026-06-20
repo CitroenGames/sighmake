@@ -25,6 +25,12 @@ jobs:
             platform: linux_x64
             asset: sighmake-linux-x64.tar.gz
             installer: sighmake-linux-x64.deb
+            deb_arch: amd64
+          - os: ubuntu-24.04-arm
+            platform: linux_arm64
+            asset: sighmake-linux-arm64.tar.gz
+            installer: sighmake-linux-arm64.deb
+            deb_arch: arm64
           - os: macos-26-intel
             platform: macos_x64
             asset: sighmake-macos-x64.tar.gz
@@ -185,7 +191,7 @@ jobs:
           Version: ${version}
           Section: devel
           Priority: optional
-          Architecture: amd64
+          Architecture: ${{ matrix.deb_arch }}
           Maintainer: CitroenGames <noreply@github.com>
           Homepage: https://github.com/CitroenGames/sighmake
           Description: Buildsystem-as-code project generator
@@ -276,6 +282,10 @@ jobs:
             echo "linux_x64_sha256=$(sha256sum sighmake-linux-x64.tar.gz | awk '{print $1}')"
             echo "linux_x64_deb=sighmake-linux-x64.deb"
             echo "linux_x64_deb_sha256=$(sha256sum sighmake-linux-x64.deb | awk '{print $1}')"
+            echo "linux_arm64=sighmake-linux-arm64.tar.gz"
+            echo "linux_arm64_sha256=$(sha256sum sighmake-linux-arm64.tar.gz | awk '{print $1}')"
+            echo "linux_arm64_deb=sighmake-linux-arm64.deb"
+            echo "linux_arm64_deb_sha256=$(sha256sum sighmake-linux-arm64.deb | awk '{print $1}')"
             echo "macos_x64=sighmake-macos-x64.tar.gz"
             echo "macos_x64_sha256=$(sha256sum sighmake-macos-x64.tar.gz | awk '{print $1}')"
             echo "macos_x64_setup=sighmake-macos-x64-setup.dmg"
