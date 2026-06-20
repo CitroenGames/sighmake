@@ -85,17 +85,20 @@ This minimal buildscript automatically gets optimized Debug and Release configur
 #### One-line install (Linux / macOS)
 No clone or build required — download the latest prebuilt binary straight into your PATH:
 
+### Linux x64
 ```bash
-# Linux x64
 curl -fsSL https://github.com/CitroenGames/sighmake/releases/latest/download/sighmake-linux-x64.tar.gz | sudo tar -xz -C /usr/local/bin
-
-# Linux arm64
+```
+### Linux arm64
+```bash
 curl -fsSL https://github.com/CitroenGames/sighmake/releases/latest/download/sighmake-linux-arm64.tar.gz | sudo tar -xz -C /usr/local/bin
-
-# macOS (Apple Silicon)
+```
+### macOS (Apple Silicon)
+```bash
 curl -fsSL https://github.com/CitroenGames/sighmake/releases/latest/download/sighmake-macos-arm64.tar.gz | sudo tar -xz -C /usr/local/bin
-
-# macOS (Intel)
+```
+### macOS (Intel)
+```bash
 curl -fsSL https://github.com/CitroenGames/sighmake/releases/latest/download/sighmake-macos-x64.tar.gz | sudo tar -xz -C /usr/local/bin
 ```
 
