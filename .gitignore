@@ -39,4 +39,6 @@ Ankh.NoLoad
 .DS_Store
 .sighmake_cache
 *.obj
+*.gch
 sighmake
+dist/
