@@ -29,6 +29,12 @@ public:
     bool generate_master_makefile(const Solution& solution, const std::string& output_dir);
 
 private:
+    using ProjectLookup = std::map<std::string, const Project*>;
+
+    bool generate_makefile_with_lookup(const Project& project, const Solution& solution,
+                                       const std::string& config_key, const std::string& output_path,
+                                       const ProjectLookup& project_lookup);
+
     // Helper functions for mapping settings to flags
     std::string map_optimization(const std::string& opt);
     std::string map_warning_level(const std::string& level);
@@ -43,6 +49,11 @@ private:
 
     // Helper to compute relative path from makefile directory
     std::string compute_relative_path(const std::string& path, const std::filesystem::path& makefile_dir);
+
+    // Build a unique object path under OBJ_DIR for a source file
+    std::string make_object_path(const SourceFile& src, const std::string& src_relative,
+                                 const std::string& config_key, const std::string& int_dir,
+                                 const std::filesystem::path& makefile_dir);
 
     // Strip .lib or .dll extension from library names
     std::string strip_lib_extension(const std::string& lib);

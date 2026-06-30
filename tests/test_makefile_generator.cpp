@@ -18,6 +18,7 @@ static std::string read_file(const fs::path& path) {
 struct MakefileResult {
     fs::path temp_dir;
     std::string content;
+    std::string master_content;
     Solution solution;
 
     ~MakefileResult() {
@@ -26,15 +27,20 @@ struct MakefileResult {
     }
 };
 
-static MakefileResult generate_makefile(const std::string& buildscript) {
+static MakefileResult generate_makefile(const std::string& buildscript,
+                                        std::vector<std::string> source_files = {"main.cpp"}) {
     MakefileResult result;
     result.temp_dir = fs::temp_directory_path() / "sighmake_test_makefile";
     std::error_code ec;
     fs::remove_all(result.temp_dir, ec);
     fs::create_directories(result.temp_dir);
 
-    // Create a dummy source file so source paths resolve
-    std::ofstream(result.temp_dir / "main.cpp") << "int main() { return 0; }";
+    // Create dummy source files so source paths resolve.
+    for (const auto& source : source_files) {
+        fs::path source_path = result.temp_dir / source;
+        fs::create_directories(source_path.parent_path());
+        std::ofstream(source_path) << "int main() { return 0; }";
+    }
 
     BuildscriptParser parser;
     result.solution = parser.parse_string(buildscript, result.temp_dir.string());
@@ -45,6 +51,11 @@ static MakefileResult generate_makefile(const std::string& buildscript) {
     // Read the project-specific Makefile (e.g., App.Release), not the master Makefile
     auto build_dir = result.temp_dir / "build";
     if (fs::exists(build_dir)) {
+        auto master_path = build_dir / "Makefile";
+        if (fs::exists(master_path)) {
+            result.master_content = read_file(master_path);
+        }
+
         for (auto& entry : fs::directory_iterator(build_dir)) {
             if (entry.is_regular_file()) {
                 std::string fname = entry.path().filename().string();
@@ -377,6 +388,39 @@ sources = main.cpp
     }
 }
 
+TEST_CASE("MakefileGenerator master Makefile exposes project dependency targets", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:Core]
+type = lib
+sources = core.cpp
+
+[project:Util]
+type = lib
+sources = util.cpp
+
+[project:App]
+type = exe
+sources = app.cpp
+depends = Core
+
+[project:Tool]
+type = exe
+sources = tool.cpp
+depends = Util
+)", {"core.cpp", "util.cpp", "app.cpp", "tool.cpp"});
+
+    REQUIRE(!result.master_content.empty());
+    CHECK(result.master_content.find("Release: Core.Release Util.Release App.Release Tool.Release") != std::string::npos);
+    CHECK(result.master_content.find("App.Release: Core.Release") != std::string::npos);
+    CHECK(result.master_content.find("Tool.Release: Util.Release") != std::string::npos);
+    CHECK(result.master_content.find("\nRelease:\n\t$(MAKE)") == std::string::npos);
+}
+
 // ============================================================================
 // Edge cases
 // ============================================================================
@@ -429,6 +473,24 @@ defines = DEF_A, DEF_B, DEF_C
         CHECK(result.content.find("-DDEF_B") != std::string::npos);
         CHECK(result.content.find("-DDEF_C") != std::string::npos);
     }
+}
+
+TEST_CASE("MakefileGenerator creates unique object paths for same-stem sources", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = exe
+sources = src/main.cpp, tools/main.cpp
+)", {"src/main.cpp", "tools/main.cpp"});
+
+    REQUIRE(!result.content.empty());
+    CHECK(result.content.find("/src/main_") != std::string::npos);
+    CHECK(result.content.find("/tools/main_") != std::string::npos);
+    CHECK(result.content.find("main.o") == std::string::npos);
 }
 
 // ============================================================================
@@ -759,6 +821,24 @@ postbuild = echo postbuild_step
         CHECK(result.content.find("postbuild_step") != std::string::npos);
         CHECK(result.content.find("prebuild") != std::string::npos);
     }
+}
+
+TEST_CASE("MakefileGenerator does not link phony prebuild target", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = exe
+sources = main.cpp
+prebuild = echo prebuild_step
+)");
+    REQUIRE(!result.content.empty());
+    CHECK(result.content.find("$(TARGET): prebuild $(OBJS)") != std::string::npos);
+    CHECK(result.content.find("-o $@ $(OBJS) $(LDLIBS)") != std::string::npos);
+    CHECK(result.content.find("$^") == std::string::npos);
 }
 
 TEST_CASE("MakefileGenerator quotes include paths with spaces", "[makefile_generator]") {

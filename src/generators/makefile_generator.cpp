@@ -5,6 +5,142 @@
 
 namespace vcxproj {
 
+namespace {
+
+std::map<std::string, const Project*> build_project_lookup(const Solution& solution) {
+    std::map<std::string, const Project*> lookup;
+    for (const auto& project : solution.projects) {
+        if (!project.is_package_project) {
+            lookup[project.name] = &project;
+        }
+    }
+    return lookup;
+}
+
+const Project* find_project(const std::map<std::string, const Project*>& lookup, const std::string& name) {
+    auto it = lookup.find(name);
+    return it != lookup.end() ? it->second : nullptr;
+}
+
+template <typename T>
+const T* find_config_setting(const std::map<std::string, T>& settings, const std::string& config_key) {
+    auto it = settings.find(config_key);
+    if (it != settings.end()) {
+        return &it->second;
+    }
+
+    it = settings.find(ALL_CONFIGS);
+    if (it != settings.end()) {
+        return &it->second;
+    }
+
+    // Older generator code used this literal; keep it as a compatibility fallback.
+    it = settings.find("ALL_CONFIGS");
+    if (it != settings.end()) {
+        return &it->second;
+    }
+
+    return nullptr;
+}
+
+std::string make_project_config_target(const Project& project, const std::string& config_name) {
+    return project.name + "." + config_name;
+}
+
+std::optional<std::string> find_non_windows_config_key(const Project& project, const std::string& config_name) {
+    for (const auto& [config_key, config] : project.configurations) {
+        (void)config;
+        size_t pipe_pos = config_key.find('|');
+        std::string cfg = pipe_pos != std::string::npos
+            ? config_key.substr(0, pipe_pos)
+            : config_key;
+        std::string platform = pipe_pos != std::string::npos
+            ? config_key.substr(pipe_pos + 1)
+            : "";
+        if (cfg == config_name && !is_windows_platform(platform)) {
+            return config_key;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string stable_hash8(const std::string& value) {
+    unsigned int hash = 2166136261u;
+    for (unsigned char c : value) {
+        hash ^= c;
+        hash *= 16777619u;
+    }
+
+    std::stringstream ss;
+    ss << std::hex << std::nouppercase << std::setw(8) << std::setfill('0') << hash;
+    return ss.str();
+}
+
+std::string sanitize_object_stem(const std::string& source_identity) {
+    std::string normalized = source_identity;
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+
+    const size_t slash = normalized.find_last_of('/');
+    const size_t dot = normalized.find_last_of('.');
+    if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+        normalized.erase(dot);
+    }
+
+    std::vector<std::string> components;
+    std::stringstream parts(normalized);
+    std::string component;
+    while (std::getline(parts, component, '/')) {
+        if (component.empty() || component == ".") {
+            continue;
+        }
+
+        if (component == "..") {
+            components.push_back("__");
+            continue;
+        }
+
+        std::string sanitized;
+        for (unsigned char c : component) {
+            if (std::isalnum(c) || c == '_' || c == '-' || c == '.') {
+                sanitized.push_back(static_cast<char>(c));
+            } else {
+                sanitized.push_back('_');
+            }
+        }
+
+        if (sanitized.empty() || sanitized == "." || sanitized == "..") {
+            sanitized = "_";
+        }
+        components.push_back(sanitized);
+    }
+
+    if (components.empty()) {
+        components.push_back("source");
+    }
+
+    components.back() += "_" + stable_hash8(normalized);
+
+    std::string result;
+    for (const auto& part : components) {
+        if (!result.empty()) result += "/";
+        result += part;
+    }
+    return result + ".o";
+}
+
+bool has_extension_case_insensitive(const std::string& path, const std::string& ext) {
+    if (path.size() < ext.size()) {
+        return false;
+    }
+
+    std::string suffix = path.substr(path.size() - ext.size());
+    std::transform(suffix.begin(), suffix.end(), suffix.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return suffix == ext;
+}
+
+} // namespace
+
 // Convert Windows path to Unix path (backslash to forward slash)
 std::string MakefileGenerator::to_unix_path(const std::string& path) {
     std::string result = path;
@@ -85,6 +221,27 @@ std::string MakefileGenerator::compute_relative_path(const std::string& path, co
             return result;
         }
     }
+}
+
+std::string MakefileGenerator::make_object_path(const SourceFile& src, const std::string& src_relative,
+                                                const std::string& config_key, const std::string& int_dir,
+                                                const std::filesystem::path& makefile_dir) {
+    if (const auto* object_file = find_config_setting(src.settings.object_file, config_key);
+        object_file && !object_file->empty()) {
+        std::string obj_path = to_unix_path(*object_file);
+        if (has_extension_case_insensitive(obj_path, ".obj")) {
+            obj_path.replace(obj_path.size() - 4, 4, ".o");
+        }
+
+        std::filesystem::path path(obj_path);
+        if (path.is_absolute()) {
+            return compute_relative_path(obj_path, makefile_dir);
+        }
+
+        return obj_path;
+    }
+
+    return int_dir + sanitize_object_stem(src_relative);
 }
 
 // Strip .lib or .dll extension from library names
@@ -191,16 +348,9 @@ std::tuple<std::string, std::string> MakefileGenerator::get_file_pch_mode(
     const std::string& config_key,
     const Configuration& config) {
 
-    // Check file-level PCH settings first (config-specific)
-    auto pch_it = src.settings.pch.find(config_key);
-    if (pch_it != src.settings.pch.end() && !pch_it->second.mode.empty()) {
-        return {pch_it->second.mode, pch_it->second.header};
-    }
-
-    // Fall back to ALL_CONFIGS wildcard
-    pch_it = src.settings.pch.find("ALL_CONFIGS");
-    if (pch_it != src.settings.pch.end() && !pch_it->second.mode.empty()) {
-        return {pch_it->second.mode, pch_it->second.header};
+    if (const auto* pch = find_config_setting(src.settings.pch, config_key);
+        pch && !pch->mode.empty()) {
+        return {pch->mode, pch->header};
     }
 
     // Fall back to project-level PCH settings
@@ -370,7 +520,15 @@ std::string MakefileGenerator::get_linker_libs(const Configuration& config) {
 // Generate a single Makefile for a project and configuration
 bool MakefileGenerator::generate_makefile(const Project& project, const Solution& solution,
                                          const std::string& config_key, const std::string& output_path) {
+    auto project_lookup = build_project_lookup(solution);
+    return generate_makefile_with_lookup(project, solution, config_key, output_path, project_lookup);
+}
+
+bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, const Solution& solution,
+                                                      const std::string& config_key, const std::string& output_path,
+                                                      const MakefileGenerator::ProjectLookup& project_lookup) {
     namespace fs = std::filesystem;
+    (void)solution;
 
     // Get configuration
     auto it = project.configurations.find(config_key);
@@ -510,14 +668,6 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
         std::vector<ArchiveEntry> dep_archives;
         std::set<std::string> visited_deps;
 
-        // Helper to find a project by name
-        auto find_project = [&](const std::string& name) -> const Project* {
-            for (const auto& p : solution.projects) {
-                if (p.name == name) return &p;
-            }
-            return nullptr;
-        };
-
         // Helper to compute a project's output archive path
         auto get_archive_path = [&](const Project& dep_proj, const std::string& cfg_key,
                                      const std::string& cfg_name) -> std::string {
@@ -558,7 +708,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
             if (visited_deps.count(dep_name)) return;
             visited_deps.insert(dep_name);
 
-            const Project* dep_proj = find_project(dep_name);
+            const Project* dep_proj = find_project(project_lookup, dep_name);
             if (!dep_proj) return;
 
             // Add this project's archive if it's a library
@@ -572,6 +722,7 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
             // Follow transitive PUBLIC dependencies (transitive deps are never whole-archive)
             for (const auto& sub_dep : dep_proj->project_references) {
                 if (sub_dep.visibility == DependencyVisibility::PRIVATE) continue;
+                if (!sub_dep.link_library_dependencies) continue;
                 collect_deps(sub_dep.name, true, false);
             }
         };
@@ -579,19 +730,20 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
         // Start from the project's direct dependencies
         for (const auto& dep : project.project_references) {
             if (dep.visibility == DependencyVisibility::INTERFACE) continue;
+            if (!dep.link_library_dependencies) continue;
             collect_deps(dep.name, true, dep.whole_archive);
         }
 
         // Prepend archives to ldlibs (reverse order so direct deps come first)
-        for (auto it = dep_archives.rbegin(); it != dep_archives.rend(); ++it) {
-            if (it->whole_archive) {
+        for (auto archive_it = dep_archives.rbegin(); archive_it != dep_archives.rend(); ++archive_it) {
+            if (archive_it->whole_archive) {
 #ifdef __APPLE__
-                ldlibs = "-Wl,-force_load," + it->path + " " + ldlibs;
+                ldlibs = "-Wl,-force_load," + archive_it->path + " " + ldlibs;
 #else
-                ldlibs = "-Wl,--whole-archive " + it->path + " -Wl,--no-whole-archive " + ldlibs;
+                ldlibs = "-Wl,--whole-archive " + archive_it->path + " -Wl,--no-whole-archive " + ldlibs;
 #endif
             } else {
-                ldlibs = it->path + " " + ldlibs;
+                ldlibs = archive_it->path + " " + ldlibs;
             }
         }
     }
@@ -673,8 +825,8 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     for (const auto& src : project.sources) {
         if (src.type == FileType::ClCompile || src.type == FileType::ObjCxx || src.type == FileType::NASM) {
             // Check if excluded for this config
-            auto excl_it = src.settings.excluded.find(config_key);
-            if (excl_it != src.settings.excluded.end() && excl_it->second) {
+            const bool* excluded = find_config_setting(src.settings.excluded, config_key);
+            if (excluded && *excluded) {
                 continue; // Skip excluded files
             }
 
@@ -687,12 +839,9 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
             }
 
             // Generate object file path
-            fs::path src_path(src.path);
-            std::string obj_name = src_path.stem().string() + ".o";
-            std::string obj_path = int_dir + obj_name;
-
             // Convert source path to relative (using the same logic as output dirs)
             std::string src_relative = compute_relative_path(src.path, makefile_dir);
+            std::string obj_path = make_object_path(src, src_relative, config_key, int_dir, makefile_dir);
 
             // Determine if this file uses PCH
             bool uses_pch = has_pch && (mode == "Use" || (mode.empty() && !header.empty()));
@@ -753,13 +902,13 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
         // Link executable or shared library
         std::string compiler = has_cpp_files ? "$(CXX)" : "$(CC)";
         if (config.config_type == "DynamicLibrary") {
-            out << "\t" << compiler << " -shared $(LDFLAGS) -o $@ $^ $(LDLIBS)\n";
+            out << "\t" << compiler << " -shared $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)\n";
         } else {
-            out << "\t" << compiler << " $(LDFLAGS) -o $@ $^ $(LDLIBS)\n";
+            out << "\t" << compiler << " $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)\n";
         }
     } else if (config.config_type == "StaticLibrary") {
         // Create static library
-        out << "\tar rcs $@ $^\n";
+        out << "\tar rcs $@ $(OBJS)\n";
     }
 
     // Post-build event
@@ -770,12 +919,12 @@ bool MakefileGenerator::generate_makefile(const Project& project, const Solution
     // Strip debug symbols for Release builds (executables and shared libraries only)
     // On Linux, debug symbols are embedded in the binary unlike Windows .pdb files
     if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
-        std::string config_name = config_key;
-        size_t pipe_pos = config_name.find('|');
-        if (pipe_pos != std::string::npos) {
-            config_name = config_name.substr(0, pipe_pos);
+        std::string release_config_name = config_key;
+        size_t release_pipe_pos = release_config_name.find('|');
+        if (release_pipe_pos != std::string::npos) {
+            release_config_name = release_config_name.substr(0, release_pipe_pos);
         }
-        if (config_name == "Release") {
+        if (release_config_name == "Release") {
 #ifdef __APPLE__
             if (config.config_type == "DynamicLibrary") {
                 out << "\tstrip -x $@\n";
@@ -889,6 +1038,8 @@ bool MakefileGenerator::generate(Solution& solution, const std::string& output_d
 
     std::cout << "Generating Makefiles for solution: " << solution.name << "\n";
 
+    auto project_lookup = build_project_lookup(solution);
+
     // Generate Makefiles for each project and configuration
     for (const auto& project : solution.projects) {
         if (project.is_package_project) continue;  // Skip synthetic find_package projects
@@ -911,7 +1062,7 @@ bool MakefileGenerator::generate(Solution& solution, const std::string& output_d
             std::string makefile_name = project.name + "." + config_name;
             fs::path makefile_path = build_dir / makefile_name;
 
-            if (!generate_makefile(project, solution, config_key, makefile_path.string())) {
+            if (!generate_makefile_with_lookup(project, solution, config_key, makefile_path.string(), project_lookup)) {
                 return false;
             }
         }
@@ -982,6 +1133,14 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
 
     // Determine default config (prefer Debug, otherwise first alphabetically)
     std::string default_config = configs.count("Debug") ? "Debug" : *configs.begin();
+    auto project_lookup = build_project_lookup(solution);
+
+    std::vector<const Project*> buildable_projects;
+    for (const auto& project : solution.projects) {
+        if (!project.is_package_project) {
+            buildable_projects.push_back(&project);
+        }
+    }
 
     out << "# Master Makefile - generated by sighmake\n";
     out << "# Build all projects with: make\n";
@@ -1002,58 +1161,68 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
         if (proj.is_package_project) continue;
         out << " " << proj.name;
     }
+    for (const auto& cfg : configs) {
+        for (const auto* proj : buildable_projects) {
+            if (find_non_windows_config_key(*proj, cfg)) {
+                out << " " << make_project_config_target(*proj, cfg);
+            }
+        }
+    }
     out << "\n\n";
 
     // Default target
     out << "all: " << default_config << "\n\n";
 
     // Per-configuration targets (e.g., make Debug, make Release)
-    // Build projects in dependency order: dependencies before dependents
     for (const auto& cfg : configs) {
-        // Topological sort: compute build order
-        std::vector<const Project*> build_order;
-        std::set<std::string> visited;
-
-        std::function<void(const Project*)> visit = [&](const Project* p) {
-            if (visited.count(p->name)) return;
-            visited.insert(p->name);
-            // Visit dependencies first
-            for (const auto& dep : p->project_references) {
-                for (const auto& other : solution.projects) {
-                    if (other.name == dep.name && !other.is_package_project) {
-                        visit(&other);
-                        break;
-                    }
-                }
+        out << cfg << ":";
+        for (const auto* proj : buildable_projects) {
+            if (find_non_windows_config_key(*proj, cfg)) {
+                out << " " << make_project_config_target(*proj, cfg);
             }
-            build_order.push_back(p);
-        };
-
-        for (const auto& proj : solution.projects) {
-            if (proj.is_package_project) continue;
-            visit(&proj);
         }
+        out << "\n\n";
 
-        out << cfg << ":\n";
-        for (const auto* proj : build_order) {
-            out << "\t$(MAKE) -f " << proj->name << "." << cfg << "\n";
+        for (const auto* proj : buildable_projects) {
+            if (!find_non_windows_config_key(*proj, cfg)) {
+                continue;
+            }
+
+            const std::string target = make_project_config_target(*proj, cfg);
+            std::set<std::string> dependencies;
+            for (const auto& dep : proj->project_references) {
+                const Project* dep_project = find_project(project_lookup, dep.name);
+                if (!dep_project || !find_non_windows_config_key(*dep_project, cfg)) {
+                    continue;
+                }
+                dependencies.insert(make_project_config_target(*dep_project, cfg));
+            }
+
+            out << target << ":";
+            for (const auto& dep_target : dependencies) {
+                out << " " << dep_target;
+            }
+            out << "\n";
+            out << "\t$(MAKE) -f " << target << "\n\n";
         }
-        out << "\n";
     }
 
     // Per-project targets (builds default config)
-    for (const auto& proj : solution.projects) {
-        if (proj.is_package_project) continue;
-        out << proj.name << ":\n";
-        out << "\t$(MAKE) -f " << proj.name << "." << default_config << "\n\n";
+    for (const auto* proj : buildable_projects) {
+        out << proj->name << ":";
+        if (find_non_windows_config_key(*proj, default_config)) {
+            out << " " << make_project_config_target(*proj, default_config);
+        }
+        out << "\n\n";
     }
 
     // Clean target
     out << "clean:\n";
-    for (const auto& proj : solution.projects) {
-        if (proj.is_package_project) continue;
+    for (const auto* proj : buildable_projects) {
         for (const auto& cfg : configs) {
-            out << "\t-$(MAKE) -f " << proj.name << "." << cfg << " clean\n";
+            if (find_non_windows_config_key(*proj, cfg)) {
+                out << "\t-$(MAKE) -f " << make_project_config_target(*proj, cfg) << " clean\n";
+            }
         }
     }
     out << "\n";
