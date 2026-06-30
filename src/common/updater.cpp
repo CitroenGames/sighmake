@@ -404,6 +404,71 @@ std::optional<fs::path> find_released_binary(const fs::path& dir) {
     return std::nullopt;
 }
 
+bool replace_unix_binary_impl(const fs::path& source,
+                              const fs::path& target,
+                              std::string* error) {
+    std::error_code ec;
+    fs::permissions(source,
+                    fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
+                    fs::perm_options::add,
+                    ec);
+
+    fs::path staged = target;
+    auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    std::random_device rd;
+    staged += ".new." + std::to_string(now) + "." + std::to_string(rd());
+
+    fs::copy_file(source, staged, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        if (error) *error = "Failed to stage new executable: " + ec.message();
+        return false;
+    }
+
+    fs::perms source_permissions = fs::status(source, ec).permissions();
+    if (ec) {
+        std::error_code status_ec = ec;
+        std::error_code cleanup_ec;
+        fs::remove(staged, cleanup_ec);
+        if (error) *error = "Failed to read new executable permissions: " + status_ec.message();
+        return false;
+    }
+    source_permissions |= fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec;
+
+    fs::permissions(staged, source_permissions, fs::perm_options::replace, ec);
+    if (ec) {
+        std::error_code permissions_ec = ec;
+        std::error_code cleanup_ec;
+        fs::remove(staged, cleanup_ec);
+        if (error) *error = "Failed to set new executable permissions: " + permissions_ec.message();
+        return false;
+    }
+
+    fs::path backup = target;
+    backup += ".old";
+    fs::remove(backup, ec);
+    fs::rename(target, backup, ec);
+    if (ec) {
+        std::error_code rename_ec = ec;
+        std::error_code cleanup_ec;
+        fs::remove(staged, cleanup_ec);
+        if (error) *error = "Failed to move existing executable: " + rename_ec.message();
+        return false;
+    }
+
+    fs::rename(staged, target, ec);
+    if (ec) {
+        std::error_code restore_ec;
+        fs::remove(target, restore_ec);
+        fs::rename(backup, target, restore_ec);
+        fs::remove(staged, restore_ec);
+        if (error) *error = "Failed to install staged executable: " + ec.message();
+        return false;
+    }
+
+    fs::remove(backup, ec);
+    return true;
+}
+
 #ifdef _WIN32
 bool schedule_windows_replace(const fs::path& source,
                               const fs::path& target,
@@ -458,31 +523,7 @@ bool schedule_windows_replace(const fs::path& source,
 bool replace_unix_binary(const fs::path& source,
                          const fs::path& target,
                          std::string* error) {
-    std::error_code ec;
-    fs::permissions(source,
-                    fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
-                    fs::perm_options::add,
-                    ec);
-
-    fs::path backup = target;
-    backup += ".old";
-    fs::remove(backup, ec);
-    fs::rename(target, backup, ec);
-    if (ec) {
-        if (error) *error = "Failed to move existing executable: " + ec.message();
-        return false;
-    }
-
-    fs::rename(source, target, ec);
-    if (ec) {
-        std::error_code restore_ec;
-        fs::rename(backup, target, restore_ec);
-        if (error) *error = "Failed to install new executable: " + ec.message();
-        return false;
-    }
-
-    fs::remove(backup, ec);
-    return true;
+    return replace_unix_binary_impl(source, target, error);
 }
 #endif
 
