@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "vcxproj_reader.hpp"
+#include "vcproj_reader.hpp"
 #define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"
 
@@ -1224,7 +1225,7 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             if (elem_name != "ClCompile" && elem_name != "ClInclude" &&
                 elem_name != "ResourceCompile" && elem_name != "CustomBuild" &&
                 elem_name != "MessageCompile" && elem_name != "Midl" &&
-                elem_name != "None") {
+                elem_name != "MASM" && elem_name != "None") {
                 continue;
             }
 
@@ -1242,6 +1243,10 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             else if (elem_name == "Midl") {
                 src.type = FileType::Midl;
                 project.has_idl_files = true;
+            }
+            else if (elem_name == "MASM") {
+                src.type = FileType::MASM;
+                project.has_masm_files = true;
             }
             else src.type = FileType::None;
 
@@ -1447,6 +1452,26 @@ static bool is_vcxproj_path(const std::string& path) {
     return ext == ".vcxproj";
 }
 
+static bool is_vcproj_path(const std::string& path) {
+    std::string ext = to_lower(fs::path(path).extension().string());
+    return ext == ".vcproj";
+}
+
+// Project files a solution can reference that we know how to convert
+static bool is_supported_project_path(const std::string& path) {
+    return is_vcxproj_path(path) || is_vcproj_path(path);
+}
+
+// Dispatch to the right reader based on the project file extension
+static Project read_project_file(const std::string& path) {
+    if (is_vcproj_path(path)) {
+        VcprojReader reader;
+        return reader.read_vcproj(path);
+    }
+    VcxprojReader reader;
+    return reader.read_vcxproj(path);
+}
+
 static std::string project_name_from_vcxproj_path(const std::string& path) {
     return fs::path(path).stem().string();
 }
@@ -1541,6 +1566,85 @@ static std::string path_relative_to_base_for_include(const fs::path& path, const
     return value;
 }
 
+// Parse solution configurations from the GlobalSection blocks. Handles config
+// names containing spaces/dots/dashes ("Debug DLL|Win32"), which a plain
+// \w+-based regex mangles, plus the legacy VS2003-era SolutionConfiguration
+// section ("ConfigName.0 = Debug").
+static void parse_sln_configurations(const std::string& content,
+                                     std::set<std::string>& configs,
+                                     std::set<std::string>& platforms) {
+    auto parse_section = [&](const char* header, bool legacy) -> bool {
+        size_t begin = content.find(header);
+        if (begin == std::string::npos) return false;
+        size_t end = content.find("EndGlobalSection", begin);
+        if (end == std::string::npos) end = content.length();
+
+        std::istringstream lines(content.substr(begin, end - begin));
+        std::string line;
+        std::getline(lines, line); // skip the section header line
+        while (std::getline(lines, line)) {
+            size_t eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string lhs = trim_copy(line.substr(0, eq));
+            std::string rhs = trim_copy(line.substr(eq + 1));
+            if (lhs.empty()) continue;
+
+            if (legacy) {
+                // "ConfigName.0 = Debug" — the value is the config name
+                if (!rhs.empty()) configs.insert(rhs);
+                continue;
+            }
+
+            size_t pipe = lhs.find('|');
+            std::string config = pipe == std::string::npos ? lhs : trim_copy(lhs.substr(0, pipe));
+            std::string platform = pipe == std::string::npos ? "" : trim_copy(lhs.substr(pipe + 1));
+            if (!config.empty()) configs.insert(config);
+            // Skip pseudo-platforms contributed by C#/VB projects in mixed solutions
+            if (!platform.empty()) {
+                std::string p = to_lower(platform);
+                if (p != "any cpu" && p != "mixed platforms") {
+                    platforms.insert(normalize_platform(platform));
+                }
+            }
+        }
+        return true;
+    };
+
+    // The legacy header is a prefix of the modern one, so try modern first
+    if (!parse_section("GlobalSection(SolutionConfigurationPlatforms)", false)) {
+        parse_section("GlobalSection(SolutionConfiguration)", true);
+    }
+}
+
+// Fill in missing solution configurations/platforms from the configs the
+// loaded projects actually define.
+static void infer_solution_configs_from_projects(Solution& solution) {
+    if (!solution.configurations.empty() && !solution.platforms.empty()) return;
+
+    std::set<std::string> inferred_configs(solution.configurations.begin(), solution.configurations.end());
+    std::set<std::string> inferred_platforms(solution.platforms.begin(), solution.platforms.end());
+
+    for (const auto& project : solution.projects) {
+        for (const auto& [config_key, cfg] : project.configurations) {
+            (void)cfg;
+            auto [config_name, platform_name] = parse_config_key(config_key);
+            if (!config_name.empty()) {
+                inferred_configs.insert(config_name);
+            }
+            if (!platform_name.empty()) {
+                inferred_platforms.insert(normalize_platform(platform_name));
+            }
+        }
+    }
+
+    if (solution.configurations.empty()) {
+        solution.configurations = std::vector<std::string>(inferred_configs.begin(), inferred_configs.end());
+    }
+    if (solution.platforms.empty()) {
+        solution.platforms = std::vector<std::string>(inferred_platforms.begin(), inferred_platforms.end());
+    }
+}
+
 static std::optional<std::string> resolve_slnx_reference(
     const std::string& ref,
     const std::map<std::string, std::string>& key_to_name)
@@ -1590,26 +1694,11 @@ Solution SlnReader::read_sln(const std::string& filepath) {
     }
 
     // Parse solution configurations
-    std::regex config_re(R"((\w+)\|(\w+)\s*=\s*(\w+)\|(\w+))");
-    std::smatch match;
     std::set<std::string> configs, platforms;
-
-    auto it = content.cbegin();
-    while (std::regex_search(it, content.cend(), match, config_re)) {
-        configs.insert(match[1].str());
-        platforms.insert(match[2].str());
-        it = match.suffix().first;
-    }
+    parse_sln_configurations(content, configs, platforms);
 
     solution.configurations = std::vector<std::string>(configs.begin(), configs.end());
     solution.platforms = std::vector<std::string>(platforms.begin(), platforms.end());
-
-    if (solution.configurations.empty()) {
-        solution.configurations = {"Debug", "Release"};
-    }
-    if (solution.platforms.empty()) {
-        solution.platforms = {"Win32", "x64"};
-    }
 
     // Parse projects
     auto projects = parse_projects(content);
@@ -1626,8 +1715,7 @@ Solution SlnReader::read_sln(const std::string& filepath) {
 
         if (fs::exists(proj_path)) {
             try {
-                VcxprojReader reader;
-                Project proj = reader.read_vcxproj(proj_path.string());
+                Project proj = read_project_file(proj_path.string());
                 proj.name = proj_info.name;
                 proj.uuid = proj_info.uuid;
                 proj.vcxproj_path = path_relative_to_solution(proj_path, sln_dir);
@@ -1639,6 +1727,15 @@ Solution SlnReader::read_sln(const std::string& filepath) {
         } else {
             std::cerr << "Warning: Project file not found: " << proj_path.string() << "\n";
         }
+    }
+
+    // Fall back to configs the projects define, then to sensible defaults
+    infer_solution_configs_from_projects(solution);
+    if (solution.configurations.empty()) {
+        solution.configurations = {"Debug", "Release"};
+    }
+    if (solution.platforms.empty()) {
+        solution.platforms = {"Win32", "x64"};
     }
 
     // Build UUID -> project name mapping
@@ -1728,7 +1825,7 @@ Solution SlnReader::read_slnx(const std::string& filepath) {
                 if (node_name == "Project") {
                     SlnProject proj;
                     proj.path = child.attribute("Path").as_string();
-                    if (proj.path.empty() || !is_vcxproj_path(proj.path)) {
+                    if (proj.path.empty() || !is_supported_project_path(proj.path)) {
                         continue;
                     }
 
@@ -1766,8 +1863,7 @@ Solution SlnReader::read_slnx(const std::string& filepath) {
 
         if (fs::exists(proj_path)) {
             try {
-                VcxprojReader reader;
-                Project proj = reader.read_vcxproj(proj_path.string());
+                Project proj = read_project_file(proj_path.string());
                 SlnProject loaded_info = proj_info;
                 loaded_info.resolved_path = proj_path.string();
 
@@ -1798,30 +1894,7 @@ Solution SlnReader::read_slnx(const std::string& filepath) {
         }
     }
 
-    if (solution.configurations.empty() || solution.platforms.empty()) {
-        std::set<std::string> inferred_configs(solution.configurations.begin(), solution.configurations.end());
-        std::set<std::string> inferred_platforms(solution.platforms.begin(), solution.platforms.end());
-
-        for (const auto& project : solution.projects) {
-            for (const auto& [config_key, cfg] : project.configurations) {
-                (void)cfg;
-                auto [config_name, platform_name] = parse_config_key(config_key);
-                if (!config_name.empty()) {
-                    inferred_configs.insert(config_name);
-                }
-                if (!platform_name.empty()) {
-                    inferred_platforms.insert(normalize_platform(platform_name));
-                }
-            }
-        }
-
-        if (solution.configurations.empty()) {
-            solution.configurations = std::vector<std::string>(inferred_configs.begin(), inferred_configs.end());
-        }
-        if (solution.platforms.empty()) {
-            solution.platforms = std::vector<std::string>(inferred_platforms.begin(), inferred_platforms.end());
-        }
-    }
+    infer_solution_configs_from_projects(solution);
 
     if (solution.configurations.empty()) {
         solution.configurations = {"Debug", "Release"};
@@ -1918,8 +1991,8 @@ std::vector<SlnReader::SlnProject> SlnReader::parse_projects(const std::string& 
         proj.path = match[2].str();
         proj.uuid = match[3].str();
 
-        // Only include vcxproj files (filter out solution folders and other project types)
-        if (proj.path.find(".vcxproj") != std::string::npos) {
+        // Only include Visual C++ projects (filter out solution folders and other project types)
+        if (is_supported_project_path(proj.path)) {
             projects.push_back(proj);
             vcxproj_count++;
         } else {
@@ -3360,7 +3433,10 @@ bool BuildscriptWriter::write_buildscript(const Project& project, const std::str
         return false;
     }
 
-    out << "# Generated buildscript from " << project.name << ".vcxproj\n";
+    std::string origin = project.vcxproj_path.empty()
+        ? project.name + ".vcxproj"
+        : fs::path(project.vcxproj_path).filename().string();
+    out << "# Generated buildscript from " << origin << "\n";
     out << "# You may need to adjust paths and settings\n\n";
 
     write_project_content(out, project, filepath, configurations, platforms);

@@ -995,3 +995,35 @@ TEST_CASE("SlnReader infers project dependency from matching linked lib", "[vcxp
     CHECK(app_it->project_references[0].name == "Lib");
     CHECK(app_it->project_references[0].link_library_dependencies);
 }
+
+TEST_CASE("VcxprojReader reads MASM items", "[vcxproj_reader]") {
+    TempVcxproj temp(R"(<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{12345678-1234-1234-1234-123456789012}</ProjectGuid>
+    <ProjectName>AsmProject</ProjectName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ClCompile Include="lib.cpp" />
+    <MASM Include="fastmath.asm" />
+  </ItemGroup>
+</Project>)");
+
+    VcxprojReader reader;
+    auto proj = reader.read_vcxproj(temp.vcxproj_path.string());
+
+    CHECK(proj.has_masm_files);
+    auto asm_it = std::find_if(proj.sources.begin(), proj.sources.end(),
+                               [](const SourceFile& src) { return src.path == "fastmath.asm"; });
+    REQUIRE(asm_it != proj.sources.end());
+    CHECK(asm_it->type == FileType::MASM);
+}

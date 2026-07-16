@@ -9,6 +9,7 @@
 #include "generators/deps_exporter.hpp"
 #include "generators/cmake_generator.hpp"
 #include "parsers/vcxproj_reader.hpp"
+#include "parsers/vcproj_reader.hpp"
 #include "common/toolset_registry.hpp"
 #include "common/build_runner.hpp"
 #include "common/updater.hpp"
@@ -20,7 +21,7 @@ void print_usage(const char* program_name) {
     std::cout << "Usage:\n";
     std::cout << "  " << program_name << " <input-file> [options]\n";
     std::cout << "  " << program_name << " --build <dir> [build-options]\n";
-    std::cout << "  " << program_name << " --convert <solution.sln|solution.slnx> [options]\n";
+    std::cout << "  " << program_name << " --convert <file.sln|.slnx|.vcxproj|.vcproj> [options]\n";
     std::cout << "  " << program_name << " convert vpc <file.vpc> [options]\n\n";
     std::cout << "Input formats:\n";
     std::cout << "  .buildscript               Sighmake buildscript (INI-style)\n";
@@ -42,7 +43,8 @@ void print_usage(const char* program_name) {
     std::cout << "      --clean-first          Clean before building\n";
     std::cout << "  -j, --parallel <N>         Parallel build jobs\n\n";
     std::cout << "Conversion:\n";
-    std::cout << "  -c, --convert              Convert Visual Studio .sln/.slnx to buildscripts\n";
+    std::cout << "  -c, --convert              Convert Visual Studio solutions (.sln/.slnx) or\n";
+    std::cout << "                             single projects (.vcxproj/.vcproj) to buildscripts\n";
     std::cout << "  convert vpc <file.vpc>     Convert Valve VPC file to buildscript\n\n";
     std::cout << "Info:\n";
     std::cout << "      --version             Show sighmake version\n";
@@ -60,6 +62,7 @@ void print_usage(const char* program_name) {
     std::cout << "  " << program_name << " --build . --config Release -j 8\n";
     std::cout << "  " << program_name << " --build . --config Debug --project MyPlugin --no-project-references\n";
     std::cout << "  " << program_name << " --convert solution.slnx\n";
+    std::cout << "  " << program_name << " --convert legacy.vcproj\n";
     std::cout << "  " << program_name << " update --check-only\n";
     std::cout << "  " << program_name << " convert vpc project.vpc\n\n";
     std::cout << "Environment variables:\n";
@@ -344,17 +347,59 @@ int main(int argc, char* argv[]) {
             std::transform(input_ext.begin(), input_ext.end(), input_ext.begin(),
                            [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
 
-            if (input_ext != ".sln" && input_ext != ".slnx") {
-                std::cerr << "Error: Conversion mode requires a .sln or .slnx file\n";
+            if (input_ext != ".sln" && input_ext != ".slnx" &&
+                input_ext != ".vcxproj" && input_ext != ".vcproj") {
+                std::cerr << "Error: Conversion mode requires a .sln, .slnx, .vcxproj or .vcproj file\n";
                 return 1;
             }
 
-            std::cout << "Converting solution: " << buildscript_path << "\n";
+            vcxproj::Solution solution;
 
-            vcxproj::SlnReader sln_reader;
-            vcxproj::Solution solution = (input_ext == ".slnx")
-                ? sln_reader.read_slnx(buildscript_path)
-                : sln_reader.read_sln(buildscript_path);
+            if (input_ext == ".vcxproj" || input_ext == ".vcproj") {
+                // Standalone project: wrap it in a single-project solution so
+                // the buildscript writer emits one merged buildscript.
+                std::cout << "Converting project: " << buildscript_path << "\n";
+
+                vcxproj::Project proj;
+                if (input_ext == ".vcproj") {
+                    vcxproj::VcprojReader reader;
+                    proj = reader.read_vcproj(buildscript_path);
+                } else {
+                    vcxproj::VcxprojReader reader;
+                    proj = reader.read_vcxproj(buildscript_path);
+                }
+
+                if (proj.name.empty()) {
+                    proj.name = input_path.stem().string();
+                }
+                proj.vcxproj_path = input_path.filename().string();
+
+                solution.name = proj.name;
+                solution.uuid = vcxproj::generate_uuid();
+
+                std::set<std::string> configs, platforms;
+                for (const auto& [config_key, cfg] : proj.configurations) {
+                    (void)cfg;
+                    auto [config_name, platform_name] = vcxproj::parse_config_key(config_key);
+                    if (!config_name.empty()) configs.insert(config_name);
+                    if (!platform_name.empty()) platforms.insert(vcxproj::normalize_platform(platform_name));
+                }
+                solution.configurations = configs.empty()
+                    ? std::vector<std::string>{"Debug", "Release"}
+                    : std::vector<std::string>(configs.begin(), configs.end());
+                solution.platforms = platforms.empty()
+                    ? std::vector<std::string>{"Win32", "x64"}
+                    : std::vector<std::string>(platforms.begin(), platforms.end());
+
+                solution.projects.push_back(std::move(proj));
+            } else {
+                std::cout << "Converting solution: " << buildscript_path << "\n";
+
+                vcxproj::SlnReader sln_reader;
+                solution = (input_ext == ".slnx")
+                    ? sln_reader.read_slnx(buildscript_path)
+                    : sln_reader.read_sln(buildscript_path);
+            }
 
             std::cout << "Solution: " << solution.name << "\n";
             std::cout << "Projects: " << solution.projects.size() << "\n";

@@ -139,7 +139,7 @@ Perfect for quick prototyping! To customize configurations, define your own `[co
 ```
 sighmake <buildscript|CMakeLists.txt> [options]
 sighmake --build <dir> [--config <cfg>] [--clean]
-sighmake --convert <solution.sln|solution.slnx> [options]
+sighmake --convert <file.sln|.slnx|.vcxproj|.vcproj> [options]
 sighmake update [--check-only] [--force]
 ```
 
@@ -150,7 +150,7 @@ sighmake update [--check-only] [--force]
 | `-g <type>` | `--generator <type>` | Specify generator type (vcxproj, cmake, makefile, buildscript) |
 | `-D <NAME>=<VALUE>` | | Define a variable for use in buildscripts as `${NAME}` |
 | `-t <name>` | `--toolset <name>` | Specify default toolset (msvc2022, msvc2019, etc.) |
-| `-c` | `--convert` | Convert Visual Studio .sln/.slnx to buildscripts |
+| `-c` | `--convert` | Convert Visual Studio solutions (.sln/.slnx) or single projects (.vcxproj/.vcproj) to buildscripts |
 | `-b <dir>` | `--build <dir>` | Build using previously generated project files |
 | | `--config <cfg>` | Build configuration (with --build, e.g. Release) |
 | | `--target <tgt>` | Build specific target (with --build) |
@@ -3804,7 +3804,9 @@ Error: C++20 not supported by toolset 'msvc2015'
 
 ## 13. Converting from Visual Studio
 
-sighmake can convert existing Visual Studio solutions to buildscripts.
+sighmake can convert existing Visual Studio solutions to buildscripts. Modern
+solutions (`.sln`, `.slnx`) with `.vcxproj` projects are supported, as well as
+legacy Visual Studio 2003–2008 solutions referencing `.vcproj` projects.
 
 ### Basic Conversion
 
@@ -3812,6 +3814,15 @@ sighmake can convert existing Visual Studio solutions to buildscripts.
 ```batch
 sighmake --convert MySolution.sln
 ```
+
+**Convert a single project (no solution needed):**
+```batch
+sighmake --convert MyProject.vcxproj
+sighmake --convert LegacyProject.vcproj
+```
+
+Single-project conversion produces one `<ProjectName>.buildscript` next to the
+project file.
 
 **Generated files:**
 - `MySolution.buildscript` - Solution-level settings

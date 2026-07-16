@@ -104,7 +104,7 @@ On Linux and macOS, the default generator writes Makefiles under `build/`.
 ```text
 sighmake <input-file> [options]
 sighmake --build <dir> [build-options]
-sighmake --convert <solution.sln|solution.slnx> [options]
+sighmake --convert <file.sln|.slnx|.vcxproj|.vcproj> [options]
 sighmake convert vpc <file.vpc> [options]
 ```
 
