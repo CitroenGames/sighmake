@@ -1970,3 +1970,29 @@ intdir[Debug|x64] = obj/Debug
     CHECK(out == "..\\bin\\Debug\\");
     CHECK(intd == "..\\obj\\Debug\\");
 }
+
+// ============================================================================
+// Android platform skipping
+// ============================================================================
+
+TEST_CASE("VcxprojGenerator skips Android configurations", "[vcxproj_generator][android]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64, Android
+
+[project:App]
+type = exe
+sources = main.cpp
+)");
+    REQUIRE(!gen.vcxproj_path.empty());
+    std::string vcxproj = read_file(gen.vcxproj_path);
+    CHECK(vcxproj.find("Debug|x64") != std::string::npos);
+    CHECK(vcxproj.find("Android") == std::string::npos);
+
+    if (!gen.sln_path.empty()) {
+        std::string sln = read_file(gen.sln_path);
+        CHECK(sln.find("Android") == std::string::npos);
+    }
+}

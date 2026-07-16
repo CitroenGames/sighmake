@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "vcproj_reader.hpp"
+#include "common/string_utils.hpp"
 #define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"
 
@@ -8,13 +9,6 @@ namespace fs = std::filesystem;
 namespace vcxproj {
 
 namespace {
-
-std::string trim_copy(const std::string& value) {
-    const auto first = value.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return "";
-    const auto last = value.find_last_not_of(" \t\r\n");
-    return value.substr(first, last - first + 1);
-}
 
 std::string strip_quotes(std::string value) {
     if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
@@ -38,14 +32,14 @@ std::vector<std::string> split_list(const std::string& value) {
             in_quotes = !in_quotes;
             current += c;
         } else if ((c == ';' || c == ',') && !in_quotes) {
-            std::string item = strip_quotes(trim_copy(current));
+            std::string item = strip_quotes(trim(current));
             if (!item.empty() && !is_inherit_marker(item)) items.push_back(item);
             current.clear();
         } else {
             current += c;
         }
     }
-    std::string item = strip_quotes(trim_copy(current));
+    std::string item = strip_quotes(trim(current));
     if (!item.empty() && !is_inherit_marker(item)) items.push_back(item);
     return items;
 }
@@ -61,14 +55,14 @@ std::vector<std::string> split_space_list(const std::string& value) {
         if (c == '"') {
             in_quotes = !in_quotes;
         } else if ((c == ' ' || c == '\t') && !in_quotes) {
-            std::string item = trim_copy(current);
+            std::string item = trim(current);
             if (!item.empty() && !is_inherit_marker(item)) items.push_back(item);
             current.clear();
         } else {
             current += c;
         }
     }
-    std::string item = trim_copy(current);
+    std::string item = trim(current);
     if (!item.empty() && !is_inherit_marker(item)) items.push_back(item);
     return items;
 }
@@ -273,7 +267,7 @@ std::string map_compile_as(int value) {
 
 // ExceptionHandling was a bool in VS2003 and an enum (0/1/2) from VS2005 on.
 std::string map_exception_handling(const std::string& raw) {
-    std::string lowered = to_lower(trim_copy(raw));
+    std::string lowered = to_lower(trim(raw));
     if (lowered == "true") return "Sync";
     if (lowered == "false" || lowered == "0") return "false";
     if (lowered == "1") return "Sync";

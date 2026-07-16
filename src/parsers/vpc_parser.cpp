@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "vpc_parser.hpp"
+#include "common/string_utils.hpp"
+#include "common/defaults.hpp"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -15,10 +17,7 @@ namespace vcxproj {
 // ============================================================================
 
 std::string VpcParser::trim(const std::string& str) {
-    size_t start = str.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) return "";
-    size_t end = str.find_last_not_of(" \t\r\n");
-    return str.substr(start, end - start + 1);
+    return vcxproj::trim(str);
 }
 
 std::string VpcParser::to_upper(const std::string& str) {
@@ -900,13 +899,13 @@ void VpcParser::handle_compiler(std::vector<Token>& tokens, size_t& i, ParseStat
                 // Determine which configurations to apply to
                 std::vector<std::string> configs;
                 if (state.current_config.empty()) {
-                    configs = {"Debug", "Release"};
+                    configs = defaults::configurations();
                 } else {
                     configs = {state.current_config};
                 }
 
                 if (platforms.empty()) {
-                    platforms = {"Win32", "x64"};
+                    platforms = defaults::platforms();
                 }
 
                 // Apply to all config/platform combinations
@@ -1017,13 +1016,13 @@ void VpcParser::handle_linker(std::vector<Token>& tokens, size_t& i, ParseState&
 
                 std::vector<std::string> configs;
                 if (state.current_config.empty()) {
-                    configs = {"Debug", "Release"};
+                    configs = defaults::configurations();
                 } else {
                     configs = {state.current_config};
                 }
 
                 if (platforms.empty()) {
-                    platforms = {"Win32", "x64"};
+                    platforms = defaults::platforms();
                 }
 
                 for (const auto& config : configs) {
@@ -1328,10 +1327,10 @@ void VpcParser::finalize_solution(ParseState& state) {
 
     // Ensure configurations and platforms are set
     if (state.solution.configurations.empty()) {
-        state.solution.configurations = {"Debug", "Release"};
+        state.solution.configurations = defaults::configurations();
     }
     if (state.solution.platforms.empty()) {
-        state.solution.platforms = {"Win32", "x64"};
+        state.solution.platforms = defaults::platforms();
     }
 
     // Generate UUID if missing

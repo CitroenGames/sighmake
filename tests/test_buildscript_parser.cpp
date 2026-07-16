@@ -1021,6 +1021,67 @@ if(!linux) {
 #endif
 }
 
+TEST_CASE("Parse if(Android) applies only to Android configs on any host", "[buildscript_parser][android]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Linux, Android
+
+[project:App]
+type = exe
+if(Android) {
+    defines = ANDROID_BUILD
+}
+)");
+    REQUIRE(sol.projects.size() == 1);
+    REQUIRE(sol.projects[0].configurations.count("Debug|Android"));
+    auto& android_cfg = sol.projects[0].configurations["Debug|Android"];
+    CHECK(contains(android_cfg.cl_compile.preprocessor_definitions, "ANDROID_BUILD"));
+
+    // The define must not leak into the Linux configuration
+    REQUIRE(sol.projects[0].configurations.count("Debug|Linux"));
+    auto& linux_cfg = sol.projects[0].configurations["Debug|Linux"];
+    CHECK_FALSE(contains(linux_cfg.cl_compile.preprocessor_definitions, "ANDROID_BUILD"));
+    CHECK_FALSE(contains(sol.projects[0].project_level_preprocessor_definitions, "ANDROID_BUILD"));
+}
+
+TEST_CASE("Parse platforms normalizes android casing", "[buildscript_parser][android]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = android
+
+[project:App]
+type = exe
+)");
+    REQUIRE(sol.platforms.size() == 1);
+    CHECK(sol.platforms[0] == "Android");
+    CHECK(sol.projects[0].configurations.count("Debug|Android"));
+}
+
+TEST_CASE("Parse defines[Android] bracket notation", "[buildscript_parser][android]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = Android
+
+[project:App]
+type = exe
+defines[Android] = VIA_BRACKET
+)");
+    REQUIRE(sol.projects.size() == 1);
+    auto& debug_cfg = sol.projects[0].configurations["Debug|Android"];
+    auto& release_cfg = sol.projects[0].configurations["Release|Android"];
+    CHECK(contains(debug_cfg.cl_compile.preprocessor_definitions, "VIA_BRACKET"));
+    CHECK(contains(release_cfg.cl_compile.preprocessor_definitions, "VIA_BRACKET"));
+}
+
 TEST_CASE("Nested if blocks", "[buildscript_parser]") {
     BuildscriptParser parser;
     auto sol = parser.parse_string(R"(

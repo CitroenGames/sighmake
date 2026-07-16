@@ -2,6 +2,7 @@
 #include "makefile_generator.hpp"
 #include "common/build_cache.hpp"
 #include "common/string_utils.hpp"
+#include "common/language_standards.hpp"
 
 namespace vcxproj {
 
@@ -43,11 +44,29 @@ const T* find_config_setting(const std::map<std::string, T>& settings, const std
     return nullptr;
 }
 
-std::string make_project_config_target(const Project& project, const std::string& config_name) {
-    return project.name + "." + config_name;
+// Host tag of the prebuilt LLVM toolchain shipped with the Android NDK.
+// Determined by the machine running sighmake (Apple hosts use the x86_64
+// directory even on arm64 - the NDK ships universal binaries there).
+constexpr const char* ANDROID_HOST_TAG =
+#if defined(_WIN32)
+    "windows-x86_64";
+#elif defined(__APPLE__)
+    "darwin-x86_64";
+#else
+    "linux-x86_64";
+#endif
+
+std::string make_project_config_target(const Project& project, const std::string& config_name,
+                                       bool android = false) {
+    return project.name + "." + config_name + (android ? ".Android" : "");
 }
 
-std::optional<std::string> find_non_windows_config_key(const Project& project, const std::string& config_name) {
+// Find a config key the makefile generator can build for this config name.
+// android=true selects Android configs; android=false selects the other
+// non-Windows configs (Linux/macOS). They get separate makefiles so a solution
+// can target both without the outputs colliding.
+std::optional<std::string> find_makefile_config_key(const Project& project, const std::string& config_name,
+                                                    bool android) {
     for (const auto& [config_key, config] : project.configurations) {
         (void)config;
         size_t pipe_pos = config_key.find('|');
@@ -57,11 +76,34 @@ std::optional<std::string> find_non_windows_config_key(const Project& project, c
         std::string platform = pipe_pos != std::string::npos
             ? config_key.substr(pipe_pos + 1)
             : "";
-        if (cfg == config_name && !is_windows_platform(platform)) {
+        if (cfg == config_name && !is_windows_platform(platform) &&
+            is_android_platform(platform) == android) {
             return config_key;
         }
     }
     return std::nullopt;
+}
+
+// Android loaders (System.loadLibrary, APK packaging) require the "lib" prefix
+// on shared libraries.
+std::string decorate_target_name(const std::string& name, const std::string& config_type, bool android) {
+    if (android && config_type == "DynamicLibrary" && name.rfind("lib", 0) != 0) {
+        return "lib" + name;
+    }
+    return name;
+}
+
+// Default output/intermediate directories. Android builds get an ABI-specific
+// subdirectory ($(ANDROID_ABI) expands when make runs) so different ABIs don't
+// overwrite each other's artifacts.
+std::string default_makefile_out_dir(const std::string& config_name, bool android) {
+    return android ? "build/" + config_name + "/android/$(ANDROID_ABI)"
+                   : "build/" + config_name;
+}
+
+std::string default_makefile_int_dir(const std::string& config_name, const std::string& project_name,
+                                     bool android) {
+    return default_makefile_out_dir(config_name, android) + "/obj/" + project_name;
 }
 
 std::string stable_hash8(const std::string& value) {
@@ -301,38 +343,6 @@ std::string MakefileGenerator::map_warning_level(const std::string& level) {
     return "-Wall"; // Default
 }
 
-// Map C++ standard (stdcpp14, stdcpp17, stdcpp20) to GCC standard flags
-std::string MakefileGenerator::map_language_standard(const std::string& std) {
-    if (std == "stdcpp14" || std == "14") {
-        return "-std=c++14";
-    } else if (std == "stdcpp17" || std == "17") {
-        return "-std=c++17";
-    } else if (std == "stdcpp20" || std == "20") {
-        return "-std=c++20";
-    } else if (std == "stdcpp23" || std == "23") {
-        return "-std=c++23";
-    } else if (std == "stdcpplatest") {
-        return "-std=c++23";
-    }
-    return "-std=c++17"; // Default to C++17
-}
-
-// Map C standard (89, 99, 11, 17, 23) to GCC standard flags
-static std::string map_c_standard(const std::string& std) {
-    if (std == "89" || std == "90") {
-        return "-std=c89";
-    } else if (std == "99") {
-        return "-std=c99";
-    } else if (std == "11") {
-        return "-std=c11";
-    } else if (std == "17") {
-        return "-std=c17";
-    } else if (std == "23") {
-        return "-std=c2x";  // GCC uses c2x for C23
-    }
-    return "-std=c17"; // Default to C17
-}
-
 // Determine if PCH is enabled for a configuration and return the PCH header path
 std::pair<bool, std::string> MakefileGenerator::get_pch_info(const Configuration& config) {
     bool has_pch = !config.cl_compile.pch.mode.empty() &&
@@ -362,19 +372,12 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
                                                    const std::filesystem::path& makefile_dir, bool c_flags) {
     std::stringstream ss;
 
-    // Language standard. Mixed C/C++ projects need distinct flags for each compiler.
+    // Language standard. Mixed C/C++ projects need distinct flags for each
+    // compiler. Empty values fall back to the shared defaults (C17 / C++17).
     if (c_flags) {
-        if (!project.c_standard.empty()) {
-            ss << map_c_standard(project.c_standard) << " ";
-        } else {
-            ss << "-std=c17 "; // Default C standard
-        }
+        ss << lang::c_standard_to_gnu_flag(project.c_standard) << " ";
     } else {
-        if (!config.cl_compile.language_standard.empty()) {
-            ss << map_language_standard(config.cl_compile.language_standard) << " ";
-        } else {
-            ss << "-std=c++17 "; // Default C++ standard
-        }
+        ss << lang::cpp_standard_to_gnu_flag(config.cl_compile.language_standard) << " ";
     }
 
     // Optimization
@@ -434,8 +437,19 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
 }
 
 // Get linker flags (library directories)
-std::string MakefileGenerator::get_linker_flags(const Configuration& config, const std::filesystem::path& makefile_dir) {
+std::string MakefileGenerator::get_linker_flags(const Configuration& config, const std::filesystem::path& makefile_dir,
+                                                bool android) {
     std::stringstream ss;
+
+    // Android always links ELF binaries with lld, even when the makefile is
+    // generated on a macOS host, so Mach-O style flags only apply to
+    // non-Android builds generated on Apple hosts.
+#ifdef __APPLE__
+    const bool macho_linker = !android;
+#else
+    const bool macho_linker = false;
+    (void)android;
+#endif
 
     // Library directories - convert to relative paths
     for (const auto& libdir : config.link.additional_library_directories) {
@@ -452,28 +466,24 @@ std::string MakefileGenerator::get_linker_flags(const Configuration& config, con
 
     // Garbage collection of unused sections (equivalent to MSVC optimize_references + enable_comdat_folding)
     if (config.link.optimize_references.value_or(false) || config.link.enable_comdat_folding.value_or(false)) {
-#ifdef __APPLE__
-        ss << "-Wl,-dead_strip ";
-#else
-        ss << "-Wl,--gc-sections ";
-#endif
+        ss << (macho_linker ? "-Wl,-dead_strip " : "-Wl,--gc-sections ");
     }
 
     // Base address
     if (!config.link.base_address.empty()) {
-#ifndef __APPLE__
-        ss << "-Wl,--image-base=" << config.link.base_address << " ";
-#endif
+        if (!macho_linker) {
+            ss << "-Wl,--image-base=" << config.link.base_address << " ";
+        }
     }
 
     // Module definition file (.def)
     if (!config.link.module_definition_file.empty()) {
         std::string def_path = compute_relative_path(config.link.module_definition_file, makefile_dir);
-#ifdef __APPLE__
-        ss << "-Wl,-exported_symbols_list," << def_path << " ";
-#else
-        ss << "-Wl,--version-script=" << def_path << " ";
-#endif
+        if (macho_linker) {
+            ss << "-Wl,-exported_symbols_list," << def_path << " ";
+        } else {
+            ss << "-Wl,--version-script=" << def_path << " ";
+        }
     }
 
     // Ignore all default libraries
@@ -549,8 +559,11 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         platform = "x64";
     }
 
+    const bool android = is_android_platform(platform);
+
     // Determine target name and extension
-    std::string target_name = config.target_name.empty() ? project.name : config.target_name;
+    std::string target_name = decorate_target_name(
+        config.target_name.empty() ? project.name : config.target_name, config.config_type, android);
     std::string target_ext = config.target_ext;
     if (target_ext.empty()) {
         if (config.config_type == "Application") {
@@ -558,11 +571,15 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         } else if (config.config_type == "Driver") {
             target_ext = ".sys";
         } else if (config.config_type == "DynamicLibrary") {
+            if (android) {
+                target_ext = ".so";  // Android always uses ELF .so, even when generated on macOS
+            } else {
 #ifdef __APPLE__
-            target_ext = ".dylib";
+                target_ext = ".dylib";
 #else
-            target_ext = ".so";
+                target_ext = ".so";
 #endif
+            }
         } else if (config.config_type == "StaticLibrary") {
             target_ext = ".a";
         }
@@ -580,8 +597,10 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     }
 
     // Output and intermediate directories - convert to relative paths
-    std::string out_dir = compute_relative_path(config.out_dir.empty() ? "build/" + config_name : config.out_dir, makefile_dir);
-    std::string int_dir = compute_relative_path(config.int_dir.empty() ? "build/" + config_name + "/obj/" + project.name : config.int_dir, makefile_dir);
+    std::string out_dir = compute_relative_path(
+        config.out_dir.empty() ? default_makefile_out_dir(config_name, android) : config.out_dir, makefile_dir);
+    std::string int_dir = compute_relative_path(
+        config.int_dir.empty() ? default_makefile_int_dir(config_name, project.name, android) : config.int_dir, makefile_dir);
 
     // Ensure directories end with /
     if (!out_dir.empty() && out_dir.back() != '/') out_dir += '/';
@@ -598,7 +617,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     }
 
     // Write header
-    out << "# Auto-generated Makefile for " << project.name << " (" << config_name << ")\n";
+    out << "# Auto-generated Makefile for " << project.name << " (" << config_name
+        << (android ? ", Android" : "") << ")\n";
     out << "# Generated by sighmake\n\n";
 
     // Determine compiler
@@ -623,28 +643,63 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     }
 
     // Compiler variables
-    if (has_cpp_files) {
-#ifdef __APPLE__
-        out << "CXX = clang++\n";
-#else
-        out << "CXX = g++\n";
-#endif
-    }
-    if (has_c_files) {
-#ifdef __APPLE__
-        out << "CC = clang\n";
-#else
-        out << "CC = gcc\n";
-#endif
-    }
-    if (has_objcxx_files) {
-        // ObjC++ uses the same C++ compiler (clang++ auto-detects .mm)
-        if (!has_cpp_files) {
+    if (android) {
+        // Android NDK toolchain. The --target wrappers are what the NDK's own
+        // clang launcher scripts do, but calling clang directly works on every
+        // host OS (the .cmd wrappers are Windows-only, the bare ones POSIX-only).
+        out << "# Android NDK toolchain (requires NDK r19 or newer)\n";
+        out << "# Override at build time, e.g.: make ANDROID_ABI=x86_64 ANDROID_API=26\n";
+        out << "ANDROID_ABI ?= arm64-v8a\n";
+        out << "ANDROID_API ?= 24\n";
+        out << "ifeq ($(strip $(ANDROID_NDK_HOME)),)\n";
+        out << "  ANDROID_NDK_HOME := $(ANDROID_NDK_ROOT)\n";
+        out << "endif\n";
+        out << "ifeq ($(strip $(ANDROID_NDK_HOME)),)\n";
+        out << "  ifneq ($(MAKECMDGOALS),clean)\n";
+        out << "    $(error ANDROID_NDK_HOME is not set. Point it at your Android NDK installation)\n";
+        out << "  endif\n";
+        out << "endif\n";
+        out << "ifeq ($(ANDROID_ABI),arm64-v8a)\n";
+        out << "  ANDROID_TRIPLE := aarch64-linux-android\n";
+        out << "else ifeq ($(ANDROID_ABI),armeabi-v7a)\n";
+        out << "  ANDROID_TRIPLE := armv7a-linux-androideabi\n";
+        out << "else ifeq ($(ANDROID_ABI),x86_64)\n";
+        out << "  ANDROID_TRIPLE := x86_64-linux-android\n";
+        out << "else ifeq ($(ANDROID_ABI),x86)\n";
+        out << "  ANDROID_TRIPLE := i686-linux-android\n";
+        out << "else\n";
+        out << "  $(error Unsupported ANDROID_ABI '$(ANDROID_ABI)'. Supported: arm64-v8a, armeabi-v7a, x86_64, x86)\n";
+        out << "endif\n";
+        out << "ANDROID_TOOLCHAIN := $(ANDROID_NDK_HOME)/toolchains/llvm/prebuilt/"
+            << ANDROID_HOST_TAG << "/bin\n";
+        out << "CXX = \"$(ANDROID_TOOLCHAIN)/clang++\" --target=$(ANDROID_TRIPLE)$(ANDROID_API)\n";
+        out << "CC = \"$(ANDROID_TOOLCHAIN)/clang\" --target=$(ANDROID_TRIPLE)$(ANDROID_API)\n";
+        out << "AR = \"$(ANDROID_TOOLCHAIN)/llvm-ar\"\n";
+        out << "STRIP = \"$(ANDROID_TOOLCHAIN)/llvm-strip\"\n";
+    } else {
+        if (has_cpp_files) {
 #ifdef __APPLE__
             out << "CXX = clang++\n";
 #else
             out << "CXX = g++\n";
 #endif
+        }
+        if (has_c_files) {
+#ifdef __APPLE__
+            out << "CC = clang\n";
+#else
+            out << "CC = gcc\n";
+#endif
+        }
+        if (has_objcxx_files) {
+            // ObjC++ uses the same C++ compiler (clang++ auto-detects .mm)
+            if (!has_cpp_files) {
+#ifdef __APPLE__
+                out << "CXX = clang++\n";
+#else
+                out << "CXX = g++\n";
+#endif
+            }
         }
     }
     if (has_nasm_files) {
@@ -655,7 +710,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     // Compiler flags
     std::string cxxflags = get_compiler_flags(config, project, makefile_dir, false);
     std::string cflags = get_compiler_flags(config, project, makefile_dir, true);
-    std::string ldflags = get_linker_flags(config, makefile_dir);
+    std::string ldflags = get_linker_flags(config, makefile_dir, android);
     std::string ldlibs = get_linker_libs(config);
 
     // Add project reference outputs (.a files) to link line, including transitive PUBLIC deps
@@ -678,11 +733,15 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             if (dep_config.config_type != "StaticLibrary" &&
                 dep_config.config_type != "DynamicLibrary") return "";
 
-            std::string dep_target_name = dep_config.target_name.empty() ? dep_proj.name : dep_config.target_name;
+            std::string dep_target_name = decorate_target_name(
+                dep_config.target_name.empty() ? dep_proj.name : dep_config.target_name,
+                dep_config.config_type, android);
             std::string dep_target_ext = dep_config.target_ext;
             if (dep_target_ext.empty()) {
                 if (dep_config.config_type == "StaticLibrary") {
                     dep_target_ext = ".a";
+                } else if (android) {
+                    dep_target_ext = ".so";
                 } else {
 #ifdef __APPLE__
                     dep_target_ext = ".dylib";
@@ -693,7 +752,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             }
 
             std::string dep_out_dir = dep_config.out_dir.empty()
-                ? "build/" + cfg_name
+                ? default_makefile_out_dir(cfg_name, android)
                 : dep_config.out_dir;
             if (!dep_out_dir.empty() && dep_out_dir.back() != '/' && dep_out_dir.back() != '\\')
                 dep_out_dir += '/';
@@ -738,10 +797,15 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         for (auto archive_it = dep_archives.rbegin(); archive_it != dep_archives.rend(); ++archive_it) {
             if (archive_it->whole_archive) {
 #ifdef __APPLE__
-                ldlibs = "-Wl,-force_load," + archive_it->path + " " + ldlibs;
+                const bool macho_linker = !android;
 #else
-                ldlibs = "-Wl,--whole-archive " + archive_it->path + " -Wl,--no-whole-archive " + ldlibs;
+                const bool macho_linker = false;
 #endif
+                if (macho_linker) {
+                    ldlibs = "-Wl,-force_load," + archive_it->path + " " + ldlibs;
+                } else {
+                    ldlibs = "-Wl,--whole-archive " + archive_it->path + " -Wl,--no-whole-archive " + ldlibs;
+                }
             } else {
                 ldlibs = archive_it->path + " " + ldlibs;
             }
@@ -907,8 +971,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             out << "\t" << compiler << " $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)\n";
         }
     } else if (config.config_type == "StaticLibrary") {
-        // Create static library
-        out << "\tar rcs $@ $(OBJS)\n";
+        // Create static library (Android uses the NDK's llvm-ar via $(AR))
+        out << "\t" << (android ? "$(AR)" : "ar") << " rcs $@ $(OBJS)\n";
     }
 
     // Post-build event
@@ -925,15 +989,20 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             release_config_name = release_config_name.substr(0, release_pipe_pos);
         }
         if (release_config_name == "Release") {
-#ifdef __APPLE__
-            if (config.config_type == "DynamicLibrary") {
-                out << "\tstrip -x $@\n";
+            if (android) {
+                // Host strip can't handle Android ELF binaries; use the NDK's llvm-strip
+                out << "\t$(STRIP) --strip-unneeded $@\n";
             } else {
-                out << "\tstrip $@\n";
-            }
+#ifdef __APPLE__
+                if (config.config_type == "DynamicLibrary") {
+                    out << "\tstrip -x $@\n";
+                } else {
+                    out << "\tstrip $@\n";
+                }
 #else
-            out << "\tstrip $@\n";
+                out << "\tstrip $@\n";
 #endif
+            }
         }
     }
 
@@ -1058,8 +1127,10 @@ bool MakefileGenerator::generate(Solution& solution, const std::string& output_d
             // Skip Windows configs for makefile generator
             if (is_windows_platform(platform)) continue;
 
-            // Generate Makefile path
-            std::string makefile_name = project.name + "." + config_name;
+            // Generate Makefile path (Android configs get their own makefiles,
+            // e.g. App.Debug.Android, so they don't collide with Linux/macOS ones)
+            std::string makefile_name =
+                make_project_config_target(project, config_name, is_android_platform(platform));
             fs::path makefile_path = build_dir / makefile_name;
 
             if (!generate_makefile_with_lookup(project, solution, config_key, makefile_path.string(), project_lookup)) {
@@ -1105,8 +1176,11 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
         return false;
     }
 
-    // Collect unique config names (without platform), skipping Windows platforms
+    // Collect unique config names (without platform), skipping Windows platforms.
+    // Android configs are tracked separately - they build through the NDK and get
+    // their own <Config>.Android targets.
     std::set<std::string> configs;
+    std::set<std::string> android_configs;
     for (const auto& project : solution.projects) {
         if (project.is_package_project) continue;  // Skip synthetic find_package projects
         for (const auto& [config_key, config] : project.configurations) {
@@ -1118,21 +1192,27 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
                 ? config_key.substr(pipe_pos + 1)
                 : "";
             if (is_windows_platform(platform)) continue;  // Skip Windows configs
-            configs.insert(config_name);
+            if (is_android_platform(platform)) {
+                android_configs.insert(config_name);
+            } else {
+                configs.insert(config_name);
+            }
         }
     }
 
-    if (configs.empty() || solution.projects.empty()) {
+    if ((configs.empty() && android_configs.empty()) || solution.projects.empty()) {
         // Nothing to build
         out << "# Empty solution - no targets\n";
         out << "all:\n\t@echo \"No projects to build\"\n";
         std::cerr << "Warning: No non-Windows platforms found. Makefile has no targets.\n";
-        std::cerr << "  Hint: Add 'Linux' to your platforms list, e.g.: platforms = x64, Linux\n";
+        std::cerr << "  Hint: Add 'Linux' or 'Android' to your platforms list, e.g.: platforms = x64, Linux\n";
         return true;
     }
 
     // Determine default config (prefer Debug, otherwise first alphabetically)
-    std::string default_config = configs.count("Debug") ? "Debug" : *configs.begin();
+    std::string default_config = configs.count("Debug") ? "Debug" : (configs.empty() ? "" : *configs.begin());
+    std::string default_android_config = android_configs.count("Debug")
+        ? "Debug" : (android_configs.empty() ? "" : *android_configs.begin());
     auto project_lookup = build_project_lookup(solution);
 
     std::vector<const Project*> buildable_projects;
@@ -1146,6 +1226,10 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
     out << "# Build all projects with: make\n";
     out << "# Build specific config:   make Release\n";
     out << "# Build specific project:  make ProjectName\n";
+    if (!android_configs.empty()) {
+        out << "# Build for Android:       make android\n";
+        out << "# Android config/ABI:      make Release.Android ANDROID_ABI=x86_64 ANDROID_API=26\n";
+    }
     out << "# Clean all:               make clean\n";
     out << "# Install:                 sudo make install\n";
     out << "# Install to custom dir:   make install PREFIX=/opt/myapp\n\n";
@@ -1157,61 +1241,93 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
     for (const auto& cfg : configs) {
         out << " " << cfg;
     }
+    if (!android_configs.empty()) {
+        out << " android";
+        for (const auto& cfg : android_configs) {
+            out << " " << cfg << ".Android";
+        }
+    }
     for (const auto& proj : solution.projects) {
         if (proj.is_package_project) continue;
         out << " " << proj.name;
     }
     for (const auto& cfg : configs) {
         for (const auto* proj : buildable_projects) {
-            if (find_non_windows_config_key(*proj, cfg)) {
+            if (find_makefile_config_key(*proj, cfg, false)) {
                 out << " " << make_project_config_target(*proj, cfg);
+            }
+        }
+    }
+    for (const auto& cfg : android_configs) {
+        for (const auto* proj : buildable_projects) {
+            if (find_makefile_config_key(*proj, cfg, true)) {
+                out << " " << make_project_config_target(*proj, cfg, true);
             }
         }
     }
     out << "\n\n";
 
-    // Default target
-    out << "all: " << default_config << "\n\n";
-
-    // Per-configuration targets (e.g., make Debug, make Release)
-    for (const auto& cfg : configs) {
-        out << cfg << ":";
-        for (const auto* proj : buildable_projects) {
-            if (find_non_windows_config_key(*proj, cfg)) {
-                out << " " << make_project_config_target(*proj, cfg);
-            }
-        }
-        out << "\n\n";
-
-        for (const auto* proj : buildable_projects) {
-            if (!find_non_windows_config_key(*proj, cfg)) {
-                continue;
-            }
-
-            const std::string target = make_project_config_target(*proj, cfg);
-            std::set<std::string> dependencies;
-            for (const auto& dep : proj->project_references) {
-                const Project* dep_project = find_project(project_lookup, dep.name);
-                if (!dep_project || !find_non_windows_config_key(*dep_project, cfg)) {
-                    continue;
-                }
-                dependencies.insert(make_project_config_target(*dep_project, cfg));
-            }
-
-            out << target << ":";
-            for (const auto& dep_target : dependencies) {
-                out << " " << dep_target;
-            }
-            out << "\n";
-            out << "\t$(MAKE) -f " << target << "\n\n";
-        }
+    // Default target. Solutions with only Android platforms default to the
+    // Android build; otherwise desktop configs stay the default and Android is
+    // built explicitly via `make android` / `make <Config>.Android`.
+    if (!default_config.empty()) {
+        out << "all: " << default_config << "\n\n";
+    } else {
+        out << "all: " << default_android_config << ".Android\n\n";
     }
 
-    // Per-project targets (builds default config)
+    // Convenience alias for the default Android config
+    if (!android_configs.empty()) {
+        out << "android: " << default_android_config << ".Android\n\n";
+    }
+
+    // Per-configuration targets (e.g., make Debug, make Release, make Debug.Android)
+    auto write_config_targets = [&](const std::set<std::string>& config_set, bool android) {
+        for (const auto& cfg : config_set) {
+            out << cfg << (android ? ".Android" : "") << ":";
+            for (const auto* proj : buildable_projects) {
+                if (find_makefile_config_key(*proj, cfg, android)) {
+                    out << " " << make_project_config_target(*proj, cfg, android);
+                }
+            }
+            out << "\n\n";
+
+            for (const auto* proj : buildable_projects) {
+                if (!find_makefile_config_key(*proj, cfg, android)) {
+                    continue;
+                }
+
+                const std::string target = make_project_config_target(*proj, cfg, android);
+                std::set<std::string> dependencies;
+                for (const auto& dep : proj->project_references) {
+                    const Project* dep_project = find_project(project_lookup, dep.name);
+                    if (!dep_project || !find_makefile_config_key(*dep_project, cfg, android)) {
+                        continue;
+                    }
+                    dependencies.insert(make_project_config_target(*dep_project, cfg, android));
+                }
+
+                out << target << ":";
+                for (const auto& dep_target : dependencies) {
+                    out << " " << dep_target;
+                }
+                out << "\n";
+                out << "\t$(MAKE) -f " << target << "\n\n";
+            }
+        }
+    };
+    write_config_targets(configs, false);
+    write_config_targets(android_configs, true);
+
+    // Per-project targets (builds default config; falls back to the Android
+    // default when the project only has Android configurations)
     for (const auto* proj : buildable_projects) {
         out << proj->name << ":";
-        if (find_non_windows_config_key(*proj, default_config)) {
+        if (!default_config.empty() && find_makefile_config_key(*proj, default_config, false)) {
             out << " " << make_project_config_target(*proj, default_config);
+        } else if (!default_android_config.empty() &&
+                   find_makefile_config_key(*proj, default_android_config, true)) {
+            out << " " << make_project_config_target(*proj, default_android_config, true);
         }
         out << "\n\n";
     }
@@ -1220,15 +1336,21 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
     out << "clean:\n";
     for (const auto* proj : buildable_projects) {
         for (const auto& cfg : configs) {
-            if (find_non_windows_config_key(*proj, cfg)) {
+            if (find_makefile_config_key(*proj, cfg, false)) {
                 out << "\t-$(MAKE) -f " << make_project_config_target(*proj, cfg) << " clean\n";
+            }
+        }
+        for (const auto& cfg : android_configs) {
+            if (find_makefile_config_key(*proj, cfg, true)) {
+                out << "\t-$(MAKE) -f " << make_project_config_target(*proj, cfg, true) << " clean\n";
             }
         }
     }
     out << "\n";
 
-    // Install target - install executable targets from Release (or default) config
-    {
+    // Install target - install executable targets from Release (or default) config.
+    // Android configs are excluded: their binaries target devices, not the host.
+    if (!configs.empty()) {
         std::string install_config = configs.count("Release") ? "Release" : default_config;
 
         // Collect installable targets (executables and shared libraries)
@@ -1250,6 +1372,7 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
 
                 if (cfg_name != install_config) continue;
                 if (is_windows_platform(plat)) continue;
+                if (is_android_platform(plat)) continue;  // Device binaries - never installed on the host
 
                 std::string target_name = config.target_name.empty() ? proj.name : config.target_name;
                 std::string out_dir = config.out_dir.empty() ? "build/" + cfg_name : config.out_dir;

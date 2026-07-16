@@ -14,6 +14,13 @@ public:
         bool is_legacy;           // True for older/unsupported versions
     };
 
+    // A normalized toolchain name ("msvc2022") and the toolset it resolves to
+    struct ToolchainAlias {
+        std::string alias;        // "msvc2022"
+        std::string toolset_id;   // "v143"
+        std::string vs_version;   // "Visual Studio 2022"
+    };
+
     // Get singleton instance
     static ToolsetRegistry& instance();
 
@@ -41,6 +48,13 @@ public:
     // Get the year associated with a toolset (for comparison)
     // Returns 0 if toolset is unknown
     int get_toolset_year(const std::string& toolset) const;
+
+    // Get the canonical toolset for a Visual Studio release year
+    // Returns std::nullopt if the year is unknown
+    std::optional<std::string> toolset_for_year(int year) const;
+
+    // All normalized toolchain names, newest first (for --list-toolsets)
+    std::vector<ToolchainAlias> toolchain_aliases() const;
 
 private:
     ToolsetRegistry();

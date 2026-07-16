@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "build_runner.hpp"
 #include "project_types.hpp"
+#include "defaults.hpp"
 
 namespace fs = std::filesystem;
 
@@ -120,15 +121,15 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
     // Determine configuration
     std::string config = options.config;
     if (config.empty()) {
-        // Default to Debug, or first available
+        // Default to the standard configuration, or first available
         if (!cache.configurations.empty()) {
-            bool has_debug = false;
+            bool has_default = false;
             for (const auto& c : cache.configurations) {
-                if (c == "Debug") { has_debug = true; break; }
+                if (c == defaults::kBuildConfiguration) { has_default = true; break; }
             }
-            config = has_debug ? "Debug" : cache.configurations[0];
+            config = has_default ? defaults::kBuildConfiguration : cache.configurations[0];
         } else {
-            config = "Debug";
+            config = defaults::kBuildConfiguration;
         }
     } else {
         // Validate the config exists

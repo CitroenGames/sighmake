@@ -1,6 +1,9 @@
 #include "pch.h"
 #include "buildscript_parser.hpp"
 #include "common/toolset_registry.hpp"
+#include "common/string_utils.hpp"
+#include "common/config_type_utils.hpp"
+#include "common/defaults.hpp"
 
 namespace fs = std::filesystem;
 
@@ -36,37 +39,7 @@ static bool contains_msbuild_macro(const std::string& value) {
 }
 
 std::string BuildscriptParser::trim(const std::string& str) {
-    size_t first = str.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return "";
-    size_t last = str.find_last_not_of(" \t\r\n");
-    return str.substr(first, last - first + 1);
-}
-
-std::string unescape_value(const std::string& str) {
-    std::string result;
-    for (size_t i = 0; i < str.size(); ++i) {
-        if (str[i] == '\x01' && i + 1 < str.size()) {
-            if (str[i + 1] == 'n') {
-                result += '\n';
-                ++i;
-            } else if (str[i + 1] == '\\') {
-                result += '\\';
-                ++i;
-            } else {
-                result += str[i];
-            }
-        } else {
-            result += str[i];
-        }
-    }
-    return result;
-}
-
-static std::string trim_local(const std::string& str) {
-    size_t first = str.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return "";
-    size_t last = str.find_last_not_of(" \t\r\n");
-    return str.substr(first, last - first + 1);
+    return vcxproj::trim(str);
 }
 
 // Check whether all parentheses outside quoted strings are balanced,
@@ -115,7 +88,7 @@ static void apply_target_link_libraries(const std::string& call_text, Project& p
     bool next_is_whole_archive = false;
 
     for (const auto& t : tokens) {
-        std::string trimmed_token = trim_local(t);
+        std::string trimmed_token = trim(t);
         if (trimmed_token.empty()) continue;
 
         if (trimmed_token == "PUBLIC") {
@@ -196,7 +169,7 @@ std::string preprocess_multiline(const std::string& content) {
             size_t comment_pos = line.find('#');
             if (comment_pos != std::string::npos) no_comment = line.substr(0, comment_pos);
             
-            std::string trimmed = trim_local(no_comment);
+            std::string trimmed = trim(no_comment);
             
             // Check for closing brace
             // We assume } is the last significant char or the only one
@@ -204,7 +177,7 @@ std::string preprocess_multiline(const std::string& content) {
                  // If line is "file.cpp }", we should capture "file.cpp"
                  if (trimmed != "}") {
                      std::string item = trimmed.substr(0, trimmed.size() - 1);
-                     item = trim_local(item);
+                     item = trim(item);
                      if (!item.empty()) brace_items.push_back(item);
                  }
                  
@@ -268,7 +241,7 @@ std::string preprocess_multiline(const std::string& content) {
             size_t comment_pos = value_part.find('#');
             if (comment_pos != std::string::npos) no_comment = value_part.substr(0, comment_pos);
             
-            if (trim_local(no_comment) == "{") {
+            if (trim(no_comment) == "{") {
                 in_brace_block = true;
                 multiline_prefix = line.substr(0, eq_pos + 1) + " ";
                 continue;
@@ -547,8 +520,8 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
     Solution solution;
     solution.uuid = generate_uuid();
     // Initialize with defaults - these will be updated if [config:...] sections are discovered
-    solution.configurations = {"Debug", "Release"};
-    solution.platforms = {"Win32", "x64"};
+    solution.configurations = defaults::configurations();
+    solution.platforms = defaults::platforms();
 
     ParseState state;
     state.solution = &solution;
@@ -1774,30 +1747,7 @@ void BuildscriptParser::parse_project_setting(const std::string& key, const std:
 }
 
 static std::string parse_buildscript_config_type_value(const std::string& value, bool& kernel_mode) {
-    kernel_mode = false;
-
-    if (value == "exe" || value == "application" || value == "Application") {
-        return "Application";
-    }
-    if (value == "lib" || value == "static" || value == "staticlib" || value == "StaticLibrary") {
-        return "StaticLibrary";
-    }
-    if (value == "dll" || value == "shared" || value == "dynamiclib" || value == "DynamicLibrary") {
-        return "DynamicLibrary";
-    }
-    if (value == "sys" || value == "driver" || value == "Driver") {
-        kernel_mode = true;
-        return "Driver";
-    }
-    if (value == "sys_lib" || value == "kernel_lib") {
-        kernel_mode = true;
-        return "StaticLibrary";
-    }
-    if (value == "interface" || value == "header-only" || value == "Utility") {
-        return "Utility";
-    }
-
-    return value;
+    return config_type::from_buildscript(value, kernel_mode);
 }
 
 bool BuildscriptParser::parse_project_basic_setting(const std::string& key, const std::string& value,
@@ -2925,27 +2875,27 @@ bool BuildscriptParser::parse_project_misc_setting(const std::string& key, const
     // Build events
     else if (key == "prebuild" || key == "pre_build_event") {
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].pre_build_event.command = unescape_value(value);
+            proj.configurations[config_key].pre_build_event.command = unescape_newlines(value);
         }
     } else if (key == "prelink" || key == "pre_link_event") {
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].pre_link_event.command = unescape_value(value);
+            proj.configurations[config_key].pre_link_event.command = unescape_newlines(value);
         }
     } else if (key == "postbuild" || key == "post_build_event") {
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].post_build_event.command = unescape_value(value);
+            proj.configurations[config_key].post_build_event.command = unescape_newlines(value);
         }
     } else if (key == "prebuild_message" || key == "pre_build_event_message") {
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].pre_build_event.message = unescape_value(value);
+            proj.configurations[config_key].pre_build_event.message = unescape_newlines(value);
         }
     } else if (key == "prelink_message" || key == "pre_link_event_message") {
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].pre_link_event.message = unescape_value(value);
+            proj.configurations[config_key].pre_link_event.message = unescape_newlines(value);
         }
     } else if (key == "postbuild_message" || key == "post_build_event_message") {
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].post_build_event.message = unescape_value(value);
+            proj.configurations[config_key].post_build_event.message = unescape_newlines(value);
         }
     } else if (key == "prebuild_use_in_build" || key == "pre_build_event_use_in_build") {
         bool use = (value == "true" || value == "yes" || value == "1");
@@ -3355,17 +3305,17 @@ bool BuildscriptParser::parse_config_setting_aux(const std::string& key, const s
     }
     // Build events
     else if (key == "prebuild" || key == "pre_build_event") {
-        cfg.pre_build_event.command = unescape_value(value);
+        cfg.pre_build_event.command = unescape_newlines(value);
     } else if (key == "prelink" || key == "pre_link_event") {
-        cfg.pre_link_event.command = unescape_value(value);
+        cfg.pre_link_event.command = unescape_newlines(value);
     } else if (key == "postbuild" || key == "post_build_event") {
-        cfg.post_build_event.command = unescape_value(value);
+        cfg.post_build_event.command = unescape_newlines(value);
     } else if (key == "prebuild_message" || key == "pre_build_event_message") {
-        cfg.pre_build_event.message = unescape_value(value);
+        cfg.pre_build_event.message = unescape_newlines(value);
     } else if (key == "prelink_message" || key == "pre_link_event_message") {
-        cfg.pre_link_event.message = unescape_value(value);
+        cfg.pre_link_event.message = unescape_newlines(value);
     } else if (key == "postbuild_message" || key == "post_build_event_message") {
-        cfg.post_build_event.message = unescape_value(value);
+        cfg.post_build_event.message = unescape_newlines(value);
     } else if (key == "prebuild_use_in_build" || key == "pre_build_event_use_in_build") {
         cfg.pre_build_event.use_in_build = (value == "true" || value == "yes" || value == "1");
     } else if (key == "prelink_use_in_build" || key == "pre_link_event_use_in_build") {
@@ -3833,6 +3783,9 @@ BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const s
     // Platform-level conditions: settings apply only to matching platform configurations
     if (cond == "win32") return {is_windows, "Win32"};
     if (cond == "x64") return {is_windows, "x64"};
+    // Android is a cross-compile target, so the block executes on every host OS;
+    // the platform filter restricts the settings to Android configurations.
+    if (cond == "android") return {true, "Android"};
 
     // Check for negation
     if (cond.size() > 1 && cond[0] == '!') {

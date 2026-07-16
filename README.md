@@ -18,6 +18,7 @@ version control.
 - Per-config, per-platform, and per-file settings
 - Project dependencies with `PUBLIC`, `PRIVATE`, and `INTERFACE` visibility
 - Wildcard source matching and platform-specific file filters
+- Android cross-compilation with the NDK (`platforms = Android`)
 - Visual Studio solution folders and project filters
 - `find_package()` support for common SDKs such as Vulkan, SDL, DirectX, and OpenGL
 - Visual Studio solution conversion back to buildscripts

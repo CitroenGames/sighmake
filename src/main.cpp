@@ -13,6 +13,7 @@
 #include "common/toolset_registry.hpp"
 #include "common/build_runner.hpp"
 #include "common/updater.hpp"
+#include "common/defaults.hpp"
 
 namespace fs = std::filesystem;
 
@@ -68,6 +69,7 @@ void print_usage(const char* program_name) {
     std::cout << "Environment variables:\n";
     std::cout << "  SIGHMAKE_DEFAULT_TOOLSET   Default toolset when -t is not specified\n";
     std::cout << "  SIGHMAKE_UPDATE_MANIFEST_URL Override updater manifest URL\n";
+    std::cout << "  SIGHMAKE_DEBUG             Set to 1 for verbose [DEBUG] diagnostics\n";
 }
 
 void print_update_usage(const char* program_name) {
@@ -242,17 +244,19 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
         } else if (strcmp(argv[i], "--list-toolsets") == 0) {
+            auto& registry = vcxproj::ToolsetRegistry::instance();
+            std::string current_default = registry.get_default();
             std::cout << "Available toolsets:\n\n";
             std::cout << "  Toolset     Description\n";
             std::cout << "  -------     -----------\n";
-            std::cout << "  msvc2026    Visual Studio 2026\n";
-            std::cout << "  msvc2022    Visual Studio 2022 (default)\n";
-            std::cout << "  msvc2019    Visual Studio 2019\n";
-            std::cout << "  msvc2017    Visual Studio 2017\n";
-            std::cout << "  msvc2015    Visual Studio 2015\n";
-            std::cout << "  msvc2013    Visual Studio 2013\n";
-            std::cout << "  msvc2012    Visual Studio 2012\n";
-            std::cout << "  msvc2010    Visual Studio 2010\n";
+            for (const auto& alias : registry.toolchain_aliases()) {
+                std::cout << "  " << std::left << std::setw(12) << alias.alias
+                          << alias.vs_version;
+                if (!current_default.empty() && alias.toolset_id == current_default) {
+                    std::cout << " (default)";
+                }
+                std::cout << "\n";
+            }
             std::cout << "\nUse the normalized toolset name (e.g., 'msvc2022').\n";
             std::cout << "Case-insensitive: MSVC2022, msvc2022, Msvc2022 all work.\n";
             return 0;
@@ -385,10 +389,10 @@ int main(int argc, char* argv[]) {
                     if (!platform_name.empty()) platforms.insert(vcxproj::normalize_platform(platform_name));
                 }
                 solution.configurations = configs.empty()
-                    ? std::vector<std::string>{"Debug", "Release"}
+                    ? vcxproj::defaults::configurations()
                     : std::vector<std::string>(configs.begin(), configs.end());
                 solution.platforms = platforms.empty()
-                    ? std::vector<std::string>{"Win32", "x64"}
+                    ? vcxproj::defaults::platforms()
                     : std::vector<std::string>(platforms.begin(), platforms.end());
 
                 solution.projects.push_back(std::move(proj));

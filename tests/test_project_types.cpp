@@ -133,6 +133,25 @@ TEST_CASE("is_unix_platform rejects Windows platforms", "[project_types]") {
     CHECK(is_unix_platform("ARM64") == false);
 }
 
+TEST_CASE("is_android_platform recognizes Android", "[project_types]") {
+    CHECK(is_android_platform("Android") == true);
+    CHECK(is_android_platform("android") == true);
+    CHECK(is_android_platform("ANDROID") == true);
+    CHECK(is_android_platform("Linux") == false);
+    CHECK(is_android_platform("Win32") == false);
+}
+
+TEST_CASE("is_unix_platform includes Android for vcxproj skipping", "[project_types]") {
+    CHECK(is_unix_platform("Android") == true);
+    CHECK(is_windows_platform("Android") == false);
+}
+
+TEST_CASE("normalize_platform canonicalizes Android casing", "[project_types]") {
+    CHECK(normalize_platform("android") == "Android");
+    CHECK(normalize_platform("ANDROID") == "Android");
+    CHECK(normalize_platform("Android") == "Android");
+}
+
 // ============================================================================
 // parse_visibility / visibility_to_string tests
 // ============================================================================

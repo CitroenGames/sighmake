@@ -3,57 +3,52 @@
 
 namespace vcxproj {
 
+namespace {
+
+// Single data table for all known toolsets, newest first. Add new toolsets
+// here — the registry derives every lookup (id, year, alias) from this list.
+struct ToolsetDef {
+    const char* id;           // "v143"
+    const char* vs_version;   // "Visual Studio 2022"
+    int year;                 // 2022
+    bool legacy;              // True for older/unsupported versions
+    const char* alias;        // Normalized toolchain name ("msvc2022"), nullptr = none
+    bool canonical_for_year;  // Resolves year -> id (at most one per year)
+};
+
+// Visual Studio 2026: Microsoft hasn't announced the toolset number yet, so
+// both v144 and v145 are supported, with v145 as the canonical choice.
+// Future: other toolchains (e.g., {"gcc-13", ..., "gcc13", ...}).
+const ToolsetDef kToolsetDefs[] = {
+    {"v145",    "Visual Studio 2026",             2026, false, "msvc2026",   true},
+    {"v144",    "Visual Studio 2026 (alternate)", 2026, false, nullptr,      false},
+    {"v143",    "Visual Studio 2022",             2022, false, "msvc2022",   true},
+    {"v142",    "Visual Studio 2019",             2019, false, "msvc2019",   true},
+    {"v141",    "Visual Studio 2017",             2017, false, "msvc2017",   true},
+    {"v140",    "Visual Studio 2015",             2015, false, "msvc2015",   true},
+    {"v120",    "Visual Studio 2013",             2013, true,  "msvc2013",   true},
+    {"v110",    "Visual Studio 2012",             2012, true,  "msvc2012",   true},
+    {"v110_xp", "Visual Studio 2012 (XP)",        2012, true,  "msvc2012xp", false},
+    {"v100",    "Visual Studio 2010",             2010, true,  "msvc2010",   true},
+};
+
+} // namespace
+
 ToolsetRegistry& ToolsetRegistry::instance() {
     static ToolsetRegistry registry;
     return registry;
 }
 
 ToolsetRegistry::ToolsetRegistry() : default_toolset_("") {
-    // Modern toolsets (officially released)
-    toolsets_["v143"] = {"v143", "Visual Studio 2022", 2022, false};
-    toolsets_["v142"] = {"v142", "Visual Studio 2019", 2019, false};
-    toolsets_["v141"] = {"v141", "Visual Studio 2017", 2017, false};
-    toolsets_["v140"] = {"v140", "Visual Studio 2015", 2015, false};
-
-    // Future: Visual Studio 2026 (Microsoft hasn't announced the toolset number yet)
-    // Supporting both v144 and v145 for flexibility
-    toolsets_["v145"] = {"v145", "Visual Studio 2026", 2026, false};
-    toolsets_["v144"] = {"v144", "Visual Studio 2026 (alternate)", 2026, false};
-
-    // Legacy toolsets (older versions)
-    toolsets_["v120"] = {"v120", "Visual Studio 2013", 2013, true};
-    toolsets_["v110"] = {"v110", "Visual Studio 2012", 2012, true};
-    toolsets_["v100"] = {"v100", "Visual Studio 2010", 2010, true};
-
-    // Windows XP targeting toolsets
-    toolsets_["v110_xp"] = {"v110_xp", "Visual Studio 2012 (XP)", 2012, true};
-
-    // Year-to-toolset mappings for user convenience
-    year_to_id_[2026] = "v145";  // Default to v145 for VS 2026
-    year_to_id_[2022] = "v143";
-    year_to_id_[2019] = "v142";
-    year_to_id_[2017] = "v141";
-    year_to_id_[2015] = "v140";
-    year_to_id_[2013] = "v120";
-    year_to_id_[2012] = "v110";
-    year_to_id_[2010] = "v100";
-
-    // Normalized toolchain name mappings
-    toolchain_to_toolset_["msvc2026"] = "v145";
-    toolchain_to_toolset_["msvc2022"] = "v143";
-    toolchain_to_toolset_["msvc2019"] = "v142";
-    toolchain_to_toolset_["msvc2017"] = "v141";
-    toolchain_to_toolset_["msvc2015"] = "v140";
-    toolchain_to_toolset_["msvc2013"] = "v120";
-    toolchain_to_toolset_["msvc2012"] = "v110";
-    toolchain_to_toolset_["msvc2010"] = "v100";
-
-    // XP toolset mappings
-    toolchain_to_toolset_["msvc2012xp"] = "v110_xp";
-
-    // Future: other toolchains
-    // toolchain_to_toolset_["gcc13"] = "gcc-13";
-    // toolchain_to_toolset_["clang16"] = "clang-16";
+    for (const auto& def : kToolsetDefs) {
+        toolsets_[def.id] = {def.id, def.vs_version, def.year, def.legacy};
+        if (def.canonical_for_year) {
+            year_to_id_[def.year] = def.id;
+        }
+        if (def.alias) {
+            toolchain_to_toolset_[def.alias] = def.id;
+        }
+    }
 }
 
 std::optional<std::string> ToolsetRegistry::resolve(const std::string& input) const {
@@ -99,6 +94,24 @@ void ToolsetRegistry::set_default(const std::string& toolset) {
 int ToolsetRegistry::get_toolset_year(const std::string& toolset) const {
     auto it = toolsets_.find(toolset);
     return it != toolsets_.end() ? it->second.year : 0;
+}
+
+std::optional<std::string> ToolsetRegistry::toolset_for_year(int year) const {
+    auto it = year_to_id_.find(year);
+    if (it != year_to_id_.end()) {
+        return it->second;
+    }
+    return std::nullopt;
+}
+
+std::vector<ToolsetRegistry::ToolchainAlias> ToolsetRegistry::toolchain_aliases() const {
+    std::vector<ToolchainAlias> aliases;
+    for (const auto& def : kToolsetDefs) {
+        if (def.alias) {
+            aliases.push_back({def.alias, def.id, def.vs_version});
+        }
+    }
+    return aliases;
 }
 
 } // namespace vcxproj

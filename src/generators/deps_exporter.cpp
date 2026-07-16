@@ -1,27 +1,12 @@
 #include "pch.h"
 #include "generators/deps_exporter.hpp"
+#include "common/config_type_utils.hpp"
 
 namespace fs = std::filesystem;
 
 namespace vcxproj {
 
 namespace {
-
-std::string config_type_label(const std::string& config_type) {
-    if (config_type == "Application")    return "Executable";
-    if (config_type == "StaticLibrary")  return "Static Library";
-    if (config_type == "DynamicLibrary") return "Dynamic Library";
-    if (config_type == "Utility")        return "Utility";
-    return config_type.empty() ? "Unknown" : config_type;
-}
-
-std::string config_type_css_class(const std::string& config_type) {
-    if (config_type == "Application")    return "exe";
-    if (config_type == "StaticLibrary")  return "staticlib";
-    if (config_type == "DynamicLibrary") return "dll";
-    if (config_type == "Utility")        return "utility";
-    return "unknown";
-}
 
 std::string escape_html(const std::string& str) {
     std::string result;
@@ -103,12 +88,12 @@ void write_project_cards(std::ofstream& out, const Solution& solution) {
     for (const auto& proj : solution.projects) {
         if (proj.is_package_project) continue;  // Skip synthetic find_package projects
         std::string ptype = get_project_type(proj);
-        std::string css_class = config_type_css_class(ptype);
+        std::string css_class = config_type::css_class(ptype);
 
         out << "  <div class=\"card " << css_class << "\">\n";
         out << "    <h3>" << escape_html(proj.name) << "</h3>\n";
         out << "    <span class=\"type-badge badge-" << css_class << "\">"
-            << escape_html(config_type_label(ptype)) << "</span>\n";
+            << escape_html(config_type::label(ptype)) << "</span>\n";
 
         if (proj.project_references.empty()) {
             out << "    <p class=\"no-deps\">No dependencies</p>\n";

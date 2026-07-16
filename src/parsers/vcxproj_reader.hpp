@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/project_types.hpp"
+#include "common/defaults.hpp"
 
 namespace vcxproj {
 
@@ -52,8 +53,8 @@ public:
 
     // Write a project to a .buildscript file
     bool write_buildscript(const Project& project, const std::string& filepath,
-                          const std::vector<std::string>& configurations = {"Debug", "Release"},
-                          const std::vector<std::string>& platforms = {"Win32", "x64"});
+                          const std::vector<std::string>& configurations = defaults::configurations(),
+                          const std::vector<std::string>& platforms = defaults::platforms());
 
     // Write a full solution to multiple .buildscript files (one per project)
     bool write_solution_buildscripts(const Solution& solution, const std::string& base_dir);

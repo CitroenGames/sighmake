@@ -371,6 +371,21 @@ export SIGHMAKE_DEFAULT_TOOLSET=msvc2022
 
 This is useful for team environments where everyone uses the same Visual Studio version.
 
+**SIGHMAKE_DEBUG**
+
+Enables verbose `[DEBUG]` diagnostic output (Visual Studio detection, toolset
+resolution, solution format decisions):
+
+```batch
+# Windows
+set SIGHMAKE_DEBUG=1
+
+# Linux/macOS
+export SIGHMAKE_DEBUG=1
+```
+
+Set it to `0` or leave it unset for normal, quiet output.
+
 ### Command Examples
 
 **Generate with default settings:**
@@ -461,11 +476,12 @@ defines[Win32] = INCLUDE_SCALEFORM
 - `Linux` - Linux/macOS platform (makefile only)
 - `macOS` - macOS platform (makefile only, alternative to `Linux`)
 - `Darwin` - macOS platform (makefile only, alternative to `Linux`)
+- `Android` - Android cross-compilation via the NDK (makefile only, see [Android (NDK)](#android-ndk))
 
 **Platform filtering by generator:**
 Platforms are automatically filtered by generator type:
-- **vcxproj generator**: Only includes Win32, x64, ARM, ARM64 platforms (skips Linux, macOS, Darwin)
-- **makefile generator**: Only includes non-Windows platforms like Linux, macOS, Darwin (skips Windows platforms)
+- **vcxproj generator**: Only includes Win32, x64, ARM, ARM64 platforms (skips Linux, macOS, Darwin, Android)
+- **makefile generator**: Only includes non-Windows platforms like Linux, macOS, Darwin, Android (skips Windows platforms)
 
 This allows a single buildscript to define both Windows and Unix configurations:
 ```ini
@@ -1144,6 +1160,7 @@ if(Platform)
 - `if(unix)` / `if(posix)` - Settings apply on both Linux and macOS
 - `if(Win32)` - Settings apply only to Win32 platform
 - `if(x64)` - Settings apply only to x64 platform
+- `if(Android)` - Settings apply only to Android platform configurations (evaluates on every host OS, since Android is always cross-compiled)
 
 **Example:**
 ```ini
@@ -1224,8 +1241,9 @@ defines[Debug|Win32] = _DEBUG, WIN32_DEBUG
 - `if(macOS)` / `if(osx)` / `if(darwin)` matches **only on macOS**
 - `if(unix)` or `if(posix)` matches **both Linux and macOS**
 - `if(Win32)` and `if(x64)` are **platform-level** conditions — settings apply only to matching platform configurations (e.g., `if(Win32)` applies to Debug|Win32 and Release|Win32 only)
+- `if(Android)` is also **platform-level**, but unlike `if(Win32)`/`if(x64)` it executes on every host OS because Android binaries are always cross-compiled — the settings are simply restricted to `*|Android` configurations
 - `if(Win32)` is **not** equivalent to `if(Windows)` — use `if(Windows)` when you want settings to apply to all Windows configurations regardless of platform
-- Negation works as expected: `if(!Win32)` applies to x64 configurations, `if(!x64)` applies to Win32 configurations
+- Negation works as expected: `if(!Win32)` applies to x64 configurations, `if(!x64)` applies to Win32 configurations (`if(!Android)` is not supported)
 - Conditional blocks can be nested
 - Settings inside blocks override settings defined outside
 - Platform-only bracket syntax (`[Linux]`, `[Win32]`) expands to all configurations for that platform
@@ -3217,6 +3235,7 @@ sighmake project.buildscript -g makefile
 **Generated files:**
 - `build/ProjectName.Debug` - Debug configuration Makefile
 - `build/ProjectName.Release` - Release configuration Makefile
+- `build/ProjectName.Debug.Android` - Android configuration Makefile (when `platforms` includes `Android`)
 - One Makefile per project per configuration
 
 **Default on:** Linux
@@ -3250,6 +3269,7 @@ make -f build/MyProject.Release VERBOSE=1
 
 **Features:**
 - GCC and Clang support
+- Android NDK cross-compilation (see [Android (NDK)](#android-ndk))
 - Parallel builds with `-j`
 - Dependency tracking
 - Clean target
@@ -4018,7 +4038,7 @@ obj/
 
 ## 14. Cross-Platform Development
 
-sighmake makes it easy to maintain a single buildscript for Windows, Linux, and macOS.
+sighmake makes it easy to maintain a single buildscript for Windows, Linux, macOS, and Android.
 
 ### Cross-Platform Buildscript
 
@@ -4069,6 +4089,77 @@ make -f build/MyApp.Release -j8
 
 # Build with make
 make -f build/MyApp.Release -j8
+```
+
+### Android (NDK)
+
+Add `Android` to the platforms list to cross-compile with the Android NDK. The
+makefile generator emits self-contained NDK makefiles; no toolchain files or
+wrapper scripts are needed.
+
+**Requirements:**
+- Android NDK r19 or newer
+- `ANDROID_NDK_HOME` (or `ANDROID_NDK_ROOT`) pointing at the NDK when building
+
+**Example buildscript:**
+```ini
+[solution]
+name = MyGame
+configurations = Debug, Release
+platforms = x64, Android
+
+[project:Engine]
+type = dll
+sources = src/**/*.cpp
+std = 17
+
+if(Android) {
+    defines = PLATFORM_ANDROID
+    libs = log, android
+}
+```
+
+**Generate and build:**
+```bash
+sighmake project.buildscript -g makefile
+
+# Build the default Android config (Debug) for the default ABI (arm64-v8a)
+make -C build android
+
+# Pick config, ABI, and API level explicitly
+make -C build Release.Android ANDROID_ABI=x86_64 ANDROID_API=26
+
+# Or through sighmake
+sighmake --build . --target Release.Android
+```
+
+**How it works:**
+- Each Android configuration gets its own makefile named
+  `<Project>.<Config>.Android`, so `Linux` and `Android` platforms can coexist
+  in one solution without colliding.
+- The master Makefile gains an `android` convenience target plus per-config
+  targets such as `Debug.Android` and `Release.Android`. Desktop configs stay
+  the default for `make`; solutions with only Android platforms default to the
+  Android build.
+- Compilation uses the NDK's `clang`/`clang++` with `--target=<triple><api>`,
+  static libraries use `llvm-ar`, and Release binaries are stripped with
+  `llvm-strip`.
+- Supported `ANDROID_ABI` values: `arm64-v8a` (default), `armeabi-v7a`,
+  `x86_64`, `x86`. The API level defaults to `ANDROID_API=24`.
+- Outputs and objects are ABI-scoped under
+  `build/<Config>/android/$(ANDROID_ABI)/`, so multi-ABI builds don't overwrite
+  each other. Build each ABI with a separate `make` invocation.
+- Shared libraries automatically get the `lib` prefix (`Engine` builds
+  `libEngine.so`) as required by `System.loadLibrary()` and APK packaging.
+- `make install` never installs Android binaries; they target devices, not the
+  host system.
+
+**CMake generator:** Android is not filtered out of CMake generation. Configure
+the generated project with the NDK's toolchain file instead:
+```bash
+cmake -B build-android \
+  -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24
 ```
 
 ### Platform-Specific Files

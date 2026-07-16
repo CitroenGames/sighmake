@@ -19,6 +19,7 @@ struct MakefileResult {
     fs::path temp_dir;
     std::string content;
     std::string master_content;
+    std::map<std::string, std::string> files;  // All generated makefiles by filename
     Solution solution;
 
     ~MakefileResult() {
@@ -59,10 +60,12 @@ static MakefileResult generate_makefile(const std::string& buildscript,
         for (auto& entry : fs::directory_iterator(build_dir)) {
             if (entry.is_regular_file()) {
                 std::string fname = entry.path().filename().string();
+                result.files[fname] = read_file(entry.path());
                 // Skip the master "Makefile" - we want the project-specific ones
                 if (fname == "Makefile") continue;
-                result.content = read_file(entry.path());
-                if (!result.content.empty()) break;
+                if (result.content.empty()) {
+                    result.content = result.files[fname];
+                }
             }
         }
     }
@@ -875,4 +878,183 @@ libdirs = path with spaces/lib
         // Library path should be quoted: -L"path..."
         CHECK(result.content.find("-L\"") != std::string::npos);
     }
+}
+
+// ============================================================================
+// Android (NDK) support
+// ============================================================================
+
+TEST_CASE("MakefileGenerator emits NDK toolchain for Android platform", "[makefile_generator][android]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Android
+
+[project:App]
+type = exe
+sources = main.cpp
+std = 17
+)");
+    REQUIRE(result.files.count("App.Debug.Android"));
+    const std::string& mk = result.files["App.Debug.Android"];
+    CHECK(mk.find("ANDROID_ABI ?= arm64-v8a") != std::string::npos);
+    CHECK(mk.find("ANDROID_API ?= 24") != std::string::npos);
+    CHECK(mk.find("toolchains/llvm/prebuilt/") != std::string::npos);
+    CHECK(mk.find("--target=$(ANDROID_TRIPLE)$(ANDROID_API)") != std::string::npos);
+    CHECK(mk.find("aarch64-linux-android") != std::string::npos);
+    CHECK(mk.find("armv7a-linux-androideabi") != std::string::npos);
+    // Host compilers must not leak into Android makefiles
+    CHECK(mk.find("CXX = g++") == std::string::npos);
+    CHECK(mk.find("CXX = clang++\n") == std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator Android objects are ABI-scoped", "[makefile_generator][android]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Android
+
+[project:App]
+type = exe
+sources = main.cpp
+)");
+    REQUIRE(result.files.count("App.Debug.Android"));
+    const std::string& mk = result.files["App.Debug.Android"];
+    // Default out/int dirs gain an android/$(ANDROID_ABI) subdirectory
+    CHECK(mk.find("android/$(ANDROID_ABI)") != std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator Android shared library gets lib prefix and .so", "[makefile_generator][android]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Android
+
+[project:Engine]
+type = dll
+sources = main.cpp
+)");
+    REQUIRE(result.files.count("Engine.Debug.Android"));
+    const std::string& mk = result.files["Engine.Debug.Android"];
+    CHECK(mk.find("libEngine.so") != std::string::npos);
+    CHECK(mk.find("-shared") != std::string::npos);
+    CHECK(mk.find(".dylib") == std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator Android static library uses llvm-ar", "[makefile_generator][android]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Android
+
+[project:Core]
+type = lib
+sources = main.cpp
+)");
+    REQUIRE(result.files.count("Core.Debug.Android"));
+    const std::string& mk = result.files["Core.Debug.Android"];
+    CHECK(mk.find("$(AR) rcs $@ $(OBJS)") != std::string::npos);
+    CHECK(mk.find("llvm-ar") != std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator Android Release strips with llvm-strip", "[makefile_generator][android]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:App]
+type = exe
+sources = main.cpp
+)");
+    REQUIRE(result.files.count("App.Release.Android"));
+    const std::string& mk = result.files["App.Release.Android"];
+    CHECK(mk.find("$(STRIP) --strip-unneeded $@") != std::string::npos);
+    CHECK(mk.find("llvm-strip") != std::string::npos);
+}
+
+TEST_CASE("Master Makefile exposes Android targets", "[makefile_generator][android]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = Android
+
+[project:App]
+type = exe
+sources = main.cpp
+)");
+    REQUIRE(!result.master_content.empty());
+    CHECK(result.master_content.find("android: Debug.Android") != std::string::npos);
+    CHECK(result.master_content.find("Debug.Android: App.Debug.Android") != std::string::npos);
+    CHECK(result.master_content.find("$(MAKE) -f App.Debug.Android") != std::string::npos);
+    // Android-only solution: `make` defaults to the Android build
+    CHECK(result.master_content.find("all: Debug.Android") != std::string::npos);
+}
+
+TEST_CASE("Linux and Android configs coexist without colliding", "[makefile_generator][android]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Linux, Android
+
+[project:App]
+type = exe
+sources = main.cpp
+)");
+    // Separate makefiles per platform flavor
+    REQUIRE(result.files.count("App.Debug"));
+    REQUIRE(result.files.count("App.Debug.Android"));
+    CHECK(result.files["App.Debug"].find("ANDROID_TOOLCHAIN") == std::string::npos);
+    CHECK(result.files["App.Debug.Android"].find("ANDROID_TOOLCHAIN") != std::string::npos);
+    // Desktop config stays the default; Android is opt-in
+    CHECK(result.master_content.find("all: Debug\n") != std::string::npos);
+    CHECK(result.master_content.find("android: Debug.Android") != std::string::npos);
+}
+
+TEST_CASE("Master Makefile install skips Android configs", "[makefile_generator][android]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:App]
+type = exe
+sources = main.cpp
+)");
+    REQUIRE(!result.master_content.empty());
+    // No install rule for device binaries
+    CHECK(result.master_content.find("install -m 755") == std::string::npos);
+}
+
+TEST_CASE("Android dependency archives resolve to ABI-scoped paths", "[makefile_generator][android]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Android
+
+[project:Core]
+type = lib
+sources = core.cpp
+
+[project:App]
+type = exe
+sources = main.cpp
+
+target_link_libraries(
+    Core PUBLIC
+)
+)", {"main.cpp", "core.cpp"});
+    REQUIRE(result.files.count("App.Debug.Android"));
+    const std::string& mk = result.files["App.Debug.Android"];
+    // The dependency archive lives in the ABI-scoped output directory
+    CHECK(mk.find("android/$(ANDROID_ABI)/Core.a") != std::string::npos);
 }

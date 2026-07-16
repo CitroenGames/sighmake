@@ -5,6 +5,8 @@
 #include "common/toolset_registry.hpp"
 #include "common/build_cache.hpp"
 #include "common/string_utils.hpp"
+#include "common/language_standards.hpp"
+#include "common/debug_log.hpp"
 #define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"
 
@@ -199,62 +201,6 @@ std::string VcxprojGenerator::join_vector(const std::vector<std::string>& vec,
     return result;
 }
 
-std::string VcxprojGenerator::map_c_standard(const std::string& std) {
-    // Valid MSVC C standards: stdc89, stdc11 only
-    if (std == "89" || std == "90") {
-        return "stdc89";
-    } else if (std == "11") {
-        return "stdc11";
-    }
-
-    // Handle unsupported standards with warnings
-    if (std == "99") {
-        std::cerr << "Warning: C99 (stdc99) is not fully supported by MSVC. "
-                  << "Falling back to stdc11.\n";
-        return "stdc11";
-    } else if (std == "17" || std == "23") {
-        std::cerr << "Warning: C" << std << " is not supported by MSVC. "
-                  << "Falling back to stdc11.\n";
-        return "stdc11";
-    }
-
-    return "";  // Empty = compiler default
-}
-
-std::string VcxprojGenerator::map_cpp_standard(const std::string& std) {
-    // Handle already-prefixed standards (e.g., "stdcpp17")
-    if (std.find("stdcpp") == 0) {
-        std::string num = std.substr(6);  // Extract number after "stdcpp"
-        return map_cpp_standard(num);  // Recursive call to validate
-    }
-
-    // Map numeric values to valid MSVC C++ standards
-    if (std == "14") {
-        return "stdcpp14";
-    } else if (std == "17") {
-        return "stdcpp17";
-    } else if (std == "20") {
-        return "stdcpp20";
-    } else if (std == "23") {
-        return "stdcpp23";
-    } else if (std == "latest") {
-        return "stdcpplatest";
-    }
-
-    // Handle invalid values - warn and fallback
-    if (std == "11" || std == "03" || std == "98") {
-        std::cerr << "Warning: C++" << std << " is not supported by VS 2022+ (minimum is C++14). "
-                  << "Falling back to stdcpp14.\n";
-        return "stdcpp14";
-    }
-
-    // Unknown/future standards - default to C++17
-    if (!std.empty()) {
-        std::cerr << "Warning: Unknown C++ standard '" << std << "'. Falling back to stdcpp17.\n";
-    }
-    return "stdcpp17";  // Safe default
-}
-
 std::string VcxprojGenerator::get_file_type_name(FileType type) {
     switch (type) {
         case FileType::ClCompile: return "ClCompile";
@@ -287,30 +233,24 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     std::string tools_version = "4.0"; // Default legacy
     for (const auto& [config_key, cfg] : project.configurations) {
         std::string ts_version = get_tools_version(cfg.platform_toolset);
-#ifndef NDEBUG
-        std::cout << "[DEBUG] .vcxproj generation for '" << project.name
+        debug_stream() << "[DEBUG] .vcxproj generation for '" << project.name
                   << "': Config '" << config_key
                   << "' has toolset '" << cfg.platform_toolset
                   << "' -> ToolsVersion '" << ts_version << "'\n";
-#endif
         if (ts_version == "18.0") {
             tools_version = "18.0";
             break; // MSVC 2026 takes precedence
         }
     }
 
-#ifndef NDEBUG
-    std::cout << "[DEBUG] Final ToolsVersion for " << project.name << ": " << tools_version << "\n";
-#endif
+    debug_stream() << "[DEBUG] Final ToolsVersion for " << project.name << ": " << tools_version << "\n";
 
     root.append_attribute("ToolsVersion") = tools_version.c_str();
     root.append_attribute("xmlns") = "http://schemas.microsoft.com/developer/msbuild/2003";
 
     // Add VCProjectUpgraderObjectName for MSVC 2026 to prevent auto-upgrade prompts
     if (tools_version == "18.0") {
-#ifndef NDEBUG
-        std::cout << "[DEBUG] Adding VCProjectUpgraderObjectName=NoUpgrade for MSVC 2026\n";
-#endif
+        debug_stream() << "[DEBUG] Adding VCProjectUpgraderObjectName=NoUpgrade for MSVC 2026\n";
         root.append_attribute("VCProjectUpgraderObjectName") = "NoUpgrade";
     }
 
@@ -594,12 +534,12 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                 join_vector(cfg.cl_compile.disable_specific_warnings, ";").c_str();
         if (!cfg.cl_compile.language_standard.empty()) {
             // Validate and map C++ standard
-            std::string validated_std = map_cpp_standard(cfg.cl_compile.language_standard);
+            std::string validated_std = lang::cpp_standard_to_msvc(cfg.cl_compile.language_standard);
             cl.append_child("LanguageStandard").text() = validated_std.c_str();
         }
         // C standard (emitted whenever c_standard is set; MSBuild applies it only to C compilations)
         if (!project.c_standard.empty()) {
-            std::string c_std_mapped = map_c_standard(project.c_standard);
+            std::string c_std_mapped = lang::c_standard_to_msvc(project.c_standard);
             if (!c_std_mapped.empty()) {
                 cl.append_child("LanguageStandard_C").text() = c_std_mapped.c_str();
             }
@@ -967,6 +907,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                     // If config_key is "*" (ALL_CONFIGS), expand to all configurations
                     if (config_key == ALL_CONFIGS) {
                         for (const auto& [cfg_name, cfg] : project.configurations) {
+                            auto [c, p] = parse_config_key(cfg_name);
+                            if (is_unix_platform(p)) continue;  // Skip Unix configs for vcxproj
                             std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg_name + "'";
                             auto node = file_elem.append_child("ExcludedFromBuild");
                             node.append_attribute("Condition") = condition.c_str();
@@ -987,6 +929,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                     std::vector<std::string> configs_to_write;
                     if (config_key == ALL_CONFIGS) {
                         for (const auto& [cfg_name, cfg] : project.configurations) {
+                            auto [c, p] = parse_config_key(cfg_name);
+                            if (is_unix_platform(p)) continue;  // Skip Unix configs for vcxproj
                             configs_to_write.push_back(cfg_name);
                         }
                     } else {
@@ -1009,6 +953,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                     std::vector<std::string> configs_to_write;
                     if (config_key == ALL_CONFIGS) {
                         for (const auto& [cfg_name, cfg] : project.configurations) {
+                            auto [c, p] = parse_config_key(cfg_name);
+                            if (is_unix_platform(p)) continue;  // Skip Unix configs for vcxproj
                             configs_to_write.push_back(cfg_name);
                         }
                     } else {
@@ -1036,6 +982,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                     std::vector<std::string> configs_to_write;
                     if (config_key == ALL_CONFIGS) {
                         for (const auto& [cfg_name, cfg] : project.configurations) {
+                            auto [c, p] = parse_config_key(cfg_name);
+                            if (is_unix_platform(p)) continue;  // Skip Unix configs for vcxproj
                             configs_to_write.push_back(cfg_name);
                         }
                     } else {
@@ -1058,6 +1006,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                     std::vector<std::string> configs_to_write;
                     if (config_key == ALL_CONFIGS) {
                         for (const auto& [cfg_name, cfg] : project.configurations) {
+                            auto [c, p] = parse_config_key(cfg_name);
+                            if (is_unix_platform(p)) continue;  // Skip Unix configs for vcxproj
                             configs_to_write.push_back(cfg_name);
                         }
                     } else {
@@ -1080,6 +1030,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                     std::vector<std::string> configs_to_write;
                     if (config_key == ALL_CONFIGS) {
                         for (const auto& [cfg_name, cfg] : project.configurations) {
+                            auto [c, p] = parse_config_key(cfg_name);
+                            if (is_unix_platform(p)) continue;  // Skip Unix configs for vcxproj
                             configs_to_write.push_back(cfg_name);
                         }
                     } else {
@@ -1160,6 +1112,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
 
                     if (!auto_compile_as.empty()) {
                         for (const auto& [cfg_name, cfg] : project.configurations) {
+                            auto [c, p] = parse_config_key(cfg_name);
+                            if (is_unix_platform(p)) continue;  // Skip Unix configs for vcxproj
                             std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg_name + "'";
                             auto node = file_elem.append_child("CompileAs");
                             node.append_attribute("Condition") = condition.c_str();
@@ -1176,6 +1130,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                     std::vector<std::string> configs_to_write;
                     if (config_key == ALL_CONFIGS) {
                         for (const auto& [cfg_name, cfg] : project.configurations) {
+                            auto [c, p] = parse_config_key(cfg_name);
+                            if (is_unix_platform(p)) continue;  // Skip Unix configs for vcxproj
                             configs_to_write.push_back(cfg_name);
                         }
                     } else {
@@ -1197,6 +1153,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                     std::vector<std::string> configs_to_write;
                     if (config_key == ALL_CONFIGS) {
                         for (const auto& [cfg_name, cfg] : project.configurations) {
+                            auto [c, p] = parse_config_key(cfg_name);
+                            if (is_unix_platform(p)) continue;  // Skip Unix configs for vcxproj
                             configs_to_write.push_back(cfg_name);
                         }
                     } else {
@@ -1284,6 +1242,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                         std::vector<std::string> configs_to_write;
                         if (config_key == ALL_CONFIGS) {
                             for (const auto& [cfg_name, cfg] : project.configurations) {
+                                auto [c, p] = parse_config_key(cfg_name);
+                                if (is_unix_platform(p)) continue;  // Skip Unix configs for vcxproj
                                 configs_to_write.push_back(cfg_name);
                             }
                         } else {
@@ -1308,6 +1268,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                         std::vector<std::string> configs_to_write;
                         if (config_key == ALL_CONFIGS) {
                             for (const auto& [cfg_name, cfg] : project.configurations) {
+                                auto [c, p] = parse_config_key(cfg_name);
+                                if (is_unix_platform(p)) continue;  // Skip Unix configs for vcxproj
                                 configs_to_write.push_back(cfg_name);
                             }
                         } else {
@@ -1329,6 +1291,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                         std::vector<std::string> configs_to_write;
                         if (config_key == ALL_CONFIGS) {
                             for (const auto& [cfg_name, cfg] : project.configurations) {
+                                auto [c, p] = parse_config_key(cfg_name);
+                                if (is_unix_platform(p)) continue;  // Skip Unix configs for vcxproj
                                 configs_to_write.push_back(cfg_name);
                             }
                         } else {
@@ -1349,6 +1313,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                         std::vector<std::string> configs_to_write;
                         if (config_key == ALL_CONFIGS) {
                             for (const auto& [cfg_name, cfg] : project.configurations) {
+                                auto [c, p] = parse_config_key(cfg_name);
+                                if (is_unix_platform(p)) continue;  // Skip Unix configs for vcxproj
                                 configs_to_write.push_back(cfg_name);
                             }
                         } else {
@@ -1830,16 +1796,12 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
 
     for (auto& proj : solution.projects) {
         if (proj.is_package_project) continue;  // Skip synthetic find_package projects
-#ifndef NDEBUG
-        std::cout << "[DEBUG] Processing project: " << proj.name << "\n";
-#endif
+        debug_stream() << "[DEBUG] Processing project: " << proj.name << "\n";
         for (auto& config_pair : proj.configurations) {
             auto& cfg = config_pair.second;
 
-#ifndef NDEBUG
-            std::cout << "[DEBUG]   Config: " << config_pair.first
+            debug_stream() << "[DEBUG]   Config: " << config_pair.first
                       << ", current toolset: '" << cfg.platform_toolset << "'\n";
-#endif
 
             // If no toolset specified, use this priority:
             // 1. CLI default (from -t flag)
@@ -1848,9 +1810,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
                 // Check if a default was set via CLI (-t flag) or environment variable
                 if (!registry_default.empty()) {
                     cfg.platform_toolset = registry_default;
-#ifndef NDEBUG
-                    std::cout << "[DEBUG]   -> Set to CLI default toolset: " << cfg.platform_toolset << "\n";
-#endif
+                    debug_stream() << "[DEBUG]   -> Set to CLI default toolset: " << cfg.platform_toolset << "\n";
                     if (!already_logged) {
                         std::cout << "Using CLI default toolset " << cfg.platform_toolset
                                   << " for projects without explicit toolset\n";
@@ -1859,9 +1819,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
                 } else {
                     // No CLI default, fall back to detected VS toolset
                     cfg.platform_toolset = vs_info->platform_toolset;
-#ifndef NDEBUG
-                    std::cout << "[DEBUG]   -> Set to detected toolset: " << cfg.platform_toolset << "\n";
-#endif
+                    debug_stream() << "[DEBUG]   -> Set to detected toolset: " << cfg.platform_toolset << "\n";
                     if (!already_logged) {
                         std::cout << "Using detected toolset " << cfg.platform_toolset
                                   << " for projects without explicit toolset\n";
@@ -1869,9 +1827,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
                     }
                 }
             } else {
-#ifndef NDEBUG
-                std::cout << "[DEBUG]   -> Keeping explicit toolset: " << cfg.platform_toolset << "\n";
-#endif
+                debug_stream() << "[DEBUG]   -> Keeping explicit toolset: " << cfg.platform_toolset << "\n";
             }
 
             if (!retarget_unavailable_toolset(proj.name, cfg)) {
@@ -1894,20 +1850,16 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
 
     // 4. FOURTH: Generate solution file
     if (!solution.projects.empty()) {
-#ifndef NDEBUG
-        std::cout << "[DEBUG] ========== Solution Generation Start ==========\n";
-#endif
+        debug_stream() << "[DEBUG] ========== Solution Generation Start ==========\n";
 
         std::string sln_name = solution.name.empty() ? solution.projects[0].name : solution.name;
 
         // Determine solution format based on detected VS installation
         bool use_slnx = (vs_info->year >= 2026);
 
-#ifndef NDEBUG
-        std::cout << "[DEBUG] Solution format decision: VS year " << vs_info->year
+        debug_stream() << "[DEBUG] Solution format decision: VS year " << vs_info->year
                   << " -> " << (use_slnx ? ".slnx" : ".sln") << "\n";
-        std::cout << "[DEBUG] ========== Solution Generation End ==========\n";
-#endif
+        debug_stream() << "[DEBUG] ========== Solution Generation End ==========\n";
 
         if (use_slnx) {
             // Generate .slnx for MSVC 2026

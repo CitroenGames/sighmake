@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "vs_detector.hpp"
+#include "toolset_registry.hpp"
+#include "debug_log.hpp"
 
 namespace fs = std::filesystem;
 
@@ -8,9 +10,7 @@ namespace vcxproj {
 // Helper: Execute command and get output
 std::string VSDetector::execute_command(const std::string& command) {
 #ifdef _WIN32
-#ifndef NDEBUG
-    std::cout << "[DEBUG] Executing command: " << command << "\n";
-#endif
+    debug_stream() << "[DEBUG] Executing command: " << command << "\n";
 
     std::array<char, 256> buffer;
     std::string result;
@@ -18,9 +18,7 @@ std::string VSDetector::execute_command(const std::string& command) {
     // Use _popen to execute command and read output
     FILE* pipe = _popen(command.c_str(), "r");
     if (!pipe) {
-#ifndef NDEBUG
-        std::cout << "[DEBUG] Failed to execute command\n";
-#endif
+        debug_stream() << "[DEBUG] Failed to execute command\n";
         return "";
     }
 
@@ -35,9 +33,7 @@ std::string VSDetector::execute_command(const std::string& command) {
         result.pop_back();
     }
 
-#ifndef NDEBUG
-    std::cout << "[DEBUG] Command output: '" << result << "'\n";
-#endif
+    debug_stream() << "[DEBUG] Command output: '" << result << "'\n";
 
     return result;
 #else
@@ -74,19 +70,10 @@ int VSDetector::version_to_year(const std::string& version) {
     }
 }
 
-// Helper: Year to toolset mapping
+// Helper: Year to toolset mapping (delegates to the toolset registry)
 std::string VSDetector::year_to_toolset(int year) {
-    switch (year) {
-        case 2026: return "v145";
-        case 2022: return "v143";
-        case 2019: return "v142";
-        case 2017: return "v141";
-        case 2015: return "v140";
-        case 2013: return "v120";
-        case 2012: return "v110";
-        case 2010: return "v100";
-        default: return "v143";  // Safe default
-    }
+    auto toolset = ToolsetRegistry::instance().toolset_for_year(year);
+    return toolset ? *toolset : "v143";  // Safe default
 }
 
 bool VSDetector::has_platform_toolset(const VSInstallation& installation,
@@ -143,37 +130,27 @@ bool VSDetector::has_platform_toolset(const VSInstallation& installation,
 // Detection via vswhere.exe (VS 2017+)
 std::optional<VSInstallation> VSDetector::detect_via_vswhere() {
 #ifdef _WIN32
-#ifndef NDEBUG
-    std::cout << "[DEBUG] Attempting VS detection via vswhere.exe\n";
-#endif
+    debug_stream() << "[DEBUG] Attempting VS detection via vswhere.exe\n";
 
     // Get ProgramFiles(x86) path
     const char* prog_files_x86 = std::getenv("ProgramFiles(x86)");
     if (!prog_files_x86) {
-#ifndef NDEBUG
-        std::cout << "[DEBUG] ProgramFiles(x86) environment variable not found\n";
-#endif
+        debug_stream() << "[DEBUG] ProgramFiles(x86) environment variable not found\n";
         return std::nullopt;
     }
 
     // Build path to vswhere.exe
     fs::path vswhere_path = fs::path(prog_files_x86) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe";
 
-#ifndef NDEBUG
-    std::cout << "[DEBUG] Looking for vswhere at: " << vswhere_path << "\n";
-#endif
+    debug_stream() << "[DEBUG] Looking for vswhere at: " << vswhere_path << "\n";
 
     // Check if vswhere.exe exists
     if (!fs::exists(vswhere_path)) {
-#ifndef NDEBUG
-        std::cout << "[DEBUG] vswhere.exe not found\n";
-#endif
+        debug_stream() << "[DEBUG] vswhere.exe not found\n";
         return std::nullopt;
     }
 
-#ifndef NDEBUG
-    std::cout << "[DEBUG] vswhere.exe found, querying version...\n";
-#endif
+    debug_stream() << "[DEBUG] vswhere.exe found, querying version...\n";
 
     // Execute vswhere to get latest VS version
     std::string command = "\"" + vswhere_path.string() + "\" -latest -property installationVersion";
@@ -185,14 +162,10 @@ std::optional<VSInstallation> VSDetector::detect_via_vswhere() {
 
     // Parse version to year
     int year = version_to_year(version_output);
-#ifndef NDEBUG
-    std::cout << "[DEBUG] Parsed version: " << version_output << " -> year: " << year << "\n";
-#endif
+    debug_stream() << "[DEBUG] Parsed version: " << version_output << " -> year: " << year << "\n";
 
     if (year == 0) {
-#ifndef NDEBUG
-        std::cout << "[DEBUG] Could not parse year from version\n";
-#endif
+        debug_stream() << "[DEBUG] Could not parse year from version\n";
         return std::nullopt;
     }
 
@@ -208,9 +181,7 @@ std::optional<VSInstallation> VSDetector::detect_via_vswhere() {
     vs_info.installation_path = install_path;
     vs_info.platform_toolset = year_to_toolset(year);
 
-#ifndef NDEBUG
-    std::cout << "[DEBUG] Detected VS via vswhere: " << year << " (toolset " << vs_info.platform_toolset << ")\n";
-#endif
+    debug_stream() << "[DEBUG] Detected VS via vswhere: " << year << " (toolset " << vs_info.platform_toolset << ")\n";
 
     return vs_info;
 #else
@@ -221,9 +192,7 @@ std::optional<VSInstallation> VSDetector::detect_via_vswhere() {
 // Detection via Windows Registry (VS 2015 and older)
 std::optional<VSInstallation> VSDetector::detect_via_registry() {
 #ifdef _WIN32
-#ifndef NDEBUG
-    std::cout << "[DEBUG] Attempting VS detection via Windows Registry\n";
-#endif
+    debug_stream() << "[DEBUG] Attempting VS detection via Windows Registry\n";
 
     // Registry versions to check (VS 2015 down to VS 2010)
     const std::vector<std::pair<std::string, int>> versions = {
@@ -254,9 +223,7 @@ std::optional<VSInstallation> VSDetector::detect_via_registry() {
                     vs_info.installation_path = path;
                     vs_info.platform_toolset = year_to_toolset(year);
 
-#ifndef NDEBUG
-                    std::cout << "[DEBUG] Detected VS via registry: " << year << " (toolset " << vs_info.platform_toolset << ")\n";
-#endif
+                    debug_stream() << "[DEBUG] Detected VS via registry: " << year << " (toolset " << vs_info.platform_toolset << ")\n";
 
                     RegCloseKey(hKey);
                     return vs_info;
@@ -281,9 +248,7 @@ std::optional<VSInstallation> VSDetector::detect_via_registry() {
                     vs_info.installation_path = path;
                     vs_info.platform_toolset = year_to_toolset(year);
 
-#ifndef NDEBUG
-                    std::cout << "[DEBUG] Detected VS via registry: " << year << " (toolset " << vs_info.platform_toolset << ")\n";
-#endif
+                    debug_stream() << "[DEBUG] Detected VS via registry: " << year << " (toolset " << vs_info.platform_toolset << ")\n";
 
                     RegCloseKey(hKey);
                     return vs_info;
@@ -293,9 +258,7 @@ std::optional<VSInstallation> VSDetector::detect_via_registry() {
         }
     }
 
-#ifndef NDEBUG
-    std::cout << "[DEBUG] No VS found in registry\n";
-#endif
+    debug_stream() << "[DEBUG] No VS found in registry\n";
 
     return std::nullopt;
 #else
@@ -305,34 +268,26 @@ std::optional<VSInstallation> VSDetector::detect_via_registry() {
 
 // Detect latest VS installation
 std::optional<VSInstallation> VSDetector::detect_latest_vs() {
-#ifndef NDEBUG
-    std::cout << "[DEBUG] ========== VS Detection Start ==========\n";
-#endif
+    debug_stream() << "[DEBUG] ========== VS Detection Start ==========\n";
 
     // Try vswhere first (VS 2017+)
     auto vs_info = detect_via_vswhere();
     if (vs_info.has_value()) {
-#ifndef NDEBUG
-        std::cout << "[DEBUG] VS detected successfully via vswhere\n";
-        std::cout << "[DEBUG] ========== VS Detection End ==========\n";
-#endif
+        debug_stream() << "[DEBUG] VS detected successfully via vswhere\n";
+        debug_stream() << "[DEBUG] ========== VS Detection End ==========\n";
         return vs_info;
     }
 
-#ifndef NDEBUG
-    std::cout << "[DEBUG] vswhere detection failed, trying registry...\n";
-#endif
+    debug_stream() << "[DEBUG] vswhere detection failed, trying registry...\n";
 
     // Fall back to registry (VS 2015 and older)
     auto registry_result = detect_via_registry();
-#ifndef NDEBUG
     if (registry_result.has_value()) {
-        std::cout << "[DEBUG] VS detected successfully via registry\n";
+        debug_stream() << "[DEBUG] VS detected successfully via registry\n";
     } else {
-        std::cout << "[DEBUG] No VS detected via any method\n";
+        debug_stream() << "[DEBUG] No VS detected via any method\n";
     }
-    std::cout << "[DEBUG] ========== VS Detection End ==========\n";
-#endif
+    debug_stream() << "[DEBUG] ========== VS Detection End ==========\n";
 
     return registry_result;
 }

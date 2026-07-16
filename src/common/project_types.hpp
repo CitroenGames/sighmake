@@ -460,6 +460,7 @@ inline std::string to_lower(const std::string& str) {
 // Normalize platform name (e.g., "x86" -> "Win32" for Visual Studio compatibility)
 inline std::string normalize_platform(const std::string& platform) {
     if (to_lower(platform) == "x86") return "Win32";
+    if (to_lower(platform) == "android") return "Android";
     return platform;
 }
 
@@ -475,10 +476,15 @@ inline bool is_linux_platform(const std::string& platform) {
     return p == "linux";
 }
 
-// Check if platform is a Unix platform (Linux or macOS - for skipping in vcxproj generator)
+// Check if platform targets Android (built via the NDK toolchain in the makefile generator)
+inline bool is_android_platform(const std::string& platform) {
+    return to_lower(platform) == "android";
+}
+
+// Check if platform is a Unix platform (Linux, macOS, or Android - for skipping in vcxproj generator)
 inline bool is_unix_platform(const std::string& platform) {
     std::string p = to_lower(platform);
-    return p == "linux" || p == "macos" || p == "darwin" || p == "osx";
+    return p == "linux" || p == "macos" || p == "darwin" || p == "osx" || p == "android";
 }
 
 // Default output / intermediate directory layout when a buildscript does not

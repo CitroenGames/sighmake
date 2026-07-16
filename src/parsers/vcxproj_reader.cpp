@@ -1,6 +1,10 @@
 #include "pch.h"
 #include "vcxproj_reader.hpp"
 #include "vcproj_reader.hpp"
+#include "common/string_utils.hpp"
+#include "common/config_type_utils.hpp"
+#include "common/defaults.hpp"
+#include "common/language_standards.hpp"
 #define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"
 
@@ -82,15 +86,8 @@ static std::string normalize_path(const std::string& path) {
     }
 }
 
-static std::string trim_copy(const std::string& value) {
-    const auto first = value.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return "";
-    const auto last = value.find_last_not_of(" \t\r\n");
-    return value.substr(first, last - first + 1);
-}
-
 static std::string linked_library_key(const std::string& dependency) {
-    std::string dep = trim_copy(dependency);
+    std::string dep = trim(dependency);
     if (dep.empty() || dep.find("$(") != std::string::npos || dep.find("%(") != std::string::npos) {
         return "";
     }
@@ -162,7 +159,7 @@ static std::vector<std::string> read_include_directives(const fs::path& file_pat
     while (std::getline(file, line)) {
         std::smatch match;
         if (std::regex_search(line, match, include_re) && match.size() > 1) {
-            std::string include = trim_copy(match[1].str());
+            std::string include = trim(match[1].str());
             if (!include.empty() && include.find('$') == std::string::npos) {
                 includes.push_back(include);
             }
@@ -1585,8 +1582,8 @@ static void parse_sln_configurations(const std::string& content,
         while (std::getline(lines, line)) {
             size_t eq = line.find('=');
             if (eq == std::string::npos) continue;
-            std::string lhs = trim_copy(line.substr(0, eq));
-            std::string rhs = trim_copy(line.substr(eq + 1));
+            std::string lhs = trim(line.substr(0, eq));
+            std::string rhs = trim(line.substr(eq + 1));
             if (lhs.empty()) continue;
 
             if (legacy) {
@@ -1596,8 +1593,8 @@ static void parse_sln_configurations(const std::string& content,
             }
 
             size_t pipe = lhs.find('|');
-            std::string config = pipe == std::string::npos ? lhs : trim_copy(lhs.substr(0, pipe));
-            std::string platform = pipe == std::string::npos ? "" : trim_copy(lhs.substr(pipe + 1));
+            std::string config = pipe == std::string::npos ? lhs : trim(lhs.substr(0, pipe));
+            std::string platform = pipe == std::string::npos ? "" : trim(lhs.substr(pipe + 1));
             if (!config.empty()) configs.insert(config);
             // Skip pseudo-platforms contributed by C#/VB projects in mixed solutions
             if (!platform.empty()) {
@@ -1732,10 +1729,10 @@ Solution SlnReader::read_sln(const std::string& filepath) {
     // Fall back to configs the projects define, then to sensible defaults
     infer_solution_configs_from_projects(solution);
     if (solution.configurations.empty()) {
-        solution.configurations = {"Debug", "Release"};
+        solution.configurations = defaults::configurations();
     }
     if (solution.platforms.empty()) {
-        solution.platforms = {"Win32", "x64"};
+        solution.platforms = defaults::platforms();
     }
 
     // Build UUID -> project name mapping
@@ -1897,10 +1894,10 @@ Solution SlnReader::read_slnx(const std::string& filepath) {
     infer_solution_configs_from_projects(solution);
 
     if (solution.configurations.empty()) {
-        solution.configurations = {"Debug", "Release"};
+        solution.configurations = defaults::configurations();
     }
     if (solution.platforms.empty()) {
-        solution.platforms = {"Win32", "x64"};
+        solution.platforms = defaults::platforms();
     }
 
     std::map<std::string, std::string> key_to_name;
@@ -2263,20 +2260,11 @@ static std::string create_file_settings_signature(const SourceFile* src,
 }
 
 static std::string config_type_to_buildscript_type(const std::string& config_type, bool kernel_mode) {
-    if (config_type == "Application") return "exe";
-    if (config_type == "StaticLibrary" && kernel_mode) return "sys_lib";
-    if (config_type == "StaticLibrary") return "lib";
-    if (config_type == "DynamicLibrary") return "dll";
-    if (config_type == "Driver") return "sys";
-    if (config_type == "Utility") return "interface";
-    return config_type;
+    return config_type::to_buildscript(config_type, kernel_mode);
 }
 
-static std::string cpp_standard_to_buildscript_value(std::string value) {
-    if (value.find("stdcpp") == 0) {
-        value = value.substr(6);
-    }
-    return value;
+static std::string cpp_standard_to_buildscript_value(const std::string& value) {
+    return lang::normalize_cpp_standard(value);
 }
 
 static bool starts_with_ci(const std::string& value, const std::string& prefix) {

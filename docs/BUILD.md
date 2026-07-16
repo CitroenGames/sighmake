@@ -266,7 +266,8 @@ Generated Visual Studio files are missing:
 Makefile has no targets:
 
 - The Makefile generator skips Windows-only platforms. Add a non-Windows
-  platform such as `Linux` to the buildscript when generating Makefiles.
+  platform such as `Linux` or `Android` to the buildscript when generating
+  Makefiles.
 
 File locks on Windows:
 

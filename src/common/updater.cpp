@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "updater.hpp"
+#include "common/string_utils.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -21,20 +22,6 @@ namespace fs = std::filesystem;
 namespace vcxproj {
 namespace updater {
 namespace {
-
-std::string trim(const std::string& value) {
-    size_t start = 0;
-    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start]))) {
-        ++start;
-    }
-
-    size_t end = value.size();
-    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
-        --end;
-    }
-
-    return value.substr(start, end - start);
-}
 
 bool starts_with(const std::string& value, const std::string& prefix) {
     return value.size() >= prefix.size() &&

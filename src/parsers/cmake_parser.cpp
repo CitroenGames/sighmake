@@ -1,22 +1,13 @@
 #include "pch.h"
 #include "cmake_parser.hpp"
+#include "common/string_utils.hpp"
+#include "common/defaults.hpp"
 
 namespace fs = std::filesystem;
 
 namespace vcxproj {
 
 namespace {
-    // Helper to generate UUIDs (copied from buildscript_parser.cpp or project_types.hpp if available)
-    // Since it's inline in project_types.hpp (based on previous read), I can use it if I include it.
-    // Wait, project_types.hpp has inline generate_uuid(). Yes.
-    
-    std::string trim(const std::string& str) {
-        size_t first = str.find_first_not_of(" \t\r\n");
-        if (first == std::string::npos) return "";
-        size_t last = str.find_last_not_of(" \t\r\n");
-        return str.substr(first, last - first + 1);
-    }
-
     // Sanitize CMake target names for use as filenames
     // Replaces :: (namespace separator) with _ for filesystem compatibility
     std::string sanitize_target_name(const std::string& name) {
@@ -162,8 +153,8 @@ Solution CMakeParser::parse_string(const std::string& content, const std::string
     Solution solution;
     solution.uuid = generate_uuid();
     // Default configurations
-    solution.configurations = {"Debug", "Release"};
-    solution.platforms = {"Win32", "x64"};
+    solution.configurations = defaults::configurations();
+    solution.platforms = defaults::platforms();
 
     ParseState state;
     state.solution = &solution;

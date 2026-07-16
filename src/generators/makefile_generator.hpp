@@ -18,7 +18,7 @@ public:
 
     // Get generator description
     std::string description() const override {
-        return "GNU Makefile generator for Linux/macOS (GCC/Clang)";
+        return "GNU Makefile generator for Linux/macOS (GCC/Clang) and Android (NDK)";
     }
 
     // Generate a Makefile for a specific project and configuration
@@ -38,10 +38,10 @@ private:
     // Helper functions for mapping settings to flags
     std::string map_optimization(const std::string& opt);
     std::string map_warning_level(const std::string& level);
-    std::string map_language_standard(const std::string& std);
     std::string get_compiler_flags(const Configuration& config, const Project& project,
                                    const std::filesystem::path& makefile_dir, bool c_flags);
-    std::string get_linker_flags(const Configuration& config, const std::filesystem::path& makefile_dir);
+    std::string get_linker_flags(const Configuration& config, const std::filesystem::path& makefile_dir,
+                                 bool android);
     std::string get_linker_libs(const Configuration& config);
 
     // Helper to convert Windows paths to Unix paths
