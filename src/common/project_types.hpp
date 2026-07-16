@@ -1,5 +1,8 @@
 #pragma once
 
+#include "string_utils.hpp"
+#include "file_types.hpp"
+
 namespace vcxproj {
 
 // Result from package finding operations
@@ -412,16 +415,11 @@ inline std::string generate_uuid() {
 
 // Helper function to get file type from extension
 inline FileType get_file_type(const std::string& path) {
-    std::filesystem::path p(path);
-    std::string ext = p.extension().string();
+    std::string ext = file_types::lowercase_extension(path);
 
-    // Convert to lowercase
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-
-    if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".c") {
+    if (file_types::is_c_or_cpp_source(ext)) {
         return FileType::ClCompile;
-    } else if (ext == ".h" || ext == ".hpp" || ext == ".hxx" || ext == ".hh") {
+    } else if (file_types::is_header(ext)) {
         return FileType::ClInclude;
     } else if (ext == ".rc") {
         return FileType::ResourceCompile;
@@ -433,7 +431,7 @@ inline FileType get_file_type(const std::string& path) {
         return FileType::MessageCompile;
     } else if (ext == ".idl") {
         return FileType::Midl;
-    } else if (ext == ".mm" || ext == ".m") {
+    } else if (file_types::is_objcxx_source(ext)) {
         return FileType::ObjCxx;
     }
 
@@ -447,14 +445,6 @@ inline std::pair<std::string, std::string> parse_config_key(const std::string& k
         return {key, "Win32"};
     }
     return {key.substr(0, pos), key.substr(pos + 1)};
-}
-
-// Helper to convert string to lowercase
-inline std::string to_lower(const std::string& str) {
-    std::string result = str;
-    std::transform(result.begin(), result.end(), result.begin(),
-                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return result;
 }
 
 // Normalize platform name (e.g., "x86" -> "Win32" for Visual Studio compatibility)
@@ -520,14 +510,10 @@ inline std::string detect_project_language(const Project& proj) {
     bool has_c = false;
 
     for (const auto& src : proj.sources) {
-        std::filesystem::path p(src.path);
-        std::string ext = p.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(),
-                      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-
-        if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") {
+        std::string ext = file_types::lowercase_extension(src.path);
+        if (file_types::is_cpp_source(ext)) {
             has_cpp = true;
-        } else if (ext == ".c") {
+        } else if (file_types::is_c_source(ext)) {
             has_c = true;
         }
     }

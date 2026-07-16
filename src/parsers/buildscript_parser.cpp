@@ -746,28 +746,28 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 if (config == "Debug") {
                     // Debug configuration defaults
                     if (cfg.cl_compile.optimization.empty()) {
-                        cfg.cl_compile.optimization = "Disabled";
+                        cfg.cl_compile.optimization = defaults::optimization(true);
                     }
                     if (cfg.cl_compile.runtime_library.empty()) {
-                        cfg.cl_compile.runtime_library = "MultiThreadedDebugDLL";
+                        cfg.cl_compile.runtime_library = defaults::runtime_library(true);
                     }
                     if (cfg.cl_compile.debug_information_format.empty()) {
-                        // EditAndContinue only works on Win32
                         cfg.cl_compile.debug_information_format =
-                            (platform == "Win32") ? "EditAndContinue" : "ProgramDatabase";
+                            defaults::debug_information_format(true, platform);
                     }
                     cfg.link.generate_debug_info = true;
                     cfg.link_incremental = true;
                 } else if (config == "Release") {
                     // Release configuration defaults
                     if (cfg.cl_compile.optimization.empty()) {
-                        cfg.cl_compile.optimization = "MaxSpeed";
+                        cfg.cl_compile.optimization = defaults::optimization(false);
                     }
                     if (cfg.cl_compile.runtime_library.empty()) {
-                        cfg.cl_compile.runtime_library = "MultiThreadedDLL";
+                        cfg.cl_compile.runtime_library = defaults::runtime_library(false);
                     }
                     if (cfg.cl_compile.debug_information_format.empty()) {
-                        cfg.cl_compile.debug_information_format = "ProgramDatabase";
+                        cfg.cl_compile.debug_information_format =
+                            defaults::debug_information_format(false, platform);
                     }
                     if (!cfg.cl_compile.function_level_linking.has_value())
                         cfg.cl_compile.function_level_linking = true;
@@ -793,40 +793,30 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
             // Note: platform_toolset is left empty if not specified - will be set by
             // generator based on detected Visual Studio installation
             if (cfg.windows_target_platform_version.empty()) {
-                cfg.windows_target_platform_version = "10.0";
+                cfg.windows_target_platform_version = defaults::kWindowsSdkVersion;
             }
             if (cfg.character_set.empty()) {
-                cfg.character_set = "MultiByte";
+                cfg.character_set = defaults::kCharacterSet;
             }
 
             // Set use_debug_libraries based on config name if not explicitly set
-            if (config == "Debug") {
+            bool is_debug = (config == "Debug");
+            if (is_debug) {
                 cfg.use_debug_libraries = true;
             }
 
             // Set default optimization and other settings if not already set
             if (cfg.cl_compile.optimization.empty()) {
-                if (config == "Debug") {
-                    cfg.cl_compile.optimization = "Disabled";
-                } else {
-                    cfg.cl_compile.optimization = "MaxSpeed";
-                }
+                cfg.cl_compile.optimization = defaults::optimization(is_debug);
             }
 
             if (cfg.cl_compile.runtime_library.empty()) {
-                if (config == "Debug") {
-                    cfg.cl_compile.runtime_library = "MultiThreadedDebugDLL";
-                } else {
-                    cfg.cl_compile.runtime_library = "MultiThreadedDLL";
-                }
+                cfg.cl_compile.runtime_library = defaults::runtime_library(is_debug);
             }
 
             if (cfg.cl_compile.debug_information_format.empty()) {
-                if (config == "Debug") {
-                    cfg.cl_compile.debug_information_format = "EditAndContinue";
-                } else {
-                    cfg.cl_compile.debug_information_format = "ProgramDatabase";
-                }
+                cfg.cl_compile.debug_information_format =
+                    defaults::debug_information_format(is_debug, platform);
             }
 
             if (config == "Debug") {
@@ -3754,11 +3744,8 @@ void BuildscriptParser::parse_uses_pch(const std::string& line, ParseState& stat
 }
 
 BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const std::string& condition) {
-    std::string cond = trim(condition);
-
     // Convert to lowercase for case-insensitive matching
-    std::transform(cond.begin(), cond.end(), cond.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::string cond = to_lower(trim(condition));
 
     bool is_windows = false;
     bool is_linux = false;
@@ -4033,9 +4020,7 @@ void BuildscriptParser::parse_find_package(const std::string& line, ParseState& 
     }
 
     // Normalize package name for comparison
-    std::string package_lower = package_name;
-    std::transform(package_lower.begin(), package_lower.end(), package_lower.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::string package_lower = to_lower(package_name);
 
     // Call appropriate package finder
     PackageFindResult result;

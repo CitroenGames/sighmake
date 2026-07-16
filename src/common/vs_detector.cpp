@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "vs_detector.hpp"
 #include "toolset_registry.hpp"
+#include "defaults.hpp"
 #include "debug_log.hpp"
 
 namespace fs = std::filesystem;
@@ -73,7 +74,7 @@ int VSDetector::version_to_year(const std::string& version) {
 // Helper: Year to toolset mapping (delegates to the toolset registry)
 std::string VSDetector::year_to_toolset(int year) {
     auto toolset = ToolsetRegistry::instance().toolset_for_year(year);
-    return toolset ? *toolset : "v143";  // Safe default
+    return toolset ? *toolset : defaults::kFallbackToolset;
 }
 
 bool VSDetector::has_platform_toolset(const VSInstallation& installation,

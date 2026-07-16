@@ -21,10 +21,7 @@ std::string VpcParser::trim(const std::string& str) {
 }
 
 std::string VpcParser::to_upper(const std::string& str) {
-    std::string result = str;
-    std::transform(result.begin(), result.end(), result.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-    return result;
+    return vcxproj::to_upper(str);
 }
 
 std::string VpcParser::normalize_path(const std::string& path) {
@@ -1354,25 +1351,19 @@ void VpcParser::finalize_solution(ParseState& state) {
                     cfg.config_type = "Application";  // Default to exe
                 }
                 if (cfg.platform_toolset.empty()) {
-                    cfg.platform_toolset = "v143";  // VS2022
+                    cfg.platform_toolset = defaults::kFallbackToolset;
                 }
 
                 // Set debug-specific defaults
-                if (config == "Debug") {
+                bool is_debug = (config == "Debug");
+                if (is_debug) {
                     cfg.use_debug_libraries = true;
-                    if (cfg.cl_compile.optimization.empty()) {
-                        cfg.cl_compile.optimization = "Disabled";
-                    }
-                    if (cfg.cl_compile.runtime_library.empty()) {
-                        cfg.cl_compile.runtime_library = "MultiThreadedDebugDLL";
-                    }
-                } else {
-                    if (cfg.cl_compile.optimization.empty()) {
-                        cfg.cl_compile.optimization = "MaxSpeed";
-                    }
-                    if (cfg.cl_compile.runtime_library.empty()) {
-                        cfg.cl_compile.runtime_library = "MultiThreadedDLL";
-                    }
+                }
+                if (cfg.cl_compile.optimization.empty()) {
+                    cfg.cl_compile.optimization = defaults::optimization(is_debug);
+                }
+                if (cfg.cl_compile.runtime_library.empty()) {
+                    cfg.cl_compile.runtime_library = defaults::runtime_library(is_debug);
                 }
             }
         }

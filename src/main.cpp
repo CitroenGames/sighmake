@@ -13,6 +13,7 @@
 #include "common/toolset_registry.hpp"
 #include "common/build_runner.hpp"
 #include "common/updater.hpp"
+#include "common/string_utils.hpp"
 #include "common/defaults.hpp"
 
 namespace fs = std::filesystem;
@@ -347,9 +348,7 @@ int main(int argc, char* argv[]) {
         // Handle conversion mode (solution -> buildscripts)
         if (convert_mode) {
             fs::path input_path(buildscript_path);
-            std::string input_ext = input_path.extension().string();
-            std::transform(input_ext.begin(), input_ext.end(), input_ext.begin(),
-                           [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+            std::string input_ext = vcxproj::to_lower(input_path.extension().string());
 
             if (input_ext != ".sln" && input_ext != ".slnx" &&
                 input_ext != ".vcxproj" && input_ext != ".vcproj") {
@@ -435,13 +434,9 @@ int main(int argc, char* argv[]) {
         // Normal mode: buildscript -> project files
         vcxproj::Solution solution;
         fs::path input_path(buildscript_path);
-        std::string filename = input_path.filename().string();
+        std::string filename = vcxproj::to_lower(input_path.filename().string());
         std::string ext = input_path.extension().string();
-        
-        // Convert to lowercase for checking
-        std::transform(filename.begin(), filename.end(), filename.begin(), 
-                      [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-        
+
         if (filename == "cmakelists.txt" || ext == ".cmake") {
             std::cout << "Parsing CMake file: " << buildscript_path << "\n";
             vcxproj::CMakeParser parser;

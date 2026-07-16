@@ -2,6 +2,7 @@
 #include "vcxproj_reader.hpp"
 #include "vcproj_reader.hpp"
 #include "common/string_utils.hpp"
+#include "common/file_types.hpp"
 #include "common/config_type_utils.hpp"
 #include "common/defaults.hpp"
 #include "common/language_standards.hpp"
@@ -1379,14 +1380,10 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             }
 
             // Check file extension
-            fs::path p(src.path);
-            std::string ext = p.extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(),
-                          [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-
-            if (ext == ".c") {
+            std::string ext = file_types::lowercase_extension(src.path);
+            if (file_types::is_c_source(ext)) {
                 c_count++;
-            } else if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") {
+            } else if (file_types::is_cpp_source(ext)) {
                 cpp_count++;
             }
         }
@@ -1412,18 +1409,13 @@ static std::string strip_guid_braces(std::string guid) {
 }
 
 static std::string solution_id_key(const std::string& id) {
-    std::string key = strip_guid_braces(id);
-    std::transform(key.begin(), key.end(), key.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return key;
+    return to_lower(strip_guid_braces(id));
 }
 
 static std::string solution_path_key(std::string path) {
     path = fs::path(path).lexically_normal().string();
     std::replace(path.begin(), path.end(), '\\', '/');
-    std::transform(path.begin(), path.end(), path.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return path;
+    return to_lower(path);
 }
 
 static std::string slnx_folder_path(std::string name, const std::string& parent) {
@@ -1443,10 +1435,7 @@ static void add_unique_string(std::vector<std::string>& values, const std::strin
 }
 
 static bool is_vcxproj_path(const std::string& path) {
-    std::string ext = fs::path(path).extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return ext == ".vcxproj";
+    return file_types::lowercase_extension(path) == ".vcxproj";
 }
 
 static bool is_vcproj_path(const std::string& path) {
@@ -1519,10 +1508,7 @@ static fs::path resolve_solution_project_path(const fs::path& sln_dir, const std
 
     std::error_code ec;
     if (fs::exists(sln_dir, ec)) {
-        std::string target_name = raw_path.filename().string();
-        std::string target_lower = target_name;
-        std::transform(target_lower.begin(), target_lower.end(), target_lower.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::string target_lower = to_lower(raw_path.filename().string());
 
         for (fs::recursive_directory_iterator it(sln_dir, fs::directory_options::skip_permission_denied, ec), end;
              !ec && it != end; it.increment(ec)) {
@@ -1530,9 +1516,7 @@ static fs::path resolve_solution_project_path(const fs::path& sln_dir, const std
                 continue;
             }
 
-            std::string candidate_name = it->path().filename().string();
-            std::transform(candidate_name.begin(), candidate_name.end(), candidate_name.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            std::string candidate_name = to_lower(it->path().filename().string());
             if (candidate_name == target_lower) {
                 return it->path().lexically_normal();
             }
@@ -3440,10 +3424,8 @@ static bool should_merge_buildscript(
     const std::string& vcxproj_rel_path)
 {
     // Check if names match (case-insensitive comparison for Windows compatibility)
-    std::string sln_lower = solution_name;
-    std::string proj_lower = project_name;
-    std::transform(sln_lower.begin(), sln_lower.end(), sln_lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-    std::transform(proj_lower.begin(), proj_lower.end(), proj_lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    std::string sln_lower = to_lower(solution_name);
+    std::string proj_lower = to_lower(project_name);
 
     if (sln_lower != proj_lower) {
         return false;

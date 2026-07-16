@@ -35,9 +35,7 @@ private:
                                        const std::string& config_key, const std::string& output_path,
                                        const ProjectLookup& project_lookup);
 
-    // Helper functions for mapping settings to flags
-    std::string map_optimization(const std::string& opt);
-    std::string map_warning_level(const std::string& level);
+    // Helper functions for assembling flag strings
     std::string get_compiler_flags(const Configuration& config, const Project& project,
                                    const std::filesystem::path& makefile_dir, bool c_flags);
     std::string get_linker_flags(const Configuration& config, const std::filesystem::path& makefile_dir,

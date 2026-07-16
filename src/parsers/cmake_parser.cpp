@@ -202,17 +202,17 @@ Solution CMakeParser::parse_string(const std::string& content, const std::string
                 // Apply sensible defaults
                 auto [config, platform] = parse_config_key(config_key);
 
-                cfg.windows_target_platform_version = "10.0";
-                cfg.character_set = "MultiByte";
+                cfg.windows_target_platform_version = defaults::kWindowsSdkVersion;
+                cfg.character_set = defaults::kCharacterSet;
 
                 if (config == "Debug") {
                     cfg.use_debug_libraries = true;
-                    cfg.cl_compile.optimization = "Disabled";
-                    cfg.cl_compile.runtime_library = "MultiThreadedDebugDLL";
+                    cfg.cl_compile.optimization = defaults::optimization(true);
+                    cfg.cl_compile.runtime_library = defaults::runtime_library(true);
                     cfg.link.generate_debug_info = true;
                 } else {
-                    cfg.cl_compile.optimization = "MaxSpeed";
-                    cfg.cl_compile.runtime_library = "MultiThreadedDLL";
+                    cfg.cl_compile.optimization = defaults::optimization(false);
+                    cfg.cl_compile.runtime_library = defaults::runtime_library(false);
                     cfg.cl_compile.function_level_linking = true;
                     cfg.cl_compile.intrinsic_functions = true;
                     cfg.link.enable_comdat_folding = true;
@@ -1630,8 +1630,7 @@ std::vector<CMakeParser::Token> CMakeParser::capture_until(const std::string& en
 
     while (i < tokens.size() && depth > 0) {
         if (tokens[i].type == TokenType::Identifier) {
-            std::string cmd = tokens[i].value;
-            std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+            std::string cmd = to_lower(tokens[i].value);
 
             // Increase depth for nested control structures
             if (cmd == "foreach" || cmd == "while" || cmd == "if" ||
@@ -1744,10 +1743,8 @@ void CMakeParser::handle_foreach(const std::vector<std::string>& args, size_t& i
 void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, ParseState& state) {
     while (i < tokens.size()) {
         if (tokens[i].type == TokenType::Identifier) {
-            std::string command = tokens[i].value;
             // Case-insensitive command matching
-            std::transform(command.begin(), command.end(), command.begin(), 
-                          [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+            std::string command = to_lower(tokens[i].value);
             
             i++; // Skip command
             
@@ -1876,11 +1873,8 @@ void CMakeParser::handle_message(const std::vector<std::string>& args, ParseStat
 
 void CMakeParser::handle_function_def(const std::vector<std::string>& args, size_t& i, const std::vector<Token>& tokens, ParseState& state) {
     if (args.empty()) return;
-    std::string func_name = args[0];
-    
     // Case-insensitive name
-    std::transform(func_name.begin(), func_name.end(), func_name.begin(), 
-                  [](unsigned char c) { return (char)std::tolower(c); });
+    std::string func_name = to_lower(args[0]);
 
     FunctionDef def;
     // Store params
@@ -1892,9 +1886,8 @@ void CMakeParser::handle_function_def(const std::vector<std::string>& args, size
     int nesting = 1;
     while (i < tokens.size()) {
         if (tokens[i].type == TokenType::Identifier) {
-            std::string cmd = tokens[i].value;
-            std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-            
+            std::string cmd = to_lower(tokens[i].value);
+
             if (cmd == "function") nesting++;
             else if (cmd == "endfunction") nesting--;
             
@@ -1918,9 +1911,7 @@ void CMakeParser::handle_function_def(const std::vector<std::string>& args, size
 
 void CMakeParser::handle_macro_def(const std::vector<std::string>& args, size_t& i, const std::vector<Token>& tokens, ParseState& state) {
     if (args.empty()) return;
-    std::string macro_name = args[0];
-    std::transform(macro_name.begin(), macro_name.end(), macro_name.begin(), 
-                  [](unsigned char c) { return (char)std::tolower(c); });
+    std::string macro_name = to_lower(args[0]);
 
     FunctionDef def;
     for (size_t k = 1; k < args.size(); ++k) {
@@ -1930,9 +1921,8 @@ void CMakeParser::handle_macro_def(const std::vector<std::string>& args, size_t&
     int nesting = 1;
     while (i < tokens.size()) {
         if (tokens[i].type == TokenType::Identifier) {
-            std::string cmd = tokens[i].value;
-            std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-            
+            std::string cmd = to_lower(tokens[i].value);
+
             if (cmd == "macro") nesting++;
             else if (cmd == "endmacro") nesting--;
             
@@ -1969,9 +1959,8 @@ void CMakeParser::handle_if(const std::vector<std::string>& args, size_t& i, con
         Token t = tokens[i];
         
         if (t.type == TokenType::Identifier) {
-            std::string cmd = t.value;
-            std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-            
+            std::string cmd = to_lower(t.value);
+
             if (cmd == "if") {
                 nesting++;
             } else if (cmd == "endif") {
@@ -2053,8 +2042,7 @@ void CMakeParser::handle_while(const std::vector<std::string>& args, size_t& i, 
     size_t scan = i;
     while (scan < tokens.size()) {
         if (tokens[scan].type == TokenType::Identifier) {
-             std::string cmd = tokens[scan].value;
-             std::transform(cmd.begin(), cmd.end(), cmd.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+             std::string cmd = to_lower(tokens[scan].value);
              if (cmd == "while") nesting++;
              else if (cmd == "endwhile") nesting--;
              
@@ -2096,11 +2084,7 @@ void CMakeParser::handle_while(const std::vector<std::string>& args, size_t& i, 
 bool CMakeParser::evaluate_condition(const std::vector<std::string>& args, ParseState& state) {
     if (args.empty()) return false;
 
-    auto upper = [](std::string value) {
-        std::transform(value.begin(), value.end(), value.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-        return value;
-    };
+    auto upper = [](const std::string& value) { return to_upper(value); };
 
     auto resolve_term = [&](const std::string& term) {
         auto it = state.variables.find(term);

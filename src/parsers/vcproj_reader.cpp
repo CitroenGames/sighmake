@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "vcproj_reader.hpp"
 #include "common/string_utils.hpp"
+#include "common/file_types.hpp"
 #define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"
 
@@ -776,9 +777,9 @@ Project VcprojReader::read_vcproj(const std::string& filepath) {
                 else if (compile_as == "CompileAsCpp") cpp_count++;
             }
 
-            std::string ext = to_lower(fs::path(src.path).extension().string());
-            if (ext == ".c") c_count++;
-            else if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") cpp_count++;
+            std::string ext = file_types::lowercase_extension(src.path);
+            if (file_types::is_c_source(ext)) c_count++;
+            else if (file_types::is_cpp_source(ext)) cpp_count++;
         }
 
         if (c_count > 0 && cpp_count == 0) {

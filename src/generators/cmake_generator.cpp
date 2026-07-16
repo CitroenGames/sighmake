@@ -2,6 +2,7 @@
 #include "cmake_generator.hpp"
 #include "common/build_cache.hpp"
 #include "common/string_utils.hpp"
+#include "common/compiler_flags.hpp"
 #include "common/language_standards.hpp"
 
 namespace vcxproj {
@@ -363,24 +364,12 @@ void CMakeGenerator::write_compile_options(std::ostream& out, const Project& pro
     if (!first_config) return;
 
     // Warning level (usually same across configs)
-    if (!first_config->cl_compile.warning_level.empty()) {
-        const std::string& wl = first_config->cl_compile.warning_level;
-        if (wl == "Level0") {
-            shared_msvc.push_back("/W0");
-            shared_gcc.push_back("-w");
-        } else if (wl == "Level1") {
-            shared_msvc.push_back("/W1");
-            shared_gcc.push_back("-Wall");
-        } else if (wl == "Level2") {
-            shared_msvc.push_back("/W2");
-            shared_gcc.push_back("-Wall");
-        } else if (wl == "Level3") {
-            shared_msvc.push_back("/W3");
-            shared_gcc.push_back("-Wall");
-        } else if (wl == "Level4") {
-            shared_msvc.push_back("/W4");
-            shared_gcc.push_back("-Wall");
-            shared_gcc.push_back("-Wextra");
+    if (const auto* wl = flags::find_warning_level(first_config->cl_compile.warning_level)) {
+        shared_msvc.push_back(wl->msvc);
+        std::istringstream gnu_flags(wl->gnu);
+        std::string flag;
+        while (gnu_flags >> flag) {
+            shared_gcc.push_back(flag);
         }
     }
 
@@ -445,48 +434,22 @@ void CMakeGenerator::write_compile_options(std::ostream& out, const Project& pro
         opts.name = cfg_name;
 
         // Optimization
-        if (!config->cl_compile.optimization.empty()) {
-            const std::string& opt = config->cl_compile.optimization;
-            if (opt == "Disabled") {
-                opts.msvc_opts.push_back("/Od");
-                opts.gcc_opts.push_back("-O0");
-            } else if (opt == "MinSpace") {
-                opts.msvc_opts.push_back("/O1");
-                opts.gcc_opts.push_back("-Os");
-            } else if (opt == "MaxSpeed") {
-                opts.msvc_opts.push_back("/O2");
-                opts.gcc_opts.push_back("-O3");
-            } else if (opt == "Full") {
-                opts.msvc_opts.push_back("/Ox");
-                opts.gcc_opts.push_back("-O3");
-            }
+        if (const auto* opt = flags::find_optimization(config->cl_compile.optimization)) {
+            opts.msvc_opts.push_back(opt->msvc);
+            opts.gcc_opts.push_back(opt->gnu);
         }
 
         // Debug info
         if (!config->cl_compile.debug_information_format.empty()) {
-            const std::string& di = config->cl_compile.debug_information_format;
-            if (di == "ProgramDatabase") {
-                opts.msvc_opts.push_back("/Zi");
-            } else if (di == "EditAndContinue") {
-                opts.msvc_opts.push_back("/ZI");
-            } else if (di == "OldStyle") {
-                opts.msvc_opts.push_back("/Z7");
+            if (const char* flag = flags::debug_format_to_msvc_flag(config->cl_compile.debug_information_format)) {
+                opts.msvc_opts.push_back(flag);
             }
             opts.gcc_opts.push_back("-g");
         }
 
         // Runtime library
-        if (!config->cl_compile.runtime_library.empty()) {
-            const std::string& rtl = config->cl_compile.runtime_library;
-            if (rtl == "MultiThreaded") {
-                opts.msvc_opts.push_back("/MT");
-            } else if (rtl == "MultiThreadedDebug") {
-                opts.msvc_opts.push_back("/MTd");
-            } else if (rtl == "MultiThreadedDLL") {
-                opts.msvc_opts.push_back("/MD");
-            } else if (rtl == "MultiThreadedDebugDLL") {
-                opts.msvc_opts.push_back("/MDd");
-            }
+        if (const char* flag = flags::runtime_library_to_msvc_flag(config->cl_compile.runtime_library)) {
+            opts.msvc_opts.push_back(flag);
         }
 
         // Basic runtime checks
@@ -713,14 +676,8 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
         }
         if (first_cfg) {
             // Subsystem
-            if (!first_cfg->link.sub_system.empty()) {
-                if (first_cfg->link.sub_system == "Console") {
-                    msvc_link_opts.push_back("/SUBSYSTEM:CONSOLE");
-                } else if (first_cfg->link.sub_system == "Windows") {
-                    msvc_link_opts.push_back("/SUBSYSTEM:WINDOWS");
-                } else if (first_cfg->link.sub_system == "Native") {
-                    msvc_link_opts.push_back("/SUBSYSTEM:NATIVE");
-                }
+            if (const char* flag = flags::subsystem_to_msvc_flag(first_cfg->link.sub_system)) {
+                msvc_link_opts.push_back(flag);
             }
 
             // Entry point
@@ -957,9 +914,7 @@ void CMakeGenerator::write_target_properties(std::ostream& out, const Project& p
             if (!config || config->out_dir.empty()) continue;
 
             std::string out_dir = to_cmake_path(config->out_dir);
-            std::string upper_cfg = cfg_name;
-            std::transform(upper_cfg.begin(), upper_cfg.end(), upper_cfg.begin(),
-                          [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            std::string upper_cfg = to_upper(cfg_name);
 
             if (config_type == "Application" || config_type == "Driver") {
                 out << "set_target_properties(" << project.name << " PROPERTIES RUNTIME_OUTPUT_DIRECTORY_"

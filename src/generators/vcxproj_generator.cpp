@@ -5,6 +5,9 @@
 #include "common/toolset_registry.hpp"
 #include "common/build_cache.hpp"
 #include "common/string_utils.hpp"
+#include "common/file_types.hpp"
+#include "common/compiler_flags.hpp"
+#include "common/defaults.hpp"
 #include "common/language_standards.hpp"
 #include "common/debug_log.hpp"
 #define PUGIXML_HEADER_ONLY
@@ -23,12 +26,6 @@
 namespace fs = std::filesystem;
 
 namespace vcxproj {
-
-// Map buildscript warning_level values to MSBuild WarningLevel enum values
-static std::string map_warning_level(const std::string& level) {
-    if (level == "Level0") return "TurnOffAllWarnings";
-    return level; // Level1-Level4 are already valid MSBuild values
-}
 
 // Adjust relative file paths in a custom build command
 static std::string adjust_command_paths(const std::string& command,
@@ -528,7 +525,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
         if (!cfg.cl_compile.debug_information_format.empty())
             cl.append_child("DebugInformationFormat").text() = cfg.cl_compile.debug_information_format.c_str();
         if (!cfg.cl_compile.warning_level.empty())
-            cl.append_child("WarningLevel").text() = map_warning_level(cfg.cl_compile.warning_level).c_str();
+            cl.append_child("WarningLevel").text() = flags::warning_level_to_msbuild(cfg.cl_compile.warning_level).c_str();
         if (!cfg.cl_compile.disable_specific_warnings.empty())
             cl.append_child("DisableSpecificWarnings").text() =
                 join_vector(cfg.cl_compile.disable_specific_warnings, ";").c_str();
@@ -1098,15 +1095,12 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
 
                 if (!has_project_level_compile_as) {
                     // No project-level compile_as: auto-detect per file based on extension
-                    fs::path file_path(src->path);
-                    std::string ext = file_path.extension().string();
-                    std::transform(ext.begin(), ext.end(), ext.begin(),
-                                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    std::string ext = file_types::lowercase_extension(src->path);
 
                     std::string auto_compile_as;
-                    if (ext == ".c") {
+                    if (file_types::is_c_source(ext)) {
                         auto_compile_as = "CompileAsC";
-                    } else if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") {
+                    } else if (file_types::is_cpp_source(ext)) {
                         auto_compile_as = "CompileAsCpp";
                     }
 
@@ -1997,7 +1991,7 @@ std::string VcxprojGenerator::resolve_solution_toolset(const Solution& solution)
             }
         }
     }
-    return "v143"; // Default to VS 2022
+    return defaults::kFallbackToolset;
 }
 
 // Register the vcxproj generator

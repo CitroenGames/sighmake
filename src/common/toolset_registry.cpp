@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "toolset_registry.hpp"
+#include "string_utils.hpp"
 
 namespace vcxproj {
 
@@ -57,9 +58,7 @@ std::optional<std::string> ToolsetRegistry::resolve(const std::string& input) co
     }
 
     // Convert to lowercase for case-insensitive matching
-    std::string lower_input = input;
-    std::transform(lower_input.begin(), lower_input.end(), lower_input.begin(),
-                   [](unsigned char c){ return (char)std::tolower(c); });
+    std::string lower_input = to_lower(input);
 
     // Look up normalized toolchain name (e.g., "msvc2022" -> "v143")
     auto it = toolchain_to_toolset_.find(lower_input);

@@ -1,9 +1,28 @@
 #pragma once
 
+#include <algorithm>
+#include <cctype>
 #include <string>
 #include <vector>
 
 namespace vcxproj {
+
+// Lowercase a copy of the string (ASCII).
+// Single shared implementation — use this instead of inlining std::transform.
+inline std::string to_lower(const std::string& str) {
+    std::string result = str;
+    std::transform(result.begin(), result.end(), result.begin(),
+                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return result;
+}
+
+// Uppercase a copy of the string (ASCII).
+inline std::string to_upper(const std::string& str) {
+    std::string result = str;
+    std::transform(result.begin(), result.end(), result.begin(),
+                  [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return result;
+}
 
 // Trim leading/trailing whitespace (spaces, tabs, CR, LF).
 // Single shared implementation — parsers and generators should use this

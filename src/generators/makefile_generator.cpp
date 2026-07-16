@@ -2,6 +2,8 @@
 #include "makefile_generator.hpp"
 #include "common/build_cache.hpp"
 #include "common/string_utils.hpp"
+#include "common/file_types.hpp"
+#include "common/compiler_flags.hpp"
 #include "common/language_standards.hpp"
 
 namespace vcxproj {
@@ -175,9 +177,7 @@ bool has_extension_case_insensitive(const std::string& path, const std::string& 
         return false;
     }
 
-    std::string suffix = path.substr(path.size() - ext.size());
-    std::transform(suffix.begin(), suffix.end(), suffix.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::string suffix = to_lower(path.substr(path.size() - ext.size()));
     return suffix == ext;
 }
 
@@ -313,36 +313,6 @@ std::string MakefileGenerator::strip_lib_extension(const std::string& lib) {
     return result;
 }
 
-// Map MSVC optimization to GCC optimization flags
-std::string MakefileGenerator::map_optimization(const std::string& opt) {
-    if (opt == "Disabled") {
-        return "-O0";
-    } else if (opt == "MinSpace") {
-        return "-Os";
-    } else if (opt == "MaxSpeed") {
-        return "-O3";
-    } else if (opt == "Full") {
-        return "-O3";
-    }
-    return "-O2"; // Default
-}
-
-// Map MSVC warning level to GCC warning flags
-std::string MakefileGenerator::map_warning_level(const std::string& level) {
-    if (level == "Level0") {
-        return "-w"; // Disable all warnings
-    } else if (level == "Level1") {
-        return "-Wall";
-    } else if (level == "Level2") {
-        return "-Wall";
-    } else if (level == "Level3") {
-        return "-Wall";
-    } else if (level == "Level4") {
-        return "-Wall -Wextra";
-    }
-    return "-Wall"; // Default
-}
-
 // Determine if PCH is enabled for a configuration and return the PCH header path
 std::pair<bool, std::string> MakefileGenerator::get_pch_info(const Configuration& config) {
     bool has_pch = !config.cl_compile.pch.mode.empty() &&
@@ -382,7 +352,7 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
 
     // Optimization
     if (!config.cl_compile.optimization.empty()) {
-        ss << map_optimization(config.cl_compile.optimization) << " ";
+        ss << flags::optimization_to_gnu_flag(config.cl_compile.optimization) << " ";
     }
 
     // Debug information
@@ -392,7 +362,7 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
 
     // Warning level
     if (!config.cl_compile.warning_level.empty()) {
-        ss << map_warning_level(config.cl_compile.warning_level) << " ";
+        ss << flags::warning_level_to_gnu_flags(config.cl_compile.warning_level) << " ";
     }
 
     // Position-independent code for shared libraries
@@ -628,11 +598,10 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     bool has_nasm_files = false;
     for (const auto& src : project.sources) {
         if (src.type == FileType::ClCompile) {
-            std::string ext = fs::path(src.path).extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-            if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") {
+            std::string ext = file_types::lowercase_extension(src.path);
+            if (file_types::is_cpp_source(ext)) {
                 has_cpp_files = true;
-            } else if (ext == ".c") {
+            } else if (file_types::is_c_source(ext)) {
                 has_c_files = true;
             }
         } else if (src.type == FileType::ObjCxx) {
@@ -1013,20 +982,18 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         const auto& [src, obj] = source_to_obj[i];
         bool uses_pch = source_uses_pch[i];
 
-        fs::path src_path(src);
-        std::string ext = src_path.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        std::string ext = file_types::lowercase_extension(src);
 
         std::string compiler;
         std::string flags;
         bool is_nasm = false;
-        if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") {
+        if (file_types::is_cpp_source(ext)) {
             compiler = "$(CXX)";
             flags = "$(CXXFLAGS)";
-        } else if (ext == ".c") {
+        } else if (file_types::is_c_source(ext)) {
             compiler = "$(CC)";
             flags = "$(CFLAGS)";
-        } else if (ext == ".mm" || ext == ".m") {
+        } else if (file_types::is_objcxx_source(ext)) {
             compiler = "$(CXX)";
             flags = "$(OBJCXXFLAGS)";
         } else if (ext == ".asm" || ext == ".nasm") {
