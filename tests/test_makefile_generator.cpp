@@ -823,6 +823,14 @@ postbuild = echo postbuild_step
         CHECK(result.content.find("prebuild_step") != std::string::npos);
         CHECK(result.content.find("postbuild_step") != std::string::npos);
         CHECK(result.content.find("prebuild") != std::string::npos);
+        CHECK(result.content.find(".DEFAULT_GOAL := all") != std::string::npos);
+        CHECK(result.content.find("$(OBJS): | prebuild") != std::string::npos);
+        CHECK(result.content.find("$(TARGET): $(OBJS) | prebuild") != std::string::npos);
+        CHECK(result.content.find("$(TARGET): prebuild $(OBJS)") == std::string::npos);
+
+        const auto default_goal = result.content.find(".DEFAULT_GOAL := all");
+        const auto prebuild_target = result.content.find("prebuild:");
+        CHECK(default_goal < prebuild_target);
     }
 }
 

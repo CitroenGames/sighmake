@@ -900,6 +900,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << ".PHONY: all clean\n\n";
     }
 
+    out << ".DEFAULT_GOAL := all\n\n";
+
     // Pre-build event
     if (!config.pre_build_event.command.empty()) {
         out << "# Pre-build event\n";
@@ -920,7 +922,12 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
     // Link rule
     if (!config.pre_build_event.command.empty()) {
-        out << "$(TARGET): prebuild $(OBJS)\n";
+        out << "$(OBJS)";
+        if (has_pch && !pch_header_path.empty()) {
+            out << " $(PCH_OUTPUT)";
+        }
+        out << ": | prebuild\n\n";
+        out << "$(TARGET): $(OBJS) | prebuild\n";
     } else {
         out << "$(TARGET): $(OBJS)\n";
     }
