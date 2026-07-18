@@ -4,6 +4,10 @@
 #include "generators/makefile_generator.hpp"
 #include "generators/vcxproj_generator.hpp"
 
+#include <chrono>
+#include <cstdlib>
+#include <thread>
+
 using namespace vcxproj;
 namespace fs = std::filesystem;
 
@@ -424,6 +428,59 @@ depends = Util
     CHECK(result.master_content.find("\nRelease:\n\t$(MAKE)") == std::string::npos);
 }
 
+TEST_CASE("MakefileGenerator relinks targets when project libraries change", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:Core]
+type = lib
+sources = core.cpp
+outdir = bin
+intdir = obj/Core
+
+[project:App]
+type = exe
+sources = app.cpp
+outdir = bin
+intdir = obj/App
+
+target_link_libraries(
+    Core PRIVATE
+)
+)", {"core.cpp", "app.cpp"});
+
+    REQUIRE(result.files.count("App.Release"));
+    const std::string& app_makefile = result.files["App.Release"];
+    CHECK(app_makefile.find("PROJECT_DEPS =") != std::string::npos);
+    CHECK(app_makefile.find("$(TARGET): $(OBJS) $(PROJECT_DEPS)") != std::string::npos);
+
+#ifndef _WIN32
+    std::ofstream(result.temp_dir / "core.cpp") << "int core() { return 1; }\n";
+    std::ofstream(result.temp_dir / "app.cpp")
+        << "extern int core(); int main() { return core() == 1 ? 0 : 1; }\n";
+
+    const std::string make_command = "make -C \"" +
+        (result.temp_dir / "build").string() + "\" Release >/dev/null";
+    REQUIRE(std::system(make_command.c_str()) == 0);
+
+    const fs::path app_binary = result.temp_dir / "bin" / "App";
+    REQUIRE(fs::exists(app_binary));
+    const auto initial_write_time = fs::last_write_time(app_binary);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    REQUIRE(std::system(make_command.c_str()) == 0);
+    CHECK((fs::last_write_time(app_binary) == initial_write_time));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    std::ofstream(result.temp_dir / "core.cpp") << "int core() { return 2; }\n";
+    REQUIRE(std::system(make_command.c_str()) == 0);
+    CHECK((fs::last_write_time(app_binary) > initial_write_time));
+#endif
+}
+
 // ============================================================================
 // Edge cases
 // ============================================================================
@@ -834,7 +891,7 @@ postbuild = echo postbuild_step
     }
 }
 
-TEST_CASE("MakefileGenerator does not link phony prebuild target", "[makefile_generator]") {
+TEST_CASE("MakefileGenerator keeps phony prebuild order-only", "[makefile_generator]") {
     auto result = generate_makefile(R"(
 [solution]
 name = Test
@@ -847,9 +904,27 @@ sources = main.cpp
 prebuild = echo prebuild_step
 )");
     REQUIRE(!result.content.empty());
-    CHECK(result.content.find("$(TARGET): prebuild $(OBJS)") != std::string::npos);
+    CHECK(result.content.find("$(TARGET): $(OBJS) | prebuild") != std::string::npos);
+    CHECK(result.content.find("$(TARGET): prebuild $(OBJS)") == std::string::npos);
     CHECK(result.content.find("-o $@ $(OBJS) $(LDLIBS)") != std::string::npos);
     CHECK(result.content.find("$^") == std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator uses CXX to link Objective-C++ targets", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = exe
+sources = main.mm
+)", {"main.mm"});
+
+    REQUIRE(!result.content.empty());
+    CHECK(result.content.find("CXX = ") != std::string::npos);
+    CHECK(result.content.find("\t$(CXX) $(LDFLAGS) -o $@") != std::string::npos);
 }
 
 TEST_CASE("MakefileGenerator quotes include paths with spaces", "[makefile_generator]") {
@@ -886,6 +961,26 @@ libdirs = path with spaces/lib
         // Library path should be quoted: -L"path..."
         CHECK(result.content.find("-L\"") != std::string::npos);
     }
+}
+
+TEST_CASE("Master Makefile installs the generated shared-library name", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:Plugin]
+type = dll
+sources = main.cpp
+target_name = renderer
+target_ext = .plugin
+outdir = bin
+)");
+
+    REQUIRE(!result.master_content.empty());
+    CHECK(result.master_content.find("renderer.plugin") != std::string::npos);
+    CHECK(result.master_content.find("librenderer") == std::string::npos);
 }
 
 // ============================================================================

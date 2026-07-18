@@ -611,6 +611,11 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         }
     }
 
+    const bool links_binary = config.config_type == "Application" ||
+                              config.config_type == "DynamicLibrary" ||
+                              config.config_type == "Driver";
+    const bool links_with_cxx = has_cpp_files || has_objcxx_files;
+
     // Compiler variables
     if (android) {
         // Android NDK toolchain. The --target wrappers are what the NDK's own
@@ -646,29 +651,22 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "AR = \"$(ANDROID_TOOLCHAIN)/llvm-ar\"\n";
         out << "STRIP = \"$(ANDROID_TOOLCHAIN)/llvm-strip\"\n";
     } else {
-        if (has_cpp_files) {
+        if (links_with_cxx) {
 #ifdef __APPLE__
             out << "CXX = clang++\n";
 #else
             out << "CXX = g++\n";
 #endif
         }
-        if (has_c_files) {
+        // C and assembler-only binaries still need a linker driver. Also emit
+        // CC for empty binary targets so the generated recipe is syntactically
+        // complete instead of starting with an empty $(CC).
+        if (has_c_files || (links_binary && !links_with_cxx)) {
 #ifdef __APPLE__
             out << "CC = clang\n";
 #else
             out << "CC = gcc\n";
 #endif
-        }
-        if (has_objcxx_files) {
-            // ObjC++ uses the same C++ compiler (clang++ auto-detects .mm)
-            if (!has_cpp_files) {
-#ifdef __APPLE__
-                out << "CXX = clang++\n";
-#else
-                out << "CXX = g++\n";
-#endif
-            }
         }
     }
     if (has_nasm_files) {
@@ -682,14 +680,16 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     std::string ldflags = get_linker_flags(config, makefile_dir, android);
     std::string ldlibs = get_linker_libs(config);
 
+    struct ArchiveEntry {
+        std::string project_name;
+        std::string path;
+        bool whole_archive;
+    };
+    std::vector<ArchiveEntry> dep_archives;
+
     // Add project reference outputs (.a files) to link line, including transitive PUBLIC deps
     if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
         // Collect all project .a files by traversing the dependency tree
-        struct ArchiveEntry {
-            std::string path;
-            bool whole_archive;
-        };
-        std::vector<ArchiveEntry> dep_archives;
         std::set<std::string> visited_deps;
 
         // Helper to compute a project's output archive path
@@ -733,7 +733,20 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         // whole_archive flag only applies to the direct dependency, not transitive ones
         std::function<void(const std::string&, bool, bool)> collect_deps =
             [&](const std::string& dep_name, bool add_locally, bool is_whole_archive) {
-            if (visited_deps.count(dep_name)) return;
+            if (visited_deps.count(dep_name)) {
+                // A dependency can first be reached transitively and later be
+                // listed directly with WHOLE_ARCHIVE. Preserve the stronger
+                // direct-link semantics in that case.
+                if (is_whole_archive) {
+                    for (auto& archive : dep_archives) {
+                        if (archive.project_name == dep_name) {
+                            archive.whole_archive = true;
+                            break;
+                        }
+                    }
+                }
+                return;
+            }
             visited_deps.insert(dep_name);
 
             const Project* dep_proj = find_project(project_lookup, dep_name);
@@ -743,7 +756,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             if (add_locally) {
                 std::string archive = get_archive_path(*dep_proj, config_key, config_name);
                 if (!archive.empty()) {
-                    dep_archives.push_back({compute_relative_path(archive, makefile_dir), is_whole_archive});
+                    dep_archives.push_back({dep_name, compute_relative_path(archive, makefile_dir),
+                                            is_whole_archive});
                 }
             }
 
@@ -819,6 +833,13 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     }
     if (!ldlibs.empty()) {
         out << "LDLIBS = " << ldlibs << "\n";
+    }
+    if (!dep_archives.empty()) {
+        out << "PROJECT_DEPS =";
+        for (const auto& archive : dep_archives) {
+            out << " \\\n  " << archive.path;
+        }
+        out << "\n";
     }
 
     out << "\n";
@@ -927,9 +948,17 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             out << " $(PCH_OUTPUT)";
         }
         out << ": | prebuild\n\n";
-        out << "$(TARGET): $(OBJS) | prebuild\n";
+        out << "$(TARGET): $(OBJS)";
+        if (!dep_archives.empty()) {
+            out << " $(PROJECT_DEPS)";
+        }
+        out << " | prebuild\n";
     } else {
-        out << "$(TARGET): $(OBJS)\n";
+        out << "$(TARGET): $(OBJS)";
+        if (!dep_archives.empty()) {
+            out << " $(PROJECT_DEPS)";
+        }
+        out << "\n";
     }
     out << "\t@mkdir -p $(dir $@)\n";
 
@@ -940,7 +969,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
     if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
         // Link executable or shared library
-        std::string compiler = has_cpp_files ? "$(CXX)" : "$(CC)";
+        std::string compiler = links_with_cxx ? "$(CXX)" : "$(CC)";
         if (config.config_type == "DynamicLibrary") {
             out << "\t" << compiler << " -shared $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)\n";
         } else {
@@ -1349,6 +1378,19 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
                 if (is_android_platform(plat)) continue;  // Device binaries - never installed on the host
 
                 std::string target_name = config.target_name.empty() ? proj.name : config.target_name;
+                std::string target_ext = config.target_ext;
+                if (target_ext.empty()) {
+                    if (config.config_type == "DynamicLibrary") {
+#ifdef __APPLE__
+                        target_ext = ".dylib";
+#else
+                        target_ext = ".so";
+#endif
+                    }
+                } else if (config.config_type == "Application" && target_ext == ".exe") {
+                    target_ext.clear();
+                }
+                const std::string binary_name = target_name + target_ext;
                 std::string out_dir = config.out_dir.empty() ? "build/" + cfg_name : config.out_dir;
                 // Make path relative to build dir
                 fs::path out_path = fs::path(out_dir);
@@ -1358,14 +1400,9 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
                 if (!rel_out.empty() && rel_out.back() != '/') rel_out += '/';
 
                 if (config.config_type == "Application") {
-                    exe_targets.push_back({rel_out + target_name, target_name});
+                    exe_targets.push_back({rel_out + binary_name, binary_name});
                 } else if (config.config_type == "DynamicLibrary") {
-#ifdef __APPLE__
-                    std::string ext = ".dylib";
-#else
-                    std::string ext = ".so";
-#endif
-                    lib_targets.push_back({rel_out + "lib" + target_name + ext, "lib" + target_name + ext});
+                    lib_targets.push_back({rel_out + binary_name, binary_name});
                 }
                 break;  // Only need one non-Windows platform config per project
             }
