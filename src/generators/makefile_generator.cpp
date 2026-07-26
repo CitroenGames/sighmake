@@ -197,71 +197,24 @@ std::string MakefileGenerator::compute_relative_path(const std::string& path, co
     if (path.empty()) return ".";
 
     try {
-        // Make both paths absolute and normalize
+        // These paths often describe outputs that do not exist yet.  Use a
+        // purely lexical calculation: fs::relative() consults the filesystem
+        // through weakly_canonical() and can return an empty path for missing
+        // directories (including Android's literal $(ANDROID_ABI) segment).
         fs::path abs_target = fs::absolute(path).lexically_normal();
         fs::path abs_base = fs::absolute(makefile_dir).lexically_normal();
-
-        // Try standard library function
-        fs::path rel_path = fs::relative(abs_target, abs_base);
-        std::string result = rel_path.string();
-        std::replace(result.begin(), result.end(), '\\', '/');
-        return result;
-
-    } catch (...) {
-        // Manual fallback when fs::relative() fails
-        try {
-            fs::path abs_target = fs::absolute(path).lexically_normal();
-            fs::path abs_base = fs::absolute(makefile_dir).lexically_normal();
-
-            // Check for different drives (Windows-specific)
-            if (abs_target.root_name() != abs_base.root_name()) {
-                std::string result = abs_target.string();
-                std::replace(result.begin(), result.end(), '\\', '/');
-                return result;
-            }
-
-            // Split paths into components
-            std::vector<fs::path> target_parts;
-            std::vector<fs::path> base_parts;
-
-            for (const auto& part : abs_target) {
-                if (part != "/" && part != "\\") {
-                    target_parts.push_back(part);
-                }
-            }
-            for (const auto& part : abs_base) {
-                if (part != "/" && part != "\\") {
-                    base_parts.push_back(part);
-                }
-            }
-
-            // Find common prefix length
-            size_t common = 0;
-            while (common < target_parts.size() &&
-                   common < base_parts.size() &&
-                   target_parts[common] == base_parts[common]) {
-                common++;
-            }
-
-            // Build relative path: "../" for each level up, then remaining components
-            std::string result;
-            for (size_t i = common; i < base_parts.size(); i++) {
-                if (!result.empty()) result += "/";
-                result += "..";
-            }
-            for (size_t i = common; i < target_parts.size(); i++) {
-                if (!result.empty()) result += "/";
-                result += target_parts[i].string();
-            }
-
-            return result.empty() ? "." : result;
-
-        } catch (...) {
-            // Ultimate fallback - return with Unix separators
-            std::string result = path;
-            std::replace(result.begin(), result.end(), '\\', '/');
-            return result;
+        fs::path rel_path = abs_target.lexically_relative(abs_base);
+        if (!rel_path.empty()) {
+            return to_unix_path(rel_path.string());
         }
+
+        // Different roots (for example C: and D:) cannot be expressed
+        // relatively.  Keep the normalized absolute path in that case.
+        return to_unix_path(abs_target.string());
+    } catch (...) {
+        // Preserve the caller's path if absolute-path construction itself
+        // fails, while still emitting Makefile-friendly separators.
+        return to_unix_path(path);
     }
 }
 
