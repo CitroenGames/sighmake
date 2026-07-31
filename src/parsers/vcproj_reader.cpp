@@ -121,6 +121,14 @@ std::string clean_relative_path(std::string path) {
     return path;
 }
 
+// Legacy .vcproj files use Windows separators regardless of the host running
+// the converter. Convert them before asking std::filesystem to inspect a path;
+// on POSIX a backslash is an ordinary filename character.
+fs::path vcproj_filesystem_path(std::string path) {
+    std::replace(path.begin(), path.end(), '\\', '/');
+    return fs::path(std::move(path));
+}
+
 std::string strip_guid_braces(std::string guid) {
     if (guid.size() >= 2 && guid.front() == '{' && guid.back() == '}') {
         guid = guid.substr(1, guid.size() - 2);
@@ -343,9 +351,10 @@ void read_inherited_sheets(const std::string& sheet_list, const fs::path& base_d
 
     for (const auto& entry : split_list(sheet_list)) {
         if (entry.find("$(") != std::string::npos) continue; // unresolvable macro path
-        fs::path sheet_path = fs::path(entry).is_absolute()
-            ? fs::path(entry)
-            : base_dir / entry;
+        fs::path entry_path = vcproj_filesystem_path(entry);
+        fs::path sheet_path = entry_path.is_absolute()
+            ? entry_path
+            : base_dir / entry_path;
         read_vsprops_file(sheet_path.lexically_normal(), out, depth);
     }
 }
@@ -759,7 +768,7 @@ Project VcprojReader::read_vcproj(const std::string& filepath) {
     for (auto ref : root.child("References").children("ProjectReference")) {
         std::string rel_path = ref.attribute("RelativePathToProject").as_string();
         if (rel_path.empty()) continue;
-        std::string dep_name = fs::path(clean_relative_path(rel_path)).stem().string();
+        std::string dep_name = vcproj_filesystem_path(clean_relative_path(rel_path)).stem().string();
         if (!dep_name.empty()) {
             project.project_references.push_back(ProjectDependency(dep_name));
         }

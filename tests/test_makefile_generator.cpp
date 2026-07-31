@@ -481,6 +481,49 @@ target_link_libraries(
 #endif
 }
 
+#ifndef _WIN32
+TEST_CASE("MakefileGenerator reconciles symlink aliases in generated paths", "[makefile_generator]") {
+    const fs::path test_root = fs::temp_directory_path() / "sighmake_test_makefile_symlink_alias";
+    struct TempDirCleanup {
+        fs::path path;
+        ~TempDirCleanup() {
+            std::error_code ec;
+            fs::remove_all(path, ec);
+        }
+    } cleanup{test_root};
+
+    std::error_code ec;
+    fs::remove_all(test_root, ec);
+    const fs::path real_dir = test_root / "real";
+    const fs::path alias_dir = test_root / "alias";
+    fs::create_directories(real_dir);
+    fs::create_directory_symlink(real_dir, alias_dir, ec);
+    REQUIRE_FALSE(ec);
+
+    std::ofstream(real_dir / "main.cpp") << "int main() { return 0; }\n";
+
+    BuildscriptParser parser;
+    auto solution = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = exe
+sources = main.cpp
+outdir = bin
+intdir = obj/App
+)", alias_dir.string());
+
+    MakefileGenerator generator;
+    REQUIRE(generator.generate(solution, alias_dir.string()));
+
+    const std::string makefile = read_file(real_dir / "build" / "App.Release");
+    CHECK(makefile.find("../main.cpp") != std::string::npos);
+}
+#endif
+
 // ============================================================================
 // Edge cases
 // ============================================================================

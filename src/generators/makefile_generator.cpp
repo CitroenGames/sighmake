@@ -203,6 +203,25 @@ std::string MakefileGenerator::compute_relative_path(const std::string& path, co
         // directories (including Android's literal $(ANDROID_ABI) segment).
         fs::path abs_target = fs::absolute(path).lexically_normal();
         fs::path abs_base = fs::absolute(makefile_dir).lexically_normal();
+
+        // Reconcile equivalent symlink spellings before the lexical comparison.
+        // macOS commonly reports its temporary directory as /var/... while
+        // canonical source paths use /private/var/.... Keep paths containing
+        // Make variables purely lexical because those paths intentionally do
+        // not exist yet.
+        if (path.find("$(") == std::string::npos &&
+            makefile_dir.string().find("$(") == std::string::npos) {
+            std::error_code target_ec;
+            std::error_code base_ec;
+            fs::path canonical_target = fs::weakly_canonical(abs_target, target_ec);
+            fs::path canonical_base = fs::weakly_canonical(abs_base, base_ec);
+            if (!target_ec && !base_ec &&
+                !canonical_target.empty() && !canonical_base.empty()) {
+                abs_target = std::move(canonical_target);
+                abs_base = std::move(canonical_base);
+            }
+        }
+
         fs::path rel_path = abs_target.lexically_relative(abs_base);
         if (!rel_path.empty()) {
             return to_unix_path(rel_path.string());
