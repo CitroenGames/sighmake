@@ -77,6 +77,39 @@ type = exe
     CHECK(sol.name == "MyApp");
 }
 
+TEST_CASE("Implicit project and solution-folder UUIDs are stable", "[buildscript_parser]") {
+    const std::string buildscript = R"(
+[solution]
+name = StableIds
+configurations = Debug
+platforms = x64
+
+folder("Engine") {
+    [project:Core]
+    type = lib
+}
+[project:App]
+type = exe
+guid = 11111111-2222-4333-8444-555555555555
+)";
+
+    BuildscriptParser parser;
+    const auto first = parser.parse_string(buildscript);
+    const auto second = parser.parse_string(buildscript);
+
+    REQUIRE(first.projects.size() == 2);
+    REQUIRE(second.projects.size() == 2);
+    CHECK(first.projects[0].uuid == second.projects[0].uuid);
+    CHECK(first.projects[0].uuid == generate_stable_uuid("project:Core"));
+    CHECK(first.projects[1].uuid == "11111111-2222-4333-8444-555555555555");
+    CHECK(second.projects[1].uuid == first.projects[1].uuid);
+
+    REQUIRE(first.folders.size() == 1);
+    REQUIRE(second.folders.size() == 1);
+    CHECK(first.folders[0].uuid == second.folders[0].uuid);
+    CHECK(first.folders[0].uuid == generate_stable_uuid("solution-folder:Engine"));
+}
+
 // ============================================================================
 // Project-level parsing
 // ============================================================================

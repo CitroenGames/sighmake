@@ -2,6 +2,7 @@
 
 #include "string_utils.hpp"
 #include "file_types.hpp"
+#include <cstdint>
 
 namespace vcxproj {
 
@@ -389,7 +390,36 @@ struct Solution {
     }
 };
 
-// Helper function to generate UUIDs
+// Generate a deterministic UUID for identities that must survive project regeneration.
+// std::hash is intentionally avoided because its output is not portable across toolchains.
+inline std::string generate_stable_uuid(const std::string& seed) {
+    auto fnv1a64 = [](const std::string& value) {
+        std::uint64_t hash = 14695981039346656037ull;
+        for (unsigned char c : value) {
+            hash ^= c;
+            hash *= 1099511628211ull;
+        }
+        return hash;
+    };
+
+    const std::uint64_t high = fnv1a64(seed);
+    const std::uint64_t low = fnv1a64(seed + "#uuid");
+    const std::uint16_t time_hi_and_version =
+        static_cast<std::uint16_t>((high & 0x0fffull) | 0x5000ull);
+    const std::uint16_t clock_seq_and_variant =
+        static_cast<std::uint16_t>(((low >> 48) & 0x3fffull) | 0x8000ull);
+
+    std::stringstream ss;
+    ss << std::uppercase << std::hex << std::setfill('0');
+    ss << std::setw(8) << static_cast<std::uint32_t>(high >> 32) << "-";
+    ss << std::setw(4) << static_cast<std::uint16_t>(high >> 16) << "-";
+    ss << std::setw(4) << time_hi_and_version << "-";
+    ss << std::setw(4) << clock_seq_and_variant << "-";
+    ss << std::setw(12) << (low & 0x0000ffffffffffffull);
+    return ss.str();
+}
+
+// Helper function to generate UUIDs for genuinely new imported identities.
 inline std::string generate_uuid() {
     std::random_device rd;
     std::mt19937 gen(rd());

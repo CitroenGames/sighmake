@@ -579,7 +579,7 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
         sf.name = (last_slash == std::string::npos) ? path : path.substr(last_slash + 1);
         sf.path = path;
         sf.parent = (last_slash == std::string::npos) ? std::string() : path.substr(0, last_slash);
-        sf.uuid = generate_uuid();
+        sf.uuid = generate_stable_uuid("solution-folder:" + path);
         solution.folders.push_back(sf);
     }
 
@@ -1328,7 +1328,7 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
         state.solution->projects.emplace_back();
         state.current_project = &state.solution->projects.back();
         state.current_project->name = trim(section.substr(8));
-        state.current_project->uuid = generate_uuid();
+        state.current_project->uuid = generate_stable_uuid("project:" + state.current_project->name);
         state.current_project->root_namespace = state.current_project->name;
         // Store the buildscript directory for path resolution in custom commands
         state.current_project->buildscript_path = state.base_path;
