@@ -46,6 +46,9 @@ bool verify_file_sha256(const std::string& path,
                         const std::string& expected_sha256,
                         std::string* error = nullptr);
 
+bool is_internal_update_command(const char* command);
+int run_internal_update_command(int argc, char* argv[]);
+
 int run_update(const UpdateOptions& options);
 
 } // namespace updater

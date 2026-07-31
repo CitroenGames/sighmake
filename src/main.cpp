@@ -83,6 +83,10 @@ void print_update_usage(const char* program_name) {
 
 int main(int argc, char* argv[]) {
 
+    if (argc >= 2 && vcxproj::updater::is_internal_update_command(argv[1])) {
+        return vcxproj::updater::run_internal_update_command(argc, argv);
+    }
+
     // Check for SIGHMAKE_DEFAULT_TOOLSET environment variable
     if (const char* env_toolset = std::getenv("SIGHMAKE_DEFAULT_TOOLSET")) {
         auto& registry = vcxproj::ToolsetRegistry::instance();

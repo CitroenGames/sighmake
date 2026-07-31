@@ -273,7 +273,7 @@ jobs:
           {
             echo "version=${version}"
             echo "tag=${tag}"
-            echo "asset_base_url=https://github.com/${GITHUB_REPOSITORY}/releases/latest/download"
+            echo "asset_base_url=https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
             echo "windows_x64=sighmake-windows-x64.zip"
             echo "windows_x64_sha256=$(sha256sum sighmake-windows-x64.zip | awk '{print $1}')"
             echo "windows_x64_setup=sighmake-windows-x64-setup.exe"

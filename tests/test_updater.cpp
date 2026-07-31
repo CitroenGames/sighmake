@@ -13,6 +13,7 @@ TEST_CASE("Updater normalizes and compares versions", "[updater]") {
     CHECK(compare_versions("v1.2.10", "1.2.3") > 0);
     CHECK(compare_versions("0.0.0-dev", "0.1.0") < 0);
     CHECK(compare_versions("1.0", "1.0.0") == 0);
+    CHECK(compare_versions("999999999999999999999999.0", "2.0") > 0);
 }
 
 TEST_CASE("Updater parses release manifest assets", "[updater]") {
@@ -22,9 +23,9 @@ version=1.2.3
 tag=v1.2.3
 asset_base_url=https://github.com/CitroenGames/sighmake/releases/latest/download
 windows_x64=sighmake-windows-x64.zip
-windows_x64_sha256=ABCDEF
+windows_x64_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 linux_x64=sighmake-linux-x64.tar.gz
-linux_x64_sha256=012345
+linux_x64_sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 )";
 
     std::string error;
@@ -38,7 +39,8 @@ linux_x64_sha256=012345
     auto* windows_asset = find_asset(*manifest, "windows_x64");
     REQUIRE(windows_asset != nullptr);
     CHECK(windows_asset->name == "sighmake-windows-x64.zip");
-    CHECK(windows_asset->sha256 == "abcdef");
+    CHECK(windows_asset->sha256 ==
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 
     auto* missing_asset = find_asset(*manifest, "macos_arm64");
     CHECK(missing_asset == nullptr);
@@ -49,6 +51,81 @@ TEST_CASE("Updater rejects incomplete manifests", "[updater]") {
     auto manifest = parse_release_manifest("windows_x64=sighmake-windows-x64.zip\n", &error);
     CHECK_FALSE(manifest.has_value());
     CHECK(error.find("version") != std::string::npos);
+}
+
+TEST_CASE("Updater rejects unsafe or ambiguous manifests", "[updater][security]") {
+    const std::string checksum(64, 'a');
+
+    SECTION("asset path traversal") {
+        std::string text = "version=1.2.3\ntag=v1.2.3\nwindows_x64=../sighmake.zip\n"
+                           "windows_x64_sha256=" + checksum + "\n";
+        std::string error;
+        CHECK_FALSE(parse_release_manifest(text, &error));
+        CHECK(error.find("unsafe asset name") != std::string::npos);
+    }
+
+    SECTION("absolute asset path") {
+        std::string text = "version=1.2.3\ntag=v1.2.3\nwindows_x64=C:/sighmake.zip\n"
+                           "windows_x64_sha256=" + checksum + "\n";
+        std::string error;
+        CHECK_FALSE(parse_release_manifest(text, &error));
+        CHECK(error.find("unsafe asset name") != std::string::npos);
+    }
+
+    SECTION("missing checksum") {
+        std::string error;
+        CHECK_FALSE(parse_release_manifest(
+            "version=1.2.3\ntag=v1.2.3\nwindows_x64=sighmake-windows-x64.zip\n",
+            &error));
+        CHECK(error.find("missing SHA-256") != std::string::npos);
+    }
+
+    SECTION("malformed checksum") {
+        std::string error;
+        CHECK_FALSE(parse_release_manifest(
+            "version=1.2.3\ntag=v1.2.3\nwindows_x64=sighmake-windows-x64.zip\n"
+            "windows_x64_sha256=abcdef\n",
+            &error));
+        CHECK(error.find("invalid SHA-256") != std::string::npos);
+    }
+
+    SECTION("tag and version mismatch") {
+        std::string text = "version=1.2.3\ntag=v9.9.9\n"
+                           "windows_x64=sighmake-windows-x64.zip\n"
+                           "windows_x64_sha256=" + checksum + "\n";
+        std::string error;
+        CHECK_FALSE(parse_release_manifest(text, &error));
+        CHECK(error.find("does not match") != std::string::npos);
+    }
+
+    SECTION("duplicate fields") {
+        std::string text = "version=1.2.3\nversion=1.2.4\ntag=v1.2.3\n"
+                           "windows_x64=sighmake-windows-x64.zip\n"
+                           "windows_x64_sha256=" + checksum + "\n";
+        std::string error;
+        CHECK_FALSE(parse_release_manifest(text, &error));
+        CHECK(error.find("Duplicate") != std::string::npos);
+    }
+
+    SECTION("non-HTTPS asset base") {
+        std::string text = "version=1.2.3\ntag=v1.2.3\n"
+                           "asset_base_url=http://example.com/releases\n"
+                           "windows_x64=sighmake-windows-x64.zip\n"
+                           "windows_x64_sha256=" + checksum + "\n";
+        std::string error;
+        CHECK_FALSE(parse_release_manifest(text, &error));
+        CHECK(error.find("HTTPS") != std::string::npos);
+    }
+
+    SECTION("orphan checksum") {
+        std::string text = "version=1.2.3\ntag=v1.2.3\n"
+                           "windows_x64=sighmake-windows-x64.zip\n"
+                           "windows_x64_sha256=" + checksum + "\n"
+                           "linux_x64_sha256=" + checksum + "\n";
+        std::string error;
+        CHECK_FALSE(parse_release_manifest(text, &error));
+        CHECK(error.find("orphan checksum") != std::string::npos);
+    }
 }
 
 TEST_CASE("Updater verifies SHA-256 checksums", "[updater]") {
@@ -68,6 +145,10 @@ TEST_CASE("Updater verifies SHA-256 checksums", "[updater]") {
                                    "0000000000000000000000000000000000000000000000000000000000000000",
                                    &error));
     CHECK(error.find("mismatch") != std::string::npos);
+
+    error.clear();
+    CHECK_FALSE(verify_file_sha256(path.string(), "abcdef", &error));
+    CHECK(error.find("64 hexadecimal") != std::string::npos);
 
     std::error_code ec;
     fs::remove(path, ec);
