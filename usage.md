@@ -601,8 +601,8 @@ command.
 
 ### Runtime dependency receipts
 
-Visual Studio executable and shared-library targets can declare files that must
-travel with their primary artifact:
+Executable and shared-library targets generated for Visual Studio or Makefiles
+can declare files that must travel with their primary artifact:
 
 ```ini
 runtime_dependencies = SDL3|lib/x64/SDL3.dll|SDL3.dll|true
@@ -614,13 +614,20 @@ to the buildscript that declares it. Runtime dependencies propagate through the
 complete physical dependency closure, including private static-library edges,
 because link visibility does not change a final process's runtime requirements.
 
-After a successful Visual Studio build, sighmake writes
+After a successful Visual Studio or Makefile build, sighmake writes
 `<Target>.targetreceipt.json` beside the primary artifact. Format version 1
 identifies the target/platform/architecture/configuration, records the primary
 artifact size and SHA-256 hash, and emits a canonical sorted list of present
 runtime dependencies with their absolute source paths, safe relative stage
 paths, sizes, and SHA-256 hashes. Missing required inputs fail the build;
 missing optional inputs are retained in `SkippedRuntimeDependencies`.
+
+Generated Makefiles require Python 3 for receipt creation (`PYTHON=...` can
+override the default `python3` command). They revalidate the receipt on every
+normal build, including when the linked artifact is already up to date, and
+remove it during `make clean`. Desktop architecture is detected from `uname -m`
+and normalized to sighmake's architecture names; cross-builds can set
+`SIGHMAKE_RECEIPT_ARCHITECTURE` explicitly. Android receipts use `ANDROID_ABI`.
 
 Target receipts are an artifact handoff contract. Consumers should reject an
 unknown format, tuple mismatch, stale primary-artifact hash, unsafe stage path,

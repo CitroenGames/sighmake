@@ -181,6 +181,247 @@ bool has_extension_case_insensitive(const std::string& path, const std::string& 
     return suffix == ext;
 }
 
+static bool write_target_receipt_support(
+    const Project& project, const std::string& makefile_path) {
+    namespace fs = std::filesystem;
+    const fs::path directory = fs::absolute(makefile_path).parent_path();
+
+    const fs::path py_script_path = directory / "write-sighmake-target-receipt.py";
+    {
+        std::ofstream script(py_script_path, std::ios::binary | std::ios::trunc);
+        if (!script) return false;
+        script << R"PY(import argparse
+import hashlib
+import json
+import os
+import sys
+
+def canonical_architecture(value):
+    normalized = value.strip().lower()
+    aliases = {
+        "amd64": "x64",
+        "x86_64": "x64",
+        "i386": "x86",
+        "i486": "x86",
+        "i586": "x86",
+        "i686": "x86",
+        "aarch64": "ARM64",
+        "arm64": "ARM64",
+        "armv7": "ARM",
+        "armv7l": "ARM",
+    }
+    return aliases.get(normalized, value)
+
+def file_record(path):
+    if not os.path.isfile(path):
+        sys.exit(f"target receipt input is missing: {path}")
+    size = os.path.getsize(path)
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    return size, h.hexdigest().lower()
+
+def main():
+    parser = argparse.ArgumentParser(description="Write sighmake target receipt")
+    parser.add_argument("--metadata", required=True)
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--platform", required=True)
+    parser.add_argument("--architecture", required=True)
+    parser.add_argument("--configuration", required=True)
+    parser.add_argument("--primary-artifact", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+
+    primary_size, primary_sha256 = file_record(args.primary_artifact)
+
+    runtime = []
+    skipped = []
+    if os.path.isfile(args.metadata):
+        with open(args.metadata, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split("|")
+                if len(parts) != 4:
+                    sys.exit(f"invalid target receipt metadata: {line}")
+                name, source, stage_path, req_str = parts
+                required = (req_str == "1")
+                if not os.path.isfile(source):
+                    if required:
+                        sys.exit(f"required runtime dependency is missing: {source}")
+                    skipped.append({
+                        "Name": name,
+                        "Source": source,
+                        "StagePath": stage_path,
+                        "Reason": "MissingOptional"
+                    })
+                    continue
+                size, sha256 = file_record(source)
+                runtime.append({
+                    "Name": name,
+                    "Source": source,
+                    "StagePath": stage_path,
+                    "Required": required,
+                    "Size": size,
+                    "SHA256": sha256
+                })
+
+    runtime.sort(key=lambda x: (x["StagePath"].lower(), x["Name"].lower(), x["Source"].lower()))
+    skipped.sort(key=lambda x: (x["StagePath"].lower(), x["Name"].lower(), x["Source"].lower()))
+
+    receipt = {
+        "FormatVersion": 1,
+        "Target": args.target,
+        "Platform": args.platform,
+        "Architecture": canonical_architecture(args.architecture),
+        "Configuration": args.configuration,
+        "PrimaryArtifact": os.path.basename(args.primary_artifact),
+        "PrimaryArtifactSize": primary_size,
+        "PrimaryArtifactSHA256": primary_sha256,
+        "RuntimeDependencies": runtime,
+        "SkippedRuntimeDependencies": skipped
+    }
+
+    out_dir = os.path.dirname(args.output)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    candidate = f"{args.output}.candidate-{os.getpid()}"
+    try:
+        with open(candidate, "w", encoding="utf-8") as f:
+            json.dump(receipt, f, indent=2)
+            f.write("\n")
+        with open(candidate, "r", encoding="utf-8") as f:
+            json.load(f)
+        os.replace(candidate, args.output)
+    finally:
+        if os.path.exists(candidate):
+            try:
+                os.remove(candidate)
+            except OSError:
+                pass
+
+if __name__ == "__main__":
+    main()
+)PY";
+        if (!script) return false;
+    }
+
+    const fs::path ps_script_path = directory / "Write-SighmakeTargetReceipt.ps1";
+    {
+        std::ofstream script(ps_script_path, std::ios::binary | std::ios::trunc);
+        if (!script) return false;
+        script << R"PS([CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true)][string]$Metadata,
+    [Parameter(Mandatory=$true)][string]$Target,
+    [Parameter(Mandatory=$true)][string]$Platform,
+    [Parameter(Mandatory=$true)][string]$Architecture,
+    [Parameter(Mandatory=$true)][string]$Configuration,
+    [Parameter(Mandatory=$true)][string]$PrimaryArtifact,
+    [Parameter(Mandatory=$true)][string]$Output
+)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+function New-FileRecord([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "target receipt input is missing: $Path"
+    }
+    $item = Get-Item -LiteralPath $Path
+    return [ordered]@{
+        Size = [uint64]$item.Length
+        SHA256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
+
+$primary = New-FileRecord $PrimaryArtifact
+$runtime = @()
+$skipped = @()
+if (Test-Path -LiteralPath $Metadata -PathType Leaf) {
+    foreach ($line in Get-Content -LiteralPath $Metadata) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $parts = $line.Split('|')
+        if ($parts.Count -ne 4) { throw "invalid target receipt metadata: $line" }
+        $required = $parts[3] -eq '1'
+        if (-not (Test-Path -LiteralPath $parts[1] -PathType Leaf)) {
+            if ($required) { throw "required runtime dependency is missing: $($parts[1])" }
+            $skipped += [ordered]@{ Name=$parts[0]; Source=$parts[1]; StagePath=$parts[2]; Reason='MissingOptional' }
+            continue
+        }
+        $record = New-FileRecord $parts[1]
+        $runtime += [ordered]@{
+            Name = $parts[0]
+            Source = $parts[1]
+            StagePath = $parts[2]
+            Required = $required
+            Size = $record.Size
+            SHA256 = $record.SHA256
+        }
+    }
+}
+
+$receipt = [ordered]@{
+    FormatVersion = 1
+    Target = $Target
+    Platform = $Platform
+    Architecture = $Architecture
+    Configuration = $Configuration
+    PrimaryArtifact = [IO.Path]::GetFileName($PrimaryArtifact)
+    PrimaryArtifactSize = $primary.Size
+    PrimaryArtifactSHA256 = $primary.SHA256
+    RuntimeDependencies = @($runtime | Sort-Object `
+        @{Expression={$_.StagePath.ToLowerInvariant()}}, `
+        @{Expression={$_.Name.ToLowerInvariant()}}, `
+        @{Expression={$_.Source.ToLowerInvariant()}})
+    SkippedRuntimeDependencies = @($skipped | Sort-Object `
+        @{Expression={$_.StagePath.ToLowerInvariant()}}, `
+        @{Expression={$_.Name.ToLowerInvariant()}}, `
+        @{Expression={$_.Source.ToLowerInvariant()}})
+}
+
+$parent = Split-Path -Parent $Output
+if ($parent) { $null = New-Item -ItemType Directory -Force -Path $parent }
+$candidate = "$Output.candidate-$PID-$([DateTime]::UtcNow.Ticks)"
+try {
+    $json = $receipt | ConvertTo-Json -Depth 8
+    [IO.File]::WriteAllText($candidate, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    $null = Get-Content -LiteralPath $candidate -Raw | ConvertFrom-Json
+    Move-Item -LiteralPath $candidate -Destination $Output -Force
+} finally {
+    if (Test-Path -LiteralPath $candidate) { Remove-Item -LiteralPath $candidate -Force }
+}
+)PS";
+        if (!script) return false;
+    }
+
+    std::vector<RuntimeDependency> dependencies = project.runtime_dependencies;
+    std::sort(dependencies.begin(), dependencies.end(), [](const auto& left, const auto& right) {
+        return std::tie(left.stage_path, left.name, left.source) <
+            std::tie(right.stage_path, right.name, right.source);
+    });
+    std::ofstream metadata(
+        directory / (project.name + ".runtime-dependencies.txt"),
+        std::ios::binary | std::ios::trunc);
+    if (!metadata) return false;
+    for (const RuntimeDependency& dependency : dependencies) {
+        if (dependency.name.find('|') != std::string::npos ||
+            dependency.source.find('|') != std::string::npos ||
+            dependency.stage_path.find('|') != std::string::npos ||
+            dependency.name.find_first_of("\r\n") != std::string::npos ||
+            dependency.source.find_first_of("\r\n") != std::string::npos ||
+            dependency.stage_path.find_first_of("\r\n") != std::string::npos) {
+            std::cerr << "Error: runtime dependency metadata contains a reserved delimiter\n";
+            return false;
+        }
+        metadata << dependency.name << '|' << dependency.source << '|' <<
+            dependency.stage_path << '|' << (dependency.required ? '1' : '0') << '\n';
+    }
+    return static_cast<bool>(metadata);
+}
+
 } // namespace
 
 // Convert Windows path to Unix path (backslash to forward slash)
@@ -563,6 +804,9 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         << (android ? ", Android" : "") << ")\n";
     out << "# Generated by sighmake\n\n";
 
+    out << "MAKEFILE_DIR := $(dir $(lastword $(MAKEFILE_LIST)))\n";
+    out << "PYTHON ?= python3\n\n";
+
     // Determine compiler
     bool has_cpp_files = false;
     bool has_c_files = false;
@@ -586,6 +830,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     const bool links_binary = config.config_type == "Application" ||
                               config.config_type == "DynamicLibrary" ||
                               config.config_type == "Driver";
+    const bool emits_target_receipt = config.config_type == "Application" ||
+                                      config.config_type == "DynamicLibrary";
     const bool links_with_cxx = has_cpp_files || has_objcxx_files;
 
     // Compiler variables
@@ -819,7 +1065,13 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     // Output paths
     out << "# Output\n";
     out << "TARGET = " << target << "\n";
-    out << "OBJ_DIR = " << int_dir << "\n\n";
+    out << "OBJ_DIR = " << int_dir << "\n";
+    if (emits_target_receipt) {
+        out << "SIGHMAKE_TARGET_RECEIPT = " << out_dir << target_name << ".targetreceipt.json\n";
+        out << "SIGHMAKE_RECEIPT_ARCHITECTURE ?= "
+            << (android ? "$(ANDROID_ABI)" : "$(shell uname -m)") << "\n";
+    }
+    out << "\n";
 
     // Check if PCH is enabled for this configuration
     auto [has_pch, pch_header] = get_pch_info(config);
@@ -887,11 +1139,10 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     out << "\n\n";
 
     // Phony targets
-    if (!config.pre_build_event.command.empty()) {
-        out << ".PHONY: all clean prebuild\n\n";
-    } else {
-        out << ".PHONY: all clean\n\n";
-    }
+    out << ".PHONY: all clean";
+    if (!config.pre_build_event.command.empty()) out << " prebuild";
+    if (emits_target_receipt) out << " sighmake-target-receipt";
+    out << "\n\n";
 
     out << ".DEFAULT_GOAL := all\n\n";
 
@@ -903,7 +1154,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     }
 
     // Default target
-    out << "all: $(TARGET)\n\n";
+    out << "all: " << (emits_target_receipt ? "sighmake-target-receipt" : "$(TARGET)") << "\n\n";
 
     // PCH compilation rule
     if (has_pch && !pch_header_path.empty()) {
@@ -983,6 +1234,40 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         }
     }
 
+    if (emits_target_receipt) {
+        std::string receipt_platform;
+        if (android) {
+            receipt_platform = "Android";
+        } else {
+            std::string lower_plat = to_lower(platform);
+            if (lower_plat == "linux") {
+                receipt_platform = "Linux";
+            } else if (lower_plat == "macos" || lower_plat == "darwin" || lower_plat == "osx") {
+                receipt_platform = "macOS";
+            } else {
+#ifdef __APPLE__
+                receipt_platform = "macOS";
+#else
+                receipt_platform = "Linux";
+#endif
+            }
+        }
+
+        // Keep receipt validation separate from the link recipe. The phony target deliberately
+        // runs on every normal build so dependency changes, newly-present optional files, and a
+        // prior failed receipt are observed even when the primary artifact is already up to date.
+        out << "\n# Declarative target receipt\n";
+        out << "sighmake-target-receipt: $(TARGET)\n";
+        out << "\t@$(PYTHON) \"$(MAKEFILE_DIR)write-sighmake-target-receipt.py\" "
+            << "--metadata \"$(MAKEFILE_DIR)" << project.name << ".runtime-dependencies.txt\" "
+            << "--target \"" << project.name << "\" "
+            << "--platform \"" << receipt_platform << "\" "
+            << "--architecture \"$(SIGHMAKE_RECEIPT_ARCHITECTURE)\" "
+            << "--configuration \"" << config_name << "\" "
+            << "--primary-artifact \"$(TARGET)\" "
+            << "--output \"$(SIGHMAKE_TARGET_RECEIPT)\"\n";
+    }
+
     out << "\n";
 
     // Compilation rules for each source file
@@ -1038,15 +1323,21 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     // Clean rule
     out << "clean:\n";
     if (has_pch && !pch_output_path.empty()) {
-        out << "\trm -rf $(OBJ_DIR) $(TARGET) $(PCH_OUTPUT)\n\n";
+        out << "\trm -rf $(OBJ_DIR) $(TARGET) $(PCH_OUTPUT)";
     } else {
-        out << "\trm -rf $(OBJ_DIR) $(TARGET)\n\n";
+        out << "\trm -rf $(OBJ_DIR) $(TARGET)";
     }
+    if (emits_target_receipt) out << " $(SIGHMAKE_TARGET_RECEIPT)";
+    out << "\n\n";
 
     // Include dependency files
     if (!obj_files.empty()) {
         out << "# Include dependencies\n";
         out << "-include $(OBJS:.o=.d)\n";
+    }
+
+    if (emits_target_receipt && !write_target_receipt_support(project, output_path)) {
+        return false;
     }
 
     out.close();

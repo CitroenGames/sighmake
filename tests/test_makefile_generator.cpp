@@ -65,8 +65,15 @@ static MakefileResult generate_makefile(const std::string& buildscript,
             if (entry.is_regular_file()) {
                 std::string fname = entry.path().filename().string();
                 result.files[fname] = read_file(entry.path());
-                // Skip the master "Makefile" - we want the project-specific ones
+                // Skip the master Makefile and generator support artifacts. Directory iteration
+                // order is unspecified, so only a project Makefile may become the primary result.
                 if (fname == "Makefile") continue;
+                if (fname == "write-sighmake-target-receipt.py" ||
+                    fname == "Write-SighmakeTargetReceipt.ps1" ||
+                    (fname.size() >= 25 &&
+                     fname.compare(fname.size() - 25, 25, ".runtime-dependencies.txt") == 0)) {
+                    continue;
+                }
                 if (result.content.empty()) {
                     result.content = result.files[fname];
                 }
@@ -1204,3 +1211,186 @@ target_link_libraries(
     // The dependency archive lives in the ABI-scoped output directory
     CHECK(mk.find("android/$(ANDROID_ABI)/Core.a") != std::string::npos);
 }
+
+TEST_CASE("MakefileGenerator emits target receipt metadata and build hook", "[makefile_generator][receipt]") {
+    fs::path temp_dir = fs::temp_directory_path() / "sighmake_test_makefile_receipt";
+    std::error_code ec;
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir);
+
+    fs::path main_cpp = temp_dir / "main.cpp";
+    std::ofstream(main_cpp) << "int main() { return 0; }";
+
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:RuntimeBase]
+type = interface
+runtime_dependencies = Codec|thirdparty/codec.so|Codec.so|true
+
+[project:App]
+type = exe
+sources = main.cpp
+target_link_libraries(PRIVATE RuntimeBase)
+)", temp_dir.string());
+
+    MakefileGenerator gen;
+    REQUIRE(gen.generate(sol, temp_dir.string()));
+
+    const fs::path build_dir = temp_dir / "build";
+    REQUIRE(fs::exists(build_dir / "write-sighmake-target-receipt.py"));
+    REQUIRE(fs::exists(build_dir / "Write-SighmakeTargetReceipt.ps1"));
+    REQUIRE(fs::exists(build_dir / "App.runtime-dependencies.txt"));
+
+    const std::string metadata = read_file(build_dir / "App.runtime-dependencies.txt");
+    CHECK(metadata.find("Codec|") != std::string::npos);
+    CHECK(metadata.find("|Codec.so|1") != std::string::npos);
+
+    const std::string mk = read_file(build_dir / "App.Release");
+    CHECK(mk.find("SIGHMAKE_TARGET_RECEIPT = ") != std::string::npos);
+    CHECK(mk.find("SIGHMAKE_RECEIPT_ARCHITECTURE ?= $(shell uname -m)") != std::string::npos);
+    CHECK(mk.find(".PHONY: all clean sighmake-target-receipt") != std::string::npos);
+    CHECK(mk.find("all: sighmake-target-receipt") != std::string::npos);
+    CHECK(mk.find("sighmake-target-receipt: $(TARGET)") != std::string::npos);
+    CHECK(mk.find("write-sighmake-target-receipt.py") != std::string::npos);
+    CHECK(mk.find("App.runtime-dependencies.txt") != std::string::npos);
+    CHECK(mk.find(".targetreceipt.json") != std::string::npos);
+    CHECK(mk.find("--primary-artifact \"$(TARGET)\"") != std::string::npos);
+    CHECK(mk.find("--output \"$(SIGHMAKE_TARGET_RECEIPT)\"") != std::string::npos);
+    CHECK(mk.find("rm -rf $(OBJ_DIR) $(TARGET) $(SIGHMAKE_TARGET_RECEIPT)") != std::string::npos);
+
+    fs::remove_all(temp_dir, ec);
+}
+
+TEST_CASE("MakefileGenerator limits target receipts to executable and shared-library targets",
+          "[makefile_generator][receipt]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:Core]
+type = lib
+sources = main.cpp
+)");
+
+    REQUIRE(result.files.count("Core.Release"));
+    CHECK_FALSE(result.files.count("write-sighmake-target-receipt.py"));
+    CHECK_FALSE(result.files.count("Write-SighmakeTargetReceipt.ps1"));
+    CHECK_FALSE(result.files.count("Core.runtime-dependencies.txt"));
+    CHECK(result.files["Core.Release"].find("sighmake-target-receipt") == std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator uses the Android ABI in target receipts", "[makefile_generator][receipt]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Android
+
+[project:Plugin]
+type = dll
+sources = main.cpp
+)");
+
+    REQUIRE(result.files.count("Plugin.Debug.Android"));
+    const std::string& mk = result.files["Plugin.Debug.Android"];
+    CHECK(mk.find("SIGHMAKE_RECEIPT_ARCHITECTURE ?= $(ANDROID_ABI)") != std::string::npos);
+    CHECK(mk.find("--platform \"Android\"") != std::string::npos);
+    CHECK(mk.find("--architecture \"$(SIGHMAKE_RECEIPT_ARCHITECTURE)\"") != std::string::npos);
+}
+
+#ifndef _WIN32
+TEST_CASE("Makefile target receipts revalidate incremental builds and clean up", "[makefile_generator][receipt]") {
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path temp_dir = fs::temp_directory_path() /
+        ("sighmake receipt lifecycle " + std::to_string(unique));
+    struct TempDirCleanup {
+        fs::path path;
+        ~TempDirCleanup() {
+            std::error_code ec;
+            fs::remove_all(path, ec);
+        }
+    } cleanup{temp_dir};
+
+    fs::create_directories(temp_dir / "runtime assets");
+    std::ofstream(temp_dir / "main.cpp") << "int main() { return 0; }\n";
+    const fs::path required_dependency = temp_dir / "runtime assets" / "codec.so";
+    const fs::path optional_dependency = temp_dir / "runtime assets" / "optional.so";
+    std::ofstream(required_dependency) << "required-v1\n";
+
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Linux
+
+[project:RuntimeBase]
+type = interface
+runtime_dependencies = Codec|runtime assets/codec.so|Codec.so|true
+runtime_dependencies = Optional|runtime assets/optional.so|plugins/optional.so|false
+
+[project:App]
+type = exe
+sources = main.cpp
+outdir = artifacts
+intdir = objects
+target_link_libraries(PRIVATE RuntimeBase)
+)", temp_dir.string());
+
+    MakefileGenerator generator;
+    REQUIRE(generator.generate(sol, temp_dir.string()));
+
+    const fs::path build_dir = temp_dir / "build";
+    const fs::path binary = temp_dir / "artifacts" / "App";
+    const fs::path receipt = temp_dir / "artifacts" / "App.targetreceipt.json";
+    const std::string make_command = "make -C \"" + build_dir.string() +
+        "\" -f App.Debug SIGHMAKE_RECEIPT_ARCHITECTURE=aarch64 >/dev/null 2>&1";
+    const std::string clean_command = "make -C \"" + build_dir.string() +
+        "\" -f App.Debug clean >/dev/null 2>&1";
+
+    REQUIRE(std::system(make_command.c_str()) == 0);
+    REQUIRE(fs::exists(binary));
+    REQUIRE(fs::exists(receipt));
+    const auto binary_write_time = fs::last_write_time(binary);
+    const std::string initial_receipt = read_file(receipt);
+    CHECK(initial_receipt.find("\"Architecture\": \"ARM64\"") != std::string::npos);
+    CHECK(initial_receipt.find("\"SkippedRuntimeDependencies\": [") != std::string::npos);
+    CHECK(initial_receipt.find("\"Name\": \"Optional\"") != std::string::npos);
+
+    // A newly-present optional dependency must refresh the receipt without relinking the target.
+    std::ofstream(optional_dependency) << "optional-v1\n";
+    REQUIRE(std::system(make_command.c_str()) == 0);
+    CHECK((fs::last_write_time(binary) == binary_write_time));
+    const std::string optional_present_receipt = read_file(receipt);
+    CHECK(optional_present_receipt != initial_receipt);
+    CHECK(optional_present_receipt.find("\"StagePath\": \"plugins/optional.so\"") != std::string::npos);
+    CHECK(optional_present_receipt.find("\"SkippedRuntimeDependencies\": []") != std::string::npos);
+
+    // Runtime content changes are rehashed even though they are not link prerequisites.
+    std::ofstream(required_dependency, std::ios::trunc) << "required-v2\n";
+    REQUIRE(std::system(make_command.c_str()) == 0);
+    CHECK((fs::last_write_time(binary) == binary_write_time));
+    const std::string dependency_changed_receipt = read_file(receipt);
+    CHECK(dependency_changed_receipt != optional_present_receipt);
+
+    // A failed receipt remains retryable on an otherwise up-to-date binary.
+    std::error_code ec;
+    REQUIRE(fs::remove(required_dependency, ec));
+    REQUIRE(std::system(make_command.c_str()) != 0);
+    REQUIRE(std::system(make_command.c_str()) != 0);
+    CHECK((fs::last_write_time(binary) == binary_write_time));
+    std::ofstream(required_dependency) << "required-v3\n";
+    REQUIRE(std::system(make_command.c_str()) == 0);
+
+    REQUIRE(std::system(clean_command.c_str()) == 0);
+    CHECK_FALSE(fs::exists(binary));
+    CHECK_FALSE(fs::exists(receipt));
+}
+#endif
