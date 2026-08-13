@@ -38,6 +38,38 @@ static bool contains_msbuild_macro(const std::string& value) {
            value.find("%(") != std::string::npos;
 }
 
+static std::optional<RuntimeDependency> parse_runtime_dependency(
+    const std::string& encoded, const std::string& base_path) {
+    std::vector<std::string> fields;
+    std::stringstream stream(encoded);
+    std::string field;
+    while (std::getline(stream, field, '|')) {
+        fields.push_back(field);
+    }
+    if (fields.size() < 3 || fields.size() > 4) {
+        std::cerr << "Warning: runtime_dependencies entry requires "
+                     "Name|Source|StagePath[|Required]: " << encoded << "\n";
+        return std::nullopt;
+    }
+    RuntimeDependency result;
+    result.name = trim(fields[0]);
+    const std::string source = trim(fields[1]);
+    result.source = fs::path(source).is_absolute()
+        ? fs::path(source).lexically_normal().string()
+        : (fs::path(base_path) / source).lexically_normal().string();
+    result.stage_path = trim(fields[2]);
+    if (fields.size() == 4) {
+        const std::string required = to_lower(trim(fields[3]));
+        result.required = required != "false" && required != "no" && required != "0" &&
+            required != "optional";
+    }
+    if (result.name.empty() || source.empty() || result.stage_path.empty()) {
+        std::cerr << "Warning: runtime_dependencies entry has an empty field: " << encoded << "\n";
+        return std::nullopt;
+    }
+    return result;
+}
+
 std::string BuildscriptParser::trim(const std::string& str) {
     return vcxproj::trim(str);
 }
@@ -2904,6 +2936,13 @@ bool BuildscriptParser::parse_project_misc_setting(const std::string& key, const
         }
     }
     // Project references
+    else if (key == "runtime_dependencies") {
+        for (const auto& encoded : split(value, ',')) {
+            if (const auto dependency = parse_runtime_dependency(encoded, state.base_path)) {
+                proj.runtime_dependencies.push_back(*dependency);
+            }
+        }
+    }
     else if (key == "depends" || key == "dependencies" || key == "project_references") {
         auto deps = split(value, ',');
         const bool link_dependency = (key == "project_references");
@@ -3794,6 +3833,43 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
     // from all projects it depends on via target_link_libraries (project_references)
     // Respects CMake-style visibility: PUBLIC, PRIVATE, INTERFACE
     for (auto& proj : solution.projects) {
+        // Runtime dependencies follow the complete physical link graph. Visibility controls
+        // compile/link usage propagation, not whether a load-time DLL remains required by the
+        // final image through a private static-library implementation detail.
+        std::vector<std::string> runtime_queue;
+        std::set<std::string> runtime_processed;
+        for (const auto& direct : proj.project_references) {
+            if (direct.link_library_dependencies) runtime_queue.push_back(direct.name);
+        }
+        while (!runtime_queue.empty()) {
+            const std::string dependency_name = runtime_queue.back();
+            runtime_queue.pop_back();
+            if (!runtime_processed.insert(dependency_name).second) continue;
+            Project* runtime_project = nullptr;
+            for (auto& candidate : solution.projects) {
+                if (candidate.name == dependency_name) {
+                    runtime_project = &candidate;
+                    break;
+                }
+            }
+            if (!runtime_project) continue;
+            for (const RuntimeDependency& runtime : runtime_project->runtime_dependencies) {
+                const auto duplicate = std::find_if(
+                    proj.runtime_dependencies.begin(), proj.runtime_dependencies.end(),
+                    [&](const RuntimeDependency& existing) {
+                        return existing.name == runtime.name && existing.source == runtime.source &&
+                            existing.stage_path == runtime.stage_path &&
+                            existing.required == runtime.required;
+                    });
+                if (duplicate == proj.runtime_dependencies.end()) {
+                    proj.runtime_dependencies.push_back(runtime);
+                }
+            }
+            for (const auto& transitive : runtime_project->project_references) {
+                if (transitive.link_library_dependencies) runtime_queue.push_back(transitive.name);
+            }
+        }
+
         // Work queue: (dependency_name, effective_visibility)
         std::vector<std::pair<std::string, DependencyVisibility>> to_process;
         std::set<std::string> processed;

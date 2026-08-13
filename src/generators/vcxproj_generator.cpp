@@ -132,6 +132,122 @@ static std::string normalize_filter_path(std::string filter) {
     return filter;
 }
 
+static bool write_target_receipt_support(
+    const Project& project, const std::string& vcxproj_path) {
+    const fs::path directory = fs::absolute(vcxproj_path).parent_path();
+    const fs::path script_path = directory / "Write-SighmakeTargetReceipt.ps1";
+    {
+        std::ofstream script(script_path, std::ios::binary | std::ios::trunc);
+        if (!script) return false;
+        script << R"PS([CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true)][string]$Metadata,
+    [Parameter(Mandatory=$true)][string]$Target,
+    [Parameter(Mandatory=$true)][string]$Platform,
+    [Parameter(Mandatory=$true)][string]$Architecture,
+    [Parameter(Mandatory=$true)][string]$Configuration,
+    [Parameter(Mandatory=$true)][string]$PrimaryArtifact,
+    [Parameter(Mandatory=$true)][string]$Output
+)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+function New-FileRecord([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "target receipt input is missing: $Path"
+    }
+    $item = Get-Item -LiteralPath $Path
+    return [ordered]@{
+        Size = [uint64]$item.Length
+        SHA256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
+
+$primary = New-FileRecord $PrimaryArtifact
+$runtime = @()
+$skipped = @()
+if (Test-Path -LiteralPath $Metadata -PathType Leaf) {
+    foreach ($line in Get-Content -LiteralPath $Metadata) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $parts = $line.Split('|')
+        if ($parts.Count -ne 4) { throw "invalid target receipt metadata: $line" }
+        $required = $parts[3] -eq '1'
+        if (-not (Test-Path -LiteralPath $parts[1] -PathType Leaf)) {
+            if ($required) { throw "required runtime dependency is missing: $($parts[1])" }
+            $skipped += [ordered]@{ Name=$parts[0]; Source=$parts[1]; StagePath=$parts[2]; Reason='MissingOptional' }
+            continue
+        }
+        $record = New-FileRecord $parts[1]
+        $runtime += [ordered]@{
+            Name = $parts[0]
+            Source = $parts[1]
+            StagePath = $parts[2]
+            Required = $required
+            Size = $record.Size
+            SHA256 = $record.SHA256
+        }
+    }
+}
+
+$receipt = [ordered]@{
+    FormatVersion = 1
+    Target = $Target
+    Platform = $Platform
+    Architecture = $Architecture
+    Configuration = $Configuration
+    PrimaryArtifact = [IO.Path]::GetFileName($PrimaryArtifact)
+    PrimaryArtifactSize = $primary.Size
+    PrimaryArtifactSHA256 = $primary.SHA256
+    RuntimeDependencies = @($runtime | Sort-Object `
+        @{Expression={$_.StagePath.ToLowerInvariant()}}, `
+        @{Expression={$_.Name.ToLowerInvariant()}}, `
+        @{Expression={$_.Source.ToLowerInvariant()}})
+    SkippedRuntimeDependencies = @($skipped | Sort-Object `
+        @{Expression={$_.StagePath.ToLowerInvariant()}}, `
+        @{Expression={$_.Name.ToLowerInvariant()}}, `
+        @{Expression={$_.Source.ToLowerInvariant()}})
+}
+
+$parent = Split-Path -Parent $Output
+if ($parent) { $null = New-Item -ItemType Directory -Force -Path $parent }
+$candidate = "$Output.candidate-$PID-$([DateTime]::UtcNow.Ticks)"
+try {
+    $json = $receipt | ConvertTo-Json -Depth 8
+    [IO.File]::WriteAllText($candidate, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    $null = Get-Content -LiteralPath $candidate -Raw | ConvertFrom-Json
+    Move-Item -LiteralPath $candidate -Destination $Output -Force
+} finally {
+    if (Test-Path -LiteralPath $candidate) { Remove-Item -LiteralPath $candidate -Force }
+}
+)PS";
+        if (!script) return false;
+    }
+
+    std::vector<RuntimeDependency> dependencies = project.runtime_dependencies;
+    std::sort(dependencies.begin(), dependencies.end(), [](const auto& left, const auto& right) {
+        return std::tie(left.stage_path, left.name, left.source) <
+            std::tie(right.stage_path, right.name, right.source);
+    });
+    std::ofstream metadata(
+        directory / (project.name + ".runtime-dependencies.txt"),
+        std::ios::binary | std::ios::trunc);
+    if (!metadata) return false;
+    for (const RuntimeDependency& dependency : dependencies) {
+        if (dependency.name.find('|') != std::string::npos ||
+            dependency.source.find('|') != std::string::npos ||
+            dependency.stage_path.find('|') != std::string::npos ||
+            dependency.name.find_first_of("\r\n") != std::string::npos ||
+            dependency.source.find_first_of("\r\n") != std::string::npos ||
+            dependency.stage_path.find_first_of("\r\n") != std::string::npos) {
+            std::cerr << "Error: runtime dependency metadata contains a reserved delimiter\n";
+            return false;
+        }
+        metadata << dependency.name << '|' << dependency.source << '|' <<
+            dependency.stage_path << '|' << (dependency.required ? '1' : '0') << '\n';
+    }
+    return static_cast<bool>(metadata);
+}
+
 static std::string to_msvc_filter_path(std::string filter) {
     filter = normalize_filter_path(filter);
     std::replace(filter.begin(), filter.end(), '/', '\\');
@@ -1411,12 +1527,33 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     auto import3 = root.append_child("Import");
     import3.append_attribute("Project") = "$(VCTargetsPath)\\Microsoft.Cpp.targets";
 
+    // Receipts are emitted by the target itself after a successful build, so packaging can prove
+    // the exact primary artifact and declarative runtime closure without a global filename list.
+    auto receipt_target = root.append_child("Target");
+    receipt_target.append_attribute("Name") = "SighmakeWriteTargetReceipt";
+    receipt_target.append_attribute("AfterTargets") = "Build";
+    receipt_target.append_attribute("Condition") =
+        "('$(ConfigurationType)'=='Application' Or '$(ConfigurationType)'=='DynamicLibrary') "
+        "And '$(DesignTimeBuild)'!='true'";
+    const std::string receipt_command =
+        "powershell -NoProfile -ExecutionPolicy Bypass -File \"$(ProjectDir)Write-SighmakeTargetReceipt.ps1\" "
+        "-Metadata \"$(ProjectDir)" + project.name + ".runtime-dependencies.txt\" "
+        "-Target \"" + project.name + "\" -Platform \"Windows\" "
+        "-Architecture \"$(Platform)\" -Configuration \"$(Configuration)\" "
+        "-PrimaryArtifact \"$(TargetPath)\" "
+        "-Output \"$(OutDir)$(TargetName).targetreceipt.json\"";
+    receipt_target.append_child("Exec").append_attribute("Command") = receipt_command.c_str();
+
     // Extension targets - conditionally import MASM targets if project has MASM files
     auto ext_targets = root.append_child("ImportGroup");
     ext_targets.append_attribute("Label") = "ExtensionTargets";
     if (project.has_masm_files) {
         auto masm_import = ext_targets.append_child("Import");
         masm_import.append_attribute("Project") = "$(VCTargetsPath)\\BuildCustomizations\\masm.targets";
+    }
+
+    if (!write_target_receipt_support(project, output_path)) {
+        return false;
     }
 
     // Save to file

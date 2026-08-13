@@ -162,6 +162,16 @@ struct BuildEvent {
     bool use_in_build = true;
 };
 
+// One runtime file required beside a linked target after build. Source paths are resolved at
+// generation time from the buildscript which declares them; stage_path is always the portable
+// package-relative identity written to the target receipt.
+struct RuntimeDependency {
+    std::string name;
+    std::string source;
+    std::string stage_path;
+    bool required = true;
+};
+
 // Resource compiler settings
 struct ResourceCompileSettings {
     std::vector<std::string> preprocessor_definitions;
@@ -314,6 +324,7 @@ struct Project {
     std::vector<SourceFile> sources;
     std::vector<LibraryFile> libraries;
     std::vector<ProjectDependency> project_references;  // Structured dependencies with visibility
+    std::vector<RuntimeDependency> runtime_dependencies; // Local declarations; propagated through link closure
     bool has_masm_files = false;                        // Track if project contains MASM files
     bool has_nasm_files = false;                        // Track if project contains NASM files
     bool has_mc_files = false;                          // Track if project contains MC files

@@ -1996,3 +1996,39 @@ sources = main.cpp
         CHECK(sln.find("Android") == std::string::npos);
     }
 }
+
+TEST_CASE("VcxprojGenerator emits target receipt metadata and build hook", "[vcxproj_generator][receipt]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64
+
+[project:RuntimeBase]
+type = interface
+runtime_dependencies = Codec|thirdparty/codec.dll|Codec.dll|true
+
+[project:App]
+type = exe
+target_link_libraries(PRIVATE RuntimeBase)
+)");
+
+    REQUIRE(fs::exists(gen.vcxproj_path));
+    const fs::path generated = gen.vcxproj_path.parent_path();
+    REQUIRE(fs::exists(generated / "Write-SighmakeTargetReceipt.ps1"));
+    REQUIRE(fs::exists(generated / "App.runtime-dependencies.txt"));
+    const std::string metadata = read_file(generated / "App.runtime-dependencies.txt");
+    CHECK(metadata.find("Codec|") != std::string::npos);
+    CHECK(metadata.find("|Codec.dll|1") != std::string::npos);
+
+    pugi::xml_document doc;
+    REQUIRE(doc.load_file(gen.vcxproj_path.string().c_str()));
+    const auto target = doc.child("Project").find_child_by_attribute(
+        "Target", "Name", "SighmakeWriteTargetReceipt");
+    REQUIRE(target);
+    CHECK(std::string(target.attribute("AfterTargets").value()) == "Build");
+    const auto exec = target.child("Exec");
+    REQUIRE(exec);
+    CHECK(std::string(exec.attribute("Command").value()).find(
+        "$(TargetName).targetreceipt.json") != std::string::npos);
+}

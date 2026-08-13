@@ -599,6 +599,33 @@ pre-build, pre-link, and post-build events. Commands are backend-specific shell
 text; a command written for `cmd.exe` will not automatically become a POSIX shell
 command.
 
+### Runtime dependency receipts
+
+Visual Studio executable and shared-library targets can declare files that must
+travel with their primary artifact:
+
+```ini
+runtime_dependencies = SDL3|lib/x64/SDL3.dll|SDL3.dll|true
+runtime_dependencies = OptionalCodec|bin/codec.dll|plugins/codec.dll|false
+```
+
+Each record is `Name|Source|StagePath|Required`. `Source` is resolved relative
+to the buildscript that declares it. Runtime dependencies propagate through the
+complete physical dependency closure, including private static-library edges,
+because link visibility does not change a final process's runtime requirements.
+
+After a successful Visual Studio build, sighmake writes
+`<Target>.targetreceipt.json` beside the primary artifact. Format version 1
+identifies the target/platform/architecture/configuration, records the primary
+artifact size and SHA-256 hash, and emits a canonical sorted list of present
+runtime dependencies with their absolute source paths, safe relative stage
+paths, sizes, and SHA-256 hashes. Missing required inputs fail the build;
+missing optional inputs are retained in `SkippedRuntimeDependencies`.
+
+Target receipts are an artifact handoff contract. Consumers should reject an
+unknown format, tuple mismatch, stale primary-artifact hash, unsafe stage path,
+duplicate or unsorted record, or dependency hash drift before publication.
+
 ### Custom build rules
 
 Use `custom_build()` for a file produced by another tool:

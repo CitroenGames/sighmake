@@ -743,6 +743,39 @@ target_link_libraries(
     CHECK(dep_b->visibility == DependencyVisibility::PRIVATE);
 }
 
+TEST_CASE("Runtime dependencies propagate through the complete link closure", "[buildscript_parser][receipt]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64
+
+[project:RuntimeBase]
+type = interface
+runtime_dependencies = Codec|thirdparty/codec.dll|Codec.dll|true
+
+[project:Middle]
+type = lib
+target_link_libraries(PRIVATE RuntimeBase)
+
+[project:App]
+type = exe
+target_link_libraries(PRIVATE Middle)
+)", "C:/ReceiptFixture");
+    auto* base = find_project(sol, "RuntimeBase");
+    auto* app = find_project(sol, "App");
+    REQUIRE(base != nullptr);
+    REQUIRE(app != nullptr);
+    REQUIRE(base->runtime_dependencies.size() == 1);
+    REQUIRE(app->runtime_dependencies.size() == 1);
+    CHECK(app->runtime_dependencies[0].name == "Codec");
+    CHECK(fs::path(app->runtime_dependencies[0].source).lexically_normal() ==
+          fs::path("C:/ReceiptFixture/thirdparty/codec.dll").lexically_normal());
+    CHECK(app->runtime_dependencies[0].stage_path == "Codec.dll");
+    CHECK(app->runtime_dependencies[0].required);
+}
+
 // ============================================================================
 // Config sections
 // ============================================================================
