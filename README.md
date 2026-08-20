@@ -52,8 +52,12 @@ curl -fsSL https://github.com/CitroenGames/sighmake/releases/latest/download/sig
 curl -fsSL https://github.com/CitroenGames/sighmake/releases/latest/download/sighmake-macos-x64.tar.gz | sudo tar -xz -C /usr/local/bin
 ```
 
-Windows users can either download `sighmake.exe` from GitHub Releases or build
-and install from a Developer Command Prompt:
+### Windows x64
+```powershell
+$installer = Join-Path $env:TEMP 'sighmake-windows-x64-setup.exe'; Invoke-WebRequest 'https://github.com/CitroenGames/sighmake/releases/latest/download/sighmake-windows-x64-setup.exe' -OutFile $installer; Start-Process $installer -Wait
+```
+
+Alternatively, build and install from a Developer Command Prompt:
 
 ```batch
 install.bat
