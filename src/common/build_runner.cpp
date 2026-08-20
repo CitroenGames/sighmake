@@ -7,6 +7,39 @@ namespace fs = std::filesystem;
 
 namespace vcxproj {
 
+std::optional<std::string> resolve_build_platform(
+    const std::vector<std::string>& available_platforms,
+    const std::string& requested_platform)
+{
+    if (!requested_platform.empty()) {
+        const std::string normalized_request = normalize_platform(requested_platform);
+        if (available_platforms.empty()) {
+            return normalized_request;
+        }
+
+        const std::string requested_lower = to_lower(normalized_request);
+        for (const auto& available : available_platforms) {
+            const std::string normalized_available = normalize_platform(available);
+            if (to_lower(normalized_available) == requested_lower) {
+                return normalized_available;
+            }
+        }
+        return std::nullopt;
+    }
+
+    for (const auto& available : available_platforms) {
+        const std::string normalized_available = normalize_platform(available);
+        if (to_lower(normalized_available) == "x64") {
+            return normalized_available;
+        }
+    }
+
+    if (!available_platforms.empty()) {
+        return normalize_platform(available_platforms.front());
+    }
+    return std::string("x64");
+}
+
 static bool contains_path_separator(const std::string& value) {
     return value.find('/') != std::string::npos ||
            value.find('\\') != std::string::npos;
@@ -82,6 +115,18 @@ std::string BuildRunner::find_msbuild(const std::string& vs_installation_path) {
 
 int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& options,
                               const std::string& cache_dir) {
+    auto selected_platform = resolve_build_platform(cache.platforms, options.platform);
+    if (!selected_platform) {
+        std::cerr << "Error: Platform '" << options.platform << "' not available.\n";
+        std::cerr << "  Available: ";
+        for (size_t i = 0; i < cache.platforms.size(); ++i) {
+            if (i > 0) std::cerr << ", ";
+            std::cerr << normalize_platform(cache.platforms[i]);
+        }
+        std::cerr << "\n";
+        return 1;
+    }
+
     // Find MSBuild
     std::string msbuild_path = find_msbuild(cache.vs_installation_path);
     if (msbuild_path.empty()) {
@@ -149,17 +194,7 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
         }
     }
 
-    // Determine platform (default to x64 if available)
-    std::string platform;
-    if (!cache.platforms.empty()) {
-        bool has_x64 = false;
-        for (const auto& p : cache.platforms) {
-            if (p == "x64") { has_x64 = true; break; }
-        }
-        platform = has_x64 ? "x64" : cache.platforms[0];
-    } else {
-        platform = "x64";
-    }
+    const std::string& platform = *selected_platform;
 
     // Build MSBuild command
     std::string cmd = "\"\"" + msbuild_path + "\" \"" + build_path.string() + "\"";
@@ -200,6 +235,12 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
 
 int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
                            const std::string& cache_dir) {
+    if (!options.platform.empty()) {
+        std::cerr << "Error: --platform is not supported by the makefile build backend.\n";
+        std::cerr << "  Select the target platform when generating the Makefile instead.\n";
+        return 1;
+    }
+
     // Verify build directory exists
     fs::path build_dir = fs::path(cache_dir) / cache.build_dir;
     fs::path makefile_path = build_dir / "Makefile";
@@ -280,6 +321,12 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
 
 int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,
                             const std::string& cache_dir) {
+    if (!options.platform.empty()) {
+        std::cerr << "Error: --platform is not supported by the CMake build backend.\n";
+        std::cerr << "  Select the target platform when configuring CMake instead.\n";
+        return 1;
+    }
+
     // Verify build directory exists
     fs::path build_dir = fs::path(cache_dir) / cache.build_dir;
     if (!fs::exists(build_dir)) {

@@ -2,6 +2,7 @@
 #include "catch_amalgamated.hpp"
 #include "parsers/buildscript_parser.hpp"
 #include "generators/vcxproj_generator.hpp"
+#include "common/build_cache.hpp"
 #include "pugixml.hpp"
 
 using namespace vcxproj;
@@ -1995,6 +1996,10 @@ sources = main.cpp
         std::string sln = read_file(gen.sln_path);
         CHECK(sln.find("Android") == std::string::npos);
     }
+
+    auto cache = BuildCache::read(gen.temp_dir.string());
+    REQUIRE(cache);
+    CHECK(cache->platforms == std::vector<std::string>{"x64"});
 }
 
 TEST_CASE("VcxprojGenerator emits target receipt metadata and build hook", "[vcxproj_generator][receipt]") {

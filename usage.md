@@ -120,6 +120,7 @@ references are replaced with an empty string. Values discovered later by
 | --- | --- |
 | `-b`, `--build <dir>` | Build from the cache in `<dir>`. This form must be the first command argument. |
 | `--config <name>` | Select a configuration such as `Debug` or `Release`. |
+| `--platform <name>` | Select a generated Visual Studio platform such as `x64` or `Win32`; `x86` is an alias for `Win32`. |
 | `--target <name>` | Pass a target to the active backend. |
 | `--project <name-or-file>` | Build one generated project instead of the complete solution/graph. |
 | `--no-project-references`, `--no-deps` | With an MSBuild project build, set `BuildProjectReferences=false`. |
@@ -132,13 +133,19 @@ Examples:
 ```text
 sighmake --build .
 sighmake --build . --config Release -j 8
-sighmake --build . --config Debug --project Editor
+sighmake --build . --config Debug --platform Win32 --project Editor
 sighmake --build . --clean
 ```
 
-There is currently no `--platform` build option. MSBuild builds prefer `x64`
-when it is present, otherwise the first cached platform. Use MSBuild directly
-when a generated multi-platform solution must be built for another platform.
+For Visual Studio builds, `--platform` validates the requested name against the
+generated platform matrix and passes it to MSBuild. Platform names are matched
+case-insensitively, and `x86` selects Visual Studio's canonical `Win32`
+platform. If the option is omitted, sighmake prefers `x64` when present and
+otherwise uses the first cached platform.
+
+The Makefile and CMake generators do not retain the same build-time platform
+matrix, so their `--build` routes reject `--platform` with an explanation.
+Select the platform while generating a Makefile or configuring CMake instead.
 
 ### Updates
 

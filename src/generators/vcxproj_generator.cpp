@@ -2031,7 +2031,17 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
         cache.vs_year = vs_info->year;
         cache.platform_toolset = vs_info->platform_toolset;
         cache.configurations = solution.configurations;
-        cache.platforms = solution.platforms;
+        // The cache describes the generated Visual Studio graph, not every
+        // platform declared by the source buildscript. Unix and Android
+        // platforms are intentionally omitted from vcxproj output.
+        for (const auto& platform : solution.platforms) {
+            if (!is_windows_platform(platform)) continue;
+            const std::string normalized = normalize_platform(platform);
+            if (std::find(cache.platforms.begin(), cache.platforms.end(), normalized) ==
+                cache.platforms.end()) {
+                cache.platforms.push_back(normalized);
+            }
+        }
         for (const auto& project : solution.projects) {
             if (project.is_package_project) continue;
 

@@ -38,6 +38,7 @@ void print_usage(const char* program_name) {
     std::cout << "Build options:\n";
     std::cout << "  -b, --build <dir>          Build using previously generated project files\n";
     std::cout << "      --config <cfg>         Build configuration (e.g. Debug, Release)\n";
+    std::cout << "      --platform <name>      Build platform for Visual Studio (e.g. x64, Win32, x86)\n";
     std::cout << "      --target <tgt>         Build specific target\n";
     std::cout << "      --project <name|file>  Build a generated project instead of the whole graph\n";
     std::cout << "      --no-project-references Do not build referenced projects with --project\n";
@@ -61,7 +62,7 @@ void print_usage(const char* program_name) {
     std::cout << "  " << program_name << " project.buildscript -t msvc2022\n";
     std::cout << "  " << program_name << " project.buildscript -D ENGINE=C:/Engine\n";
     std::cout << "  " << program_name << " CMakeLists.txt -g makefile\n";
-    std::cout << "  " << program_name << " --build . --config Release -j 8\n";
+    std::cout << "  " << program_name << " --build . --config Release --platform x64 -j 8\n";
     std::cout << "  " << program_name << " --build . --config Debug --project MyPlugin --no-project-references\n";
     std::cout << "  " << program_name << " --convert solution.slnx\n";
     std::cout << "  " << program_name << " --convert legacy.vcproj\n";
@@ -197,6 +198,8 @@ int main(int argc, char* argv[]) {
         for (int i = 3; i < argc; i++) {
             if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
                 options.config = argv[++i];
+            } else if (strcmp(argv[i], "--platform") == 0 && i + 1 < argc) {
+                options.platform = argv[++i];
             } else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
                 options.target = argv[++i];
             } else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) {

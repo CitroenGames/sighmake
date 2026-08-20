@@ -22,6 +22,7 @@ sources = {
     test_vcxproj_reader.cpp
     test_buildscript_writer.cpp
     test_buildscript_generator.cpp
+    test_build_runner.cpp
     test_generator_factory.cpp
     test_cmake_generator.cpp
     test_updater.cpp
@@ -42,6 +43,7 @@ sources = {
     ../src/common/toolset_registry.cpp
     ../src/common/vs_detector.cpp
     ../src/common/build_cache.cpp
+    ../src/common/build_runner.cpp
     ../src/common/updater.cpp
     ../src/pugixml.cpp
 }

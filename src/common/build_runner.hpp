@@ -1,13 +1,16 @@
 #pragma once
 
 #include "build_cache.hpp"
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace vcxproj {
 
 struct BuildOptions {
     std::string directory;          // The --build <dir> argument
     std::string config;             // --config <cfg> (optional)
+    std::string platform;           // --platform <name> (optional, vcxproj only)
     std::string target;             // --target <tgt> (optional)
     std::string project;            // --project <name|file> (optional)
     bool clean_first = false;       // --clean-first (optional)
@@ -15,6 +18,13 @@ struct BuildOptions {
     bool build_project_references = true; // false with --no-project-references
     int parallel = 0;               // --parallel <N> (optional, 0 = default)
 };
+
+// Resolve an explicitly requested platform, including aliases such as
+// x86 -> Win32, or choose the default platform when none was requested.
+// Returns std::nullopt when the requested platform is not available.
+std::optional<std::string> resolve_build_platform(
+    const std::vector<std::string>& available_platforms,
+    const std::string& requested_platform);
 
 class BuildRunner {
 public:

@@ -123,6 +123,7 @@ Common build options:
 
 ```text
 --config <cfg>             Build configuration, for example Debug or Release
+--platform <name>          Visual Studio platform, for example x64 or Win32 (x86 aliases Win32)
 --target <tgt>             Build a target
 --project <name|file>      Build one generated project
 --no-project-references    Do not build referenced projects with --project
