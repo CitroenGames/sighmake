@@ -777,6 +777,36 @@ bool download_url_to_file(const std::string& url,
 #endif
 }
 
+std::optional<std::string> read_release_manifest_file_impl(const fs::path& path,
+                                                           std::string* error) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        set_error(error, "Could not open the downloaded release manifest");
+        return std::nullopt;
+    }
+
+    std::string text;
+    std::array<char, 16 * 1024> buffer{};
+    while (in) {
+        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        std::streamsize bytes_read = in.gcount();
+        if (bytes_read > 0) {
+            uint64_t byte_count = static_cast<uint64_t>(bytes_read);
+            if (byte_count > kMaxManifestBytes - static_cast<uint64_t>(text.size())) {
+                set_error(error, "Release manifest exceeds the updater size limit");
+                return std::nullopt;
+            }
+            text.append(buffer.data(), static_cast<size_t>(bytes_read));
+        }
+    }
+
+    if (in.bad() || !in.eof()) {
+        set_error(error, "Could not read the downloaded release manifest");
+        return std::nullopt;
+    }
+    return text;
+}
+
 std::optional<std::string> download_url_to_string(const std::string& url, std::string* error) {
     auto temp_dir = unique_temp_dir(error);
     if (!temp_dir) {
@@ -787,19 +817,7 @@ std::optional<std::string> download_url_to_string(const std::string& url, std::s
     if (!download_url_to_file(url, temp_file, kMaxManifestBytes, error)) {
         return std::nullopt;
     }
-
-    std::ifstream in(temp_file, std::ios::binary);
-    if (!in) {
-        set_error(error, "Could not open the downloaded release manifest");
-        return std::nullopt;
-    }
-    std::stringstream ss;
-    ss << in.rdbuf();
-    if (!in.eof() || static_cast<uint64_t>(ss.str().size()) > kMaxManifestBytes) {
-        set_error(error, "Release manifest exceeds the updater size limit");
-        return std::nullopt;
-    }
-    return ss.str();
+    return read_release_manifest_file_impl(temp_file, error);
 }
 
 std::string release_download_base(const std::string& repository) {
@@ -1507,6 +1525,12 @@ bool replace_unix_binary(const fs::path& source,
 #endif
 
 } // namespace
+
+std::optional<std::string> read_release_manifest_file(const fs::path& path,
+                                                      std::string* error) {
+    if (error) error->clear();
+    return read_release_manifest_file_impl(path, error);
+}
 
 bool is_internal_update_command(const char* command) {
     return command && (std::strcmp(command, kFinishUpdateCommand) == 0 ||

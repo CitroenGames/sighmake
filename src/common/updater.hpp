@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <iosfwd>
 #include <optional>
 #include <string>
@@ -34,6 +35,8 @@ struct UpdateOptions {
 std::string normalize_version(std::string version);
 int compare_versions(const std::string& lhs, const std::string& rhs);
 
+std::optional<std::string> read_release_manifest_file(const std::filesystem::path& path,
+                                                      std::string* error = nullptr);
 std::optional<ReleaseManifest> parse_release_manifest(const std::string& text,
                                                        std::string* error = nullptr);
 const ReleaseAsset* find_asset(const ReleaseManifest& manifest,

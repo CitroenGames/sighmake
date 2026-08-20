@@ -128,6 +128,42 @@ TEST_CASE("Updater rejects unsafe or ambiguous manifests", "[updater][security]"
     }
 }
 
+TEST_CASE("Updater reads downloaded manifest files within the size limit", "[updater]") {
+    fs::path path = fs::temp_directory_path() / "sighmake-updater-manifest-read-test.ini";
+    std::error_code ec;
+    fs::remove(path, ec);
+
+    SECTION("normal manifest") {
+        const std::string expected = "version=1.2.3\ntag=v1.2.3\n";
+        {
+            std::ofstream out(path, std::ios::binary);
+            REQUIRE(out.good());
+            out << expected;
+        }
+
+        std::string error;
+        auto actual = read_release_manifest_file(path, &error);
+        REQUIRE(actual.has_value());
+        CHECK(error.empty());
+        CHECK(*actual == expected);
+    }
+
+    SECTION("oversized manifest") {
+        {
+            std::ofstream out(path, std::ios::binary);
+            REQUIRE(out.good());
+            out.seekp(1024 * 1024);
+            out.put('x');
+        }
+
+        std::string error;
+        CHECK_FALSE(read_release_manifest_file(path, &error).has_value());
+        CHECK(error.find("size limit") != std::string::npos);
+    }
+
+    fs::remove(path, ec);
+}
+
 TEST_CASE("Updater verifies SHA-256 checksums", "[updater]") {
     fs::path path = fs::temp_directory_path() / "sighmake-updater-sha256-test.txt";
     {
