@@ -17,6 +17,7 @@ For installation, source builds, tests, and release packaging, see
 - [Configurations and platforms](#configurations-and-platforms)
 - [Projects and files](#projects-and-files)
 - [Dependencies and packages](#dependencies-and-packages)
+- [SIMD and vectorization](#simd-and-vectorization)
 - [Generators and direct builds](#generators-and-direct-builds)
 - [Android](#android)
 - [Conversion](#conversion)
@@ -806,6 +807,187 @@ macOS they first use `pkg-config` where applicable, then check standard paths.
 DirectX finders are Windows-only. Discovery runs on the host executing sighmake,
 not on a remote or Android target.
 
+## SIMD and vectorization
+
+sighmake has one dedicated SIMD setting, `simd`, plus the generic `cflags`
+setting for compiler-specific vector flags. Which one you need depends on the
+generator.
+
+### The `simd` setting (Visual Studio)
+
+`simd` (alias `enhanced_instruction_set`) maps directly to the MSVC
+`EnableEnhancedInstructionSet` property, which is `/arch:` on the compiler
+command line. The value is the MSBuild enum name, not the raw flag:
+
+| `simd` value | MSVC flag | Notes |
+| --- | --- | --- |
+| `NotSet` | none | Compiler default: SSE2 on x64, no SIMD on Win32. |
+| `StreamingSIMDExtensions` | `/arch:SSE` | Win32 only. |
+| `StreamingSIMDExtensions2` | `/arch:SSE2` | Win32 only; already the default on x64. |
+| `AdvancedVectorExtensions` | `/arch:AVX` | |
+| `AdvancedVectorExtensions2` | `/arch:AVX2` | Most common choice for modern x64 builds. |
+| `AdvancedVectorExtensions512` | `/arch:AVX512` | |
+| `NoExtensions` | `/arch:IA32` | Win32 only; disables SSE code generation. |
+
+The value is written into the project file verbatim, so any name accepted by
+your Visual Studio version works even if it is not listed above.
+
+Enable AVX2 for every configuration and platform of a project:
+
+```ini
+[project:Math]
+type = lib
+sources = src/*.cpp
+simd = AdvancedVectorExtensions2
+```
+
+`simd` is applied to every cell of the solution matrix that exists when the line
+is parsed, so declare the `[solution]` matrix first. Use an exact selector when
+only some cells should be vectorized. This is the usual way to keep a Win32
+build on SSE2 while x64 uses AVX2:
+
+```ini
+[solution]
+name = Vectors
+configurations = Debug, Release
+platforms = Win32, x64
+
+[project:Math]
+type = lib
+sources = src/*.cpp
+simd[Debug|Win32] = StreamingSIMDExtensions2
+simd[Release|Win32] = StreamingSIMDExtensions2
+simd[Debug|x64] = AdvancedVectorExtensions2
+simd[Release|x64] = AdvancedVectorExtensions2
+```
+
+`simd` is also accepted inside full configuration sections and templates:
+
+```ini
+[project:Math:Release|x64]
+optimization = MaxSpeed
+simd = AdvancedVectorExtensions2
+floating_point = Fast
+```
+
+`simd` is not a per-file setting. If only a few translation units need a higher
+instruction set, put them in a separate static library project with its own
+`simd` value, or pass the flag per file with `cflags`:
+
+```ini
+src/kernels_avx2.cpp:cflags = /arch:AVX2
+```
+
+The Visual Studio and VPC converters preserve the setting: an imported
+`.vcxproj` with `EnableEnhancedInstructionSet` produces a `simd = ...` line, and
+old `.vcproj` values map to `StreamingSIMDExtensions` and
+`StreamingSIMDExtensions2`.
+
+### Make and CMake
+
+The Make and CMake generators ignore `simd`; they do not translate the MSBuild
+enum into GCC or Clang flags. Pass the compiler flags through `cflags` instead.
+`cflags` is appended, so it can be combined with other flags, and it accepts
+exact and platform selectors:
+
+```ini
+[project:Math]
+type = lib
+sources = src/*.cpp
+
+# Windows/MSVC generators read this...
+simd = AdvancedVectorExtensions2
+
+# ...and Make/CMake read these.
+cflags[Linux] = -mavx2 -mfma
+cflags[macOS] = -mavx2 -mfma
+```
+
+Common GCC/Clang equivalents:
+
+| Goal | Flag |
+| --- | --- |
+| SSE4.2 | `-msse4.2` |
+| AVX | `-mavx` |
+| AVX2 with FMA | `-mavx2 -mfma` |
+| AVX-512 (foundation) | `-mavx512f` |
+| Everything the build machine supports | `-march=native` |
+| ARM NEON on 32-bit ARM | `-mfpu=neon` (NEON is always on for AArch64) |
+
+`-march=native` produces binaries that may not run on other machines; use it
+only for local builds or benchmarks.
+
+Because `simd` is silently ignored outside Visual Studio and `cflags` values
+such as `-mavx2` are rejected by MSVC, keep the two on separate platforms, as
+above, or guard raw flags with a host condition:
+
+```ini
+if(windows) {
+    simd = AdvancedVectorExtensions2
+}
+if(!windows) {
+    cflags = -mavx2 -mfma
+}
+```
+
+### Per-file SIMD dispatch
+
+A common pattern is to compile most sources for a baseline and only the vector
+kernels for a newer instruction set, then choose at runtime with `__cpuid` or
+`__builtin_cpu_supports`. Per-file `cflags` accept a full `Config|Platform`
+selector or `[*]`, and comma-separated values become separate flags:
+
+```ini
+[project:Math]
+type = lib
+sources = src/*.cpp
+
+src/kernels_avx2.cpp:cflags = /arch:AVX2
+src/kernels_avx512.cpp:cflags = /arch:AVX512
+```
+
+Per-file `cflags` are currently emitted only by the Visual Studio generator.
+The Make and CMake generators honor per-file `defines`, `excluded`, `pch`,
+`compile_as`, and `object_file`, but not per-file compiler flags. For a
+portable per-file instruction set, split the kernels into their own static
+library project and give that project the flags:
+
+```ini
+[project:MathKernelsAVX2]
+type = lib
+sources = src/kernels_avx2.cpp
+if(windows) {
+    simd = AdvancedVectorExtensions2
+}
+if(!windows) {
+    cflags = -mavx2 -mfma
+}
+
+[project:Math]
+type = lib
+sources = src/*.cpp
+src/kernels_avx2.cpp:excluded = true
+depends = MathKernelsAVX2
+```
+
+The same per-file flags can be set through a `[file:...]` section or
+`file_properties` block; see [Per-file settings](#per-file-settings).
+
+### Related settings
+
+| Setting | Purpose |
+| --- | --- |
+| `floating_point` (`fp_model`) | `Precise`, `Strict`, or `Fast`. `Fast` lets MSVC reorder and contract vector math; the GCC/Clang equivalent is `cflags = -ffast-math`. |
+| `intrinsic_functions` | Boolean; enables `/Oi` so MSVC inlines intrinsic calls. Configuration setting, so use an exact selector. |
+| `openmp` | Boolean; enables OpenMP, including `#pragma omp simd`, in Visual Studio. |
+| `favor_size_or_speed` | `Speed` or `Size`; influences whether MSVC's auto-vectorizer is worth enabling. |
+
+For Android builds, the NDK toolchain selects the ABI's baseline (NEON on
+`arm64-v8a`); add `cflags` inside `if(Android)` if a higher level is required.
+Also note that AVX intrinsics in a translation unit compiled without the
+matching flag fail to compile on GCC/Clang and can crash at runtime on MSVC when
+the CPU lacks the extension, so keep flags and intrinsics in the same file.
+
 ## Generators and direct builds
 
 ### Generator comparison
@@ -1039,6 +1221,8 @@ the primary names shown here in hand-written buildscripts.
 | `exceptions` | `true`/`Sync`, `Async`, or `false`. |
 | `rtti` | Boolean runtime type information. |
 | `multiprocessor` | Boolean parallel compilation setting. |
+| `simd` | MSVC instruction set, e.g. `AdvancedVectorExtensions2`. Visual Studio only; see [SIMD and vectorization](#simd-and-vectorization). |
+| `floating_point` | `Precise`, `Strict`, or `Fast`. |
 | `utf8` | Use UTF-8 source/execution character sets. |
 | `cflags` | Raw additional compiler options. |
 | `objcflags` | Additional flags for `.m`/`.mm` files. |
@@ -1047,8 +1231,8 @@ the primary names shown here in hand-written buildscripts.
 
 Other recognized compiler keys include `disable_warnings`, `error_reporting`,
 `assembler_listing`, `object_file_name`, `program_database_file`,
-`browse_information`, `browse_information_file`, `basic_runtime_checks`, `simd`,
-`floating_point`, `inline_function_expansion`, `favor_size_or_speed`,
+`browse_information`, `browse_information_file`, `basic_runtime_checks`,
+`inline_function_expansion`, `favor_size_or_speed`,
 `string_pooling`, `minimal_rebuild`, `buffer_security_check`,
 `force_conformance_in_for_loop_scope`, `function_level_linking`,
 `intrinsic_functions`, `generate_xml_documentation_files`,
@@ -1170,4 +1354,6 @@ previously generated backend plus its cache.
 
 Many advanced keys represent MSBuild properties. Prefer the portable settings
 in the main tables, guard raw flags by host/configuration, and inspect the
-generated Makefile or CMakeLists for the exact feature you need.
+generated Makefile or CMakeLists for the exact feature you need. `simd` is one
+such key; [SIMD and vectorization](#simd-and-vectorization) shows the `cflags`
+equivalent for GCC and Clang.
