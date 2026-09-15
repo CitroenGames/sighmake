@@ -83,7 +83,12 @@ sighmake --build <directory> [build-options]
 sighmake --convert <file.sln|.slnx|.vcxproj|.vcproj> [options]
 sighmake convert vpc <file.vpc>
 sighmake update [--check-only] [--force]
+sighmake --version
 ```
+
+`--build`, `--convert`, `convert`, `update` (alias `--update`), and
+`--version`/`-V` are recognized only as the first argument. Placing them after
+an input file produces an "Unexpected argument" error.
 
 `<input-file>` may be a `.buildscript`, `CMakeLists.txt`, or `.cmake` file.
 
@@ -99,7 +104,7 @@ sighmake update [--check-only] [--force]
 | `-l`, `--list` | List registered generators. |
 | `--list-toolsets` | List recognized `msvcYYYY` toolset aliases. |
 | `-h`, `--help` | Show command help. |
-| `-V`, `--version` | Show the version and release repository. |
+| `-V`, `--version` | Show the version and release repository. First argument only. |
 
 Examples:
 
@@ -110,6 +115,11 @@ sighmake app.buildscript -t msvc2022
 sighmake app.buildscript -D SDK_ROOT=C:/SDK
 sighmake app.buildscript --export-deps
 ```
+
+Any input file that is not named `CMakeLists.txt` or `*.cmake` is parsed as a
+buildscript regardless of its extension. Output is always written relative to
+the current working directory, not beside the input file; there is no separate
+output-directory option.
 
 `-D` is two arguments: the option and `NAME=VALUE`. Undefined `${NAME}`
 references are replaced with an empty string. Values discovered later by
@@ -345,6 +355,21 @@ treat_warning_as_error[*] = true
 Declare the solution matrix before bracketed settings so expansion sees the
 intended configurations and platforms.
 
+### Accumulating and replacing settings
+
+Whether a repeated setting adds to or replaces the previous value depends on
+how it is written, not only on the key:
+
+| Form | `cflags`, `ldflags`, `objcflags`, `forced_includes` | `includes`, `defines`, `libs`, `libdirs` |
+| --- | --- | --- |
+| Unqualified project setting | Appends | Appends |
+| Exact or platform selector, `[*]` | Replaces the selected cells | Appends |
+| `[config:...]` section | Replaces that cell | Appends |
+
+So `cflags = -Wall` followed by `cflags[Release|x64] = -O3` leaves Release x64
+with only `-O3`. Put every flag the cell needs on the selector line, or use
+separate keys (for example `optimization`) for the configuration-specific part.
+
 ### Configuration sections
 
 Full configuration sections group settings for one matrix cell:
@@ -473,7 +498,8 @@ per-file exclusion settings when one run must describe several target OSes.
 
 Canonical type names above are preferred. Accepted compatibility aliases include
 `application`, `static`, `staticlib`, `shared`, `dynamiclib`, `header-only`,
-`driver`, and `kernel_lib`.
+`driver`, and `kernel_lib`, as well as the raw MSBuild spellings `Application`,
+`StaticLibrary`, `DynamicLibrary`, `Utility`, and `Driver`.
 
 `sys` and `sys_lib` primarily target Visual Studio. Other generators can emit a
 file with a corresponding type, but they do not provide a Windows driver
@@ -654,8 +680,9 @@ custom_build(schema/input.schema,
 )
 ```
 
-The single-line form is also accepted when each argument is comma-separated.
-Visual Studio and CMake emit custom build rules. The Makefile generator currently
+`message` is accepted as an alias of `description`, and `additional_inputs`
+as an alias of `inputs`. The single-line form is also accepted when each
+argument is comma-separated. Visual Studio and CMake emit custom build rules. The Makefile generator currently
 does not emit `custom_build()` rules.
 
 ### Solution folders and Visual Studio filters
@@ -690,15 +717,25 @@ disk.
 
 ### Project dependencies
 
-The simple form creates a public project dependency:
+`depends` (alias `dependencies`) declares a build-order dependency only. The
+referenced projects are built first, but nothing is linked and no usage
+requirements propagate:
 
 ```ini
 [project:App]
-depends = Core, Graphics
+depends = CodeGenerator
 ```
 
-For explicit visibility, use `target_link_libraries()` inside the consuming
-project. Unlike CMake syntax, the current project name is not an argument:
+To link against another project and inherit its public properties, use
+`project_references` or `target_link_libraries()`:
+
+```ini
+[project:App]
+project_references = Core, Graphics
+```
+
+`project_references` creates public link dependencies. For explicit visibility,
+use `target_link_libraries()` inside the consuming project. Unlike CMake syntax, the current project name is not an argument:
 
 ```ini
 [project:Engine]
@@ -796,8 +833,8 @@ find_package(SDL3 REQUIRED NO_PROPAGATE)
 
 Successful discovery always defines `${Package_FOUND}`,
 `${Package_INCLUDE_DIRS}`, and `${Package_LIBRARIES}`. When available it also
-defines `${Package_LIBRARY_DIRS}`, `${Package_LIBRARY_DIRS_X64}`, and
-`${Package_VERSION}`. Values containing multiple entries are semicolon-separated,
+defines `${Package_LIBRARY_DIRS}`, `${Package_LIBRARY_DIRS_X86}`,
+`${Package_LIBRARY_DIRS_X64}`, and `${Package_VERSION}`. Values containing multiple entries are semicolon-separated,
 so automatic dependency propagation is preferable to copying those variables
 into comma-separated buildscript lists.
 
@@ -864,7 +901,11 @@ simd[Release|x64] = AdvancedVectorExtensions2
 `simd` is also accepted inside full configuration sections and templates:
 
 ```ini
-[project:Math:Release|x64]
+[project:Math]
+type = lib
+sources = src/*.cpp
+
+[config:Release|x64]
 optimization = MaxSpeed
 simd = AdvancedVectorExtensions2
 floating_point = Fast
@@ -878,17 +919,18 @@ instruction set, put them in a separate static library project with its own
 src/kernels_avx2.cpp:cflags = /arch:AVX2
 ```
 
-The Visual Studio and VPC converters preserve the setting: an imported
-`.vcxproj` with `EnableEnhancedInstructionSet` produces a `simd = ...` line, and
-old `.vcproj` values map to `StreamingSIMDExtensions` and
-`StreamingSIMDExtensions2`.
+The Visual Studio converters preserve the setting: an imported `.vcxproj` with
+`EnableEnhancedInstructionSet` produces a `simd = ...` line, and old `.vcproj`
+values map to `StreamingSIMDExtensions` and `StreamingSIMDExtensions2`. The VPC
+converter does not translate `/arch:` flags.
 
 ### Make and CMake
 
 The Make and CMake generators ignore `simd`; they do not translate the MSBuild
 enum into GCC or Clang flags. Pass the compiler flags through `cflags` instead.
-`cflags` is appended, so it can be combined with other flags, and it accepts
-exact and platform selectors:
+An unqualified `cflags` line appends to any flags already set; a selector such
+as `cflags[Linux]` replaces the flags for the selected cells (see
+[Accumulating and replacing settings](#accumulating-and-replacing-settings)):
 
 ```ini
 [project:Math]
@@ -1011,13 +1053,29 @@ sighmake app.buildscript -g vcxproj -B generated/vs
 The generator detects Visual Studio before writing projects. It emits `.slnx`
 for installations the code classifies as Visual Studio 2026 or newer and `.sln`
 for older installations; it does not emit both formats in one run. Generated
-filenames may include the repository-configured underscore separator.
+project and solution files carry a trailing underscore, for example
+`App_.vcxproj` and `Solution_.sln`.
+
+Next to each `.vcxproj` the generator also writes
+`Write-SighmakeTargetReceipt.ps1` and `<Project>.runtime-dependencies.txt`. The
+receipt step runs `powershell -NoProfile -ExecutionPolicy Bypass` after each
+build, so PowerShell must be available on the build machine.
 
 An explicit project toolset wins. Otherwise `-t` or
 `SIGHMAKE_DEFAULT_TOOLSET` wins, followed by the detected installation's
 toolset. `--list-toolsets` prints aliases such as `msvc2022`; raw identifiers
-such as `v143` are also accepted. Unknown identifiers are retained for forward
-compatibility and produce a warning.
+such as `v143` are also accepted. Unknown identifiers are passed through
+verbatim without a warning, so check the spelling of `-t` values yourself.
+
+Two toolset checks happen against the detected Visual Studio:
+
+- A toolset newer than the installed Visual Studio is an error and stops
+  generation.
+- A known toolset that is not installed is retargeted to the detected toolset
+  with a warning.
+
+The build cache records one entry per project and one per distinct
+`target_name`, so `sighmake --build --project` accepts either name.
 
 ### Make
 
@@ -1029,9 +1087,28 @@ make -C build App
 make -C build clean
 ```
 
+Each project gets one Makefile per configuration, named `<Project>.<Config>`
+(or `<Project>.<Config>.Android`). The master Makefile exposes matching
+`<Project>.<Config>` targets; a bare `make <Project>` builds only the default
+configuration (`Debug` when present, otherwise the first).
+
+The compiler is baked in at generation time: `CXX = g++` and `CC = gcc`, or
+`clang++`/`clang` when generating on macOS. Because these use `=` rather than
+`?=`, the `CC`/`CXX` environment variables are ignored. Override on the make
+command line instead:
+
+```text
+make -C build CXX=clang++ CC=clang
+```
+
+`PYTHON ?= python3` can be overridden the same way.
+
 The master Makefile also provides `install` and `uninstall` for host executables
 and shared libraries. `PREFIX` defaults to `/usr/local`; `DESTDIR` is honored.
-Static libraries and Android binaries are not installed by these targets.
+The targets install the `Release` configuration when one exists, otherwise the
+default configuration. Static libraries and Android binaries are not installed
+by these targets, and the targets exist only when a non-Android platform is
+present.
 
 When both desktop and Android platforms exist, desktop configurations keep names
 such as `Release` while Android configurations use `Release.Android`.
@@ -1047,6 +1124,20 @@ sighmake --build . --config Release -j 8
 
 On the first direct build, sighmake configures the generated project with
 `cmake -S <cache-dir> -B <cache-dir>/build`, then invokes `cmake --build`.
+
+Configuration-specific settings are emitted as `$<CONFIG:...>` generator
+expressions, and the generated project sets neither `CMAKE_BUILD_TYPE` nor
+`CMAKE_CONFIGURATION_TYPES`. With a multi-config generator such as Visual
+Studio or Ninja Multi-Config, `--config` selects the configuration. With a
+single-config generator such as Unix Makefiles or plain Ninja, `--config` has no
+effect and every per-configuration setting evaluates empty unless you configure
+the build directory yourself with `-DCMAKE_BUILD_TYPE=<Config>` before running
+`sighmake --build`.
+
+The generated project enables only `C`, `CXX`, and, when MASM files exist,
+`ASM_MASM`. Objective-C/Objective-C++ sources are listed but no `OBJC`/`OBJCXX`
+language is enabled; NASM files are compiled through `add_custom_command` with
+a default output format of `win64`.
 
 The CMake generator translates the portable subset of compiler settings,
 dependencies, PCH, per-file settings, build events, NASM, and custom build rules.
@@ -1064,8 +1155,10 @@ sighmake --build .
 ```
 
 Regenerate after moving the output tree, changing generators, or editing the
-solution matrix. The cache records the generator, projects, configurations,
-platforms, and backend paths.
+solution matrix. The cache records the generator, configurations, platforms,
+and backend paths. Only the Visual Studio cache records project entries, which
+is why `--project` resolves project names only for MSBuild builds; the Make and
+CMake backends pass the value through as a raw target name.
 
 ## Android
 
@@ -1129,10 +1222,16 @@ sighmake --convert Game.vcxproj
 sighmake --convert Legacy.vcproj
 ```
 
-The conversion reader supports modern `.sln`/`.slnx` solutions with `.vcxproj`
-projects and legacy `.sln` solutions containing `.vcproj` projects. Standalone
-projects are wrapped as one-project solutions. Generated buildscripts are
-written beside the input.
+The conversion reader supports `.sln` and `.slnx` solutions containing
+`.vcxproj` or legacy `.vcproj` projects. Standalone projects are wrapped as
+one-project solutions. A project file listed in the solution but missing or
+unreadable is reported as a warning and skipped; the conversion still succeeds
+with the remaining projects.
+
+Output layout: one `<Project>.buildscript` is written next to each project
+file, and a root `<Solution>.buildscript` containing `include` directives is
+written next to the solution. When a project shares the solution's name and
+directory, the two are merged into a single file.
 
 Conversion preserves the supported identity, configuration, compiler/linker,
 file, filter, dependency, property-sheet, and build-event data. Visual Studio
@@ -1194,7 +1293,7 @@ the primary names shown here in hand-written buildscripts.
 | Setting | Purpose |
 | --- | --- |
 | `type` | `exe`, `lib`, `dll`, `interface`, `sys`, or `sys_lib`. |
-| `project_name` | Visual Studio display/project name override. |
+| `project_name`, `name` | Visual Studio display/project name override. |
 | `uuid` | Explicit project GUID/UUID. Stable IDs are generated when omitted. |
 | `root_namespace` | Visual Studio root namespace. |
 | `toolset` | MSVC alias or platform toolset identifier. |
@@ -1261,10 +1360,20 @@ configuration section when setting them explicitly.
 | `enable_comdat_folding` | Fold identical COMDAT entries. |
 
 Additional recognized linker keys include `show_progress`, `output_file`,
-`suppress_startup_banner`, `program_database_file`, `base_address`,
+`suppress_startup_banner`, `link_pdb_file`, `base_address`,
 `target_machine`, `link_error_reporting`, `safe_seh`, `entry_point`,
 `link_version`, `generate_map_file`, `map_file_name`, `fixed_base_address`,
 `randomized_base_address`, and `large_address_aware`.
+
+Two keys deserve care. `version` is an alias of `link_version`, so a
+descriptive `version = 1.0` line in a project silently becomes the linker
+`/VERSION` switch. `program_database_file` at project level sets the compiler
+PDB, and only inside a `[config:...]` section does it mean the linker PDB; use
+`link_pdb_file` for the linker one at either level.
+
+`entry_point`, `link_version`, `large_address_aware`, `disable_warnings`, and
+`lib_additional_dependencies` are project-level keys only; they are not
+recognized with a selector or inside a `[config:...]` section.
 
 `link_incremental`, `whole_program_optimization`, `generate_debug_info`,
 `optimize_references`, and `enable_comdat_folding` are configuration settings;
@@ -1291,8 +1400,14 @@ selectors.
 | Manifest | `generate_manifest`, `manifest_suppress_startup_banner`, `manifest_additional_files` |
 | Browse/XML tools | `xdcmake_suppress_startup_banner`, `bscmake_suppress_startup_banner`, `bscmake_output_file` |
 
+The manifest, browse, and XML tool keys, along with `ignore_import_library`
+and `import_library`, are configuration-only: they are recognized with an exact
+selector or inside a `[config:...]` section and silently dropped at project
+level.
+
 Additional configuration output keys are `executable_path`,
-`ignore_import_library`, and `import_library`.
+`ignore_import_library`, and `import_library`. `excluded_library[Config|Platform]`
+adds a library file that is linked only in that cell.
 
 ### Boolean values
 
@@ -1316,6 +1431,14 @@ the nested `build/` directory:
 sighmake app.buildscript
 sighmake --build .
 ```
+
+### A setting has no effect at all
+
+Unknown keys are silently ignored; the parser warns about unknown sections,
+conditions, and packages, but not about a misspelled setting name. Check the
+spelling against the [Setting reference](#setting-reference), and check that
+the key is accepted at the level you used it: some keys are project-only and
+some are configuration-only.
 
 ### A configuration-specific value is ignored
 
