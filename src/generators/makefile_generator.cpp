@@ -194,6 +194,7 @@ static bool write_target_receipt_support(
 import hashlib
 import json
 import os
+import stat
 import sys
 
 def canonical_architecture(value):
@@ -220,7 +221,8 @@ def file_record(path):
     with open(path, "rb") as f:
         while chunk := f.read(65536):
             h.update(chunk)
-    return size, h.hexdigest().lower()
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    return size, h.hexdigest().lower(), mode
 
 def main():
     parser = argparse.ArgumentParser(description="Write sighmake target receipt")
@@ -233,7 +235,7 @@ def main():
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    primary_size, primary_sha256 = file_record(args.primary_artifact)
+    primary_size, primary_sha256, primary_mode = file_record(args.primary_artifact)
 
     runtime = []
     skipped = []
@@ -258,21 +260,22 @@ def main():
                         "Reason": "MissingOptional"
                     })
                     continue
-                size, sha256 = file_record(source)
+                size, sha256, unix_mode = file_record(source)
                 runtime.append({
                     "Name": name,
                     "Source": source,
                     "StagePath": stage_path,
                     "Required": required,
                     "Size": size,
-                    "SHA256": sha256
+                    "SHA256": sha256,
+                    "UnixMode": unix_mode
                 })
 
     runtime.sort(key=lambda x: (x["StagePath"].lower(), x["Name"].lower(), x["Source"].lower()))
     skipped.sort(key=lambda x: (x["StagePath"].lower(), x["Name"].lower(), x["Source"].lower()))
 
     receipt = {
-        "FormatVersion": 1,
+        "FormatVersion": 2,
         "Target": args.target,
         "Platform": args.platform,
         "Architecture": canonical_architecture(args.architecture),
@@ -280,6 +283,7 @@ def main():
         "PrimaryArtifact": os.path.basename(args.primary_artifact),
         "PrimaryArtifactSize": primary_size,
         "PrimaryArtifactSHA256": primary_sha256,
+        "PrimaryArtifactUnixMode": primary_mode,
         "RuntimeDependencies": runtime,
         "SkippedRuntimeDependencies": skipped
     }
@@ -1076,7 +1080,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     out << "TARGET = " << target << "\n";
     out << "OBJ_DIR = " << int_dir << "\n";
     if (emits_target_receipt) {
-        out << "SIGHMAKE_TARGET_RECEIPT = " << out_dir << target_name << ".targetreceipt.json\n";
+        out << "SIGHMAKE_TARGET_RECEIPT = " << out_dir << project.name << ".targetreceipt.json\n";
         out << "SIGHMAKE_RECEIPT_ARCHITECTURE ?= "
             << (android ? "$(ANDROID_ABI)" : "$(shell uname -m)") << "\n";
     }

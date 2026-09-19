@@ -1248,6 +1248,26 @@ target_link_libraries(PRIVATE RuntimeBase)
     fs::remove_all(temp_dir, ec);
 }
 
+TEST_CASE("MakefileGenerator names shared-library receipts after the logical target",
+          "[makefile_generator][receipt]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = macOS
+
+[project:EngineRuntime]
+type = dll
+sources = runtime.cpp
+target_name = libEngineRuntime
+)", {"runtime.cpp"});
+
+    REQUIRE(result.files.count("EngineRuntime.Release"));
+    const std::string& makefile = result.files["EngineRuntime.Release"];
+    CHECK(makefile.find("EngineRuntime.targetreceipt.json") != std::string::npos);
+    CHECK(makefile.find("libEngineRuntime.targetreceipt.json") == std::string::npos);
+}
+
 TEST_CASE("MakefileGenerator limits target receipts to executable and shared-library targets",
           "[makefile_generator][receipt]") {
     auto result = generate_makefile(R"(
@@ -1342,6 +1362,9 @@ target_link_libraries(PRIVATE RuntimeBase)
     REQUIRE(fs::exists(receipt));
     const auto binary_write_time = fs::last_write_time(binary);
     const std::string initial_receipt = read_file(receipt);
+    CHECK(initial_receipt.find("\"FormatVersion\": 2") != std::string::npos);
+    CHECK(initial_receipt.find("\"PrimaryArtifactUnixMode\":") != std::string::npos);
+    CHECK(initial_receipt.find("\"UnixMode\":") != std::string::npos);
     CHECK(initial_receipt.find("\"Architecture\": \"ARM64\"") != std::string::npos);
     CHECK(initial_receipt.find("\"SkippedRuntimeDependencies\": [") != std::string::npos);
     CHECK(initial_receipt.find("\"Name\": \"Optional\"") != std::string::npos);
