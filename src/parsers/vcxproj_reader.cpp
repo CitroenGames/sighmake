@@ -2382,6 +2382,11 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         if (!project.implicit_usings.empty()) out << "implicit_usings = " << project.implicit_usings << "\n";
         out << "allow_unsafe = " << (project.allow_unsafe ? "true" : "false") << "\n";
         out << "generate_runtime_configuration_files = " << (project.generate_runtime_configuration_files ? "true" : "false") << "\n";
+        if (project.use_wpf) out << "use_wpf = true\n";
+        if (project.use_windows_forms) out << "use_windows_forms = true\n";
+        if (project.enable_windows_targeting) out << "enable_windows_targeting = true\n";
+        if (!project.application_icon.empty()) out << "application_icon = " << convert_path(project.application_icon) << "\n";
+        if (!project.application_manifest.empty()) out << "application_manifest = " << convert_path(project.application_manifest) << "\n";
     }
 
     // Write global project properties
@@ -2402,9 +2407,14 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
 
     // Source files
     std::vector<std::string> cpp_files, h_files, rc_files, masm_files, nasm_files, mc_files, idl_files;
+    std::vector<std::string> xaml_files, resx_files;
     for (const auto& src : project.sources) {
         if (src.type == FileType::ClCompile || src.type == FileType::CSharpCompile) {
             cpp_files.push_back(src.path);
+        } else if (src.type == FileType::CSharpXaml) {
+            xaml_files.push_back(src.path);
+        } else if (src.type == FileType::CSharpResource) {
+            resx_files.push_back(src.path);
         } else if (src.type == FileType::ClInclude) {
             h_files.push_back(src.path);
         } else if (src.type == FileType::ResourceCompile) {
@@ -2422,6 +2432,12 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
 
     if (!cpp_files.empty()) {
         out << "sources = " << join_vector(cpp_files, ", ") << "\n";
+    }
+    if (!xaml_files.empty()) {
+        out << "xaml = " << join_vector(xaml_files, ", ") << "\n";
+    }
+    if (!resx_files.empty()) {
+        out << "embedded_resources = " << join_vector(resx_files, ", ") << "\n";
     }
     if (!h_files.empty()) {
         out << "headers = " << join_vector(h_files, ", ") << "\n";

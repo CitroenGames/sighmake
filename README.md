@@ -137,9 +137,11 @@ to reference another managed project. `dependencies = Contracts` adds build orde
 only. `--project ManagedApp` selects a single project and builds its references.
 
 See the [mixed C++/C# example](examples/CSharp/managed.buildscript) and
-[C# settings reference](usage.md#c-projects) for unsafe code, runtime configuration
-files, and other options. C# generation for Makefile/CMake, importing `.csproj`
-files, and NuGet package declarations are not yet supported.
+[C# settings reference](usage.md#c-projects) for windowed WPF/WinForms apps
+(`net*-windows` + `subsystem = Windows` + `use_wpf` / `use_windows_forms`),
+XAML and embedded resources, unsafe code, runtime configuration files, and other
+options. C# generation for Makefile/CMake, importing `.csproj` files, and NuGet
+package declarations are not yet supported.
 
 ## Command Summary
 

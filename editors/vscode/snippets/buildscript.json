@@ -217,6 +217,39 @@
     ],
     "description": "DLL module definition file."
   },
+  "C# WPF App": {
+    "prefix": ["csharp-wpf", "wpf"],
+    "body": [
+      "[project:${1:MyWpfApp}]",
+      "language = C#",
+      "type = exe",
+      "target_framework = ${2:net10.0-windows}",
+      "subsystem = Windows",
+      "use_wpf = true",
+      "nullable = enable",
+      "implicit_usings = enable",
+      "sources = ${3:src/**/*.cs}",
+      "xaml = ${4:src/**/*.xaml}",
+      ""
+    ],
+    "description": "A windowed WPF C# application (WinExe, UseWPF)."
+  },
+  "C# WinForms App": {
+    "prefix": ["csharp-winforms", "winforms"],
+    "body": [
+      "[project:${1:MyWinFormsApp}]",
+      "language = C#",
+      "type = exe",
+      "target_framework = ${2:net10.0-windows}",
+      "subsystem = Windows",
+      "use_windows_forms = true",
+      "nullable = enable",
+      "implicit_usings = enable",
+      "sources = ${3:src/**/*.cs}",
+      ""
+    ],
+    "description": "A windowed Windows Forms C# application (WinExe, UseWindowsForms)."
+  },
   "Complete Buildscript": {
     "prefix": ["buildscript-full", "sighmake"],
     "body": [

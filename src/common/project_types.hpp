@@ -23,6 +23,8 @@ constexpr const char* ALL_CONFIGS = "*";
 // File types in Visual Studio projects
 enum class FileType {
     CSharpCompile,  // .cs files
+    CSharpXaml,     // .xaml files (WPF Page / ApplicationDefinition)
+    CSharpResource, // .resx files (EmbeddedResource) and C# content assets
     ClCompile,      // .cpp files
     ClInclude,      // .h, .hpp files
     CustomBuild,    // Files with custom build rules
@@ -321,6 +323,14 @@ struct Project {
     std::string implicit_usings;
     bool allow_unsafe = false;
     bool generate_runtime_configuration_files = false;
+    // Windowed/desktop C# apps (WPF / WinForms). Emitted as UseWPF /
+    // UseWindowsForms SDK properties. Combine with subsystem = Windows
+    // (OutputType WinExe) and a net*-windows target framework.
+    bool use_wpf = false;
+    bool use_windows_forms = false;
+    bool enable_windows_targeting = false;              // EnableWindowsTargeting for cross-OS builds
+    std::string application_icon;                       // .ico path, resolved like other asset paths
+    std::string application_manifest;                   // app.manifest path, resolved like other asset paths
     std::string c_standard;                             // "89", "99", "11", "17", "23" (for C projects)
 
     bool ignore_warn_compile_duplicated_filename = false;
@@ -461,11 +471,20 @@ inline std::string generate_uuid() {
     return ss.str();
 }
 
+// Well-known WPF asset extensions emitted as <Resource> in C# projects.
+inline bool is_csharp_wpf_asset(const std::string& ext) {
+    return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" ||
+           ext == ".gif" || ext == ".ico" || ext == ".tiff" || ext == ".ttf" ||
+           ext == ".otf" || ext == ".wav" || ext == ".mp3" || ext == ".cur";
+}
+
 // Helper function to get file type from extension
 inline FileType get_file_type(const std::string& path) {
     std::string ext = file_types::lowercase_extension(path);
 
     if (ext == ".cs") return FileType::CSharpCompile;
+    if (ext == ".xaml") return FileType::CSharpXaml;
+    if (ext == ".resx" || ext == ".resw") return FileType::CSharpResource;
 
     if (file_types::is_c_or_cpp_source(ext)) {
         return FileType::ClCompile;

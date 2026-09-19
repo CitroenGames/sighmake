@@ -22,6 +22,7 @@ For installation, source builds, tests, and release packaging, see
 - [Android](#android)
 - [Conversion](#conversion)
 - [Setting reference](#setting-reference)
+- [C# projects](#c-projects)
 - [Troubleshooting](#troubleshooting)
 
 ## Quick start
@@ -509,13 +510,15 @@ toolchain.
 
 | Setting | Files |
 | --- | --- |
-| `sources` | C (`.c`), C++ (`.cpp`, `.cc`, `.cxx`), Objective-C/Objective-C++ (`.m`, `.mm`), or other source entries. |
+| `sources` | C (`.c`), C++ (`.cpp`, `.cc`, `.cxx`), Objective-C/Objective-C++ (`.m`, `.mm`), C# (`.cs`, auto-detected), or other source entries. |
 | `headers` | `.h`, `.hpp`, `.hh`, and `.hxx`. |
 | `resources` | Windows resource (`.rc`) files. |
 | `masm` | MASM (`.asm`, `.masm`) files. |
 | `nasm` | NASM (`.asm`, `.nasm`) files. |
 | `mc` | Windows Message Compiler (`.mc`) files. |
 | `idl` | MIDL (`.idl`) files. |
+| `xaml` | WPF XAML (`.xaml`) files for C# projects. |
+| `embedded_resources` | .NET embedded resources (`.resx`, `.resw`) for C# projects. |
 
 `masm[x64]` and `nasm[x64]` add files for the selected platform and exclude them
 from the others in the current matrix.
@@ -1351,7 +1354,7 @@ configuration section when setting them explicitly.
 | `libs`, `link_libs` | Link dependencies. |
 | `libdirs` | Library search directories. |
 | `ldflags` | Raw linker options. |
-| `subsystem` | Common values are `Console`, `Windows`, and `Native`. |
+| `subsystem` | Common values are `Console`, `Windows`, and `Native`. For C# `exe` projects, `Windows` selects `OutputType = WinExe` (windowed, no console); otherwise `Exe`. |
 | `ignore_libs` | Specific default libraries to ignore. |
 | `ignore_all_default_libraries` | Disable all default libraries. |
 | `module_def` | Module definition/version-script path. |
@@ -1390,6 +1393,22 @@ Static-library settings use `lib_output_file`, `lib_suppress_startup_banner`,
 `public_includes`, `public_libs`, `public_libdirs`, and `public_defines` publish
 usage requirements. They support full configuration/platform and platform-only
 selectors.
+
+### C# / .NET settings
+
+| Setting | Purpose |
+| --- | --- |
+| `target_framework` | Required TFM, e.g. `net10.0` or `net10.0-windows`. |
+| `csharp_version` | `LangVersion`, e.g. `14.0` or `latest`. |
+| `nullable`, `implicit_usings` | `Nullable` / `ImplicitUsings` values such as `enable`. |
+| `allow_unsafe` | `AllowUnsafeBlocks`. |
+| `generate_runtime_configuration_files` | `GenerateRuntimeConfigurationFiles`. |
+| `use_wpf`, `use_windows_forms` | `UseWPF` / `UseWindowsForms` for windowed apps. |
+| `enable_windows_targeting` | `EnableWindowsTargeting` for `-windows` TFMs on other hosts. |
+| `application_icon`, `application_manifest` | `ApplicationIcon` / `ApplicationManifest` paths. |
+
+See [C# projects](#c-projects) for the windowed-app recipe
+(`net*-windows` + `subsystem = Windows` + `use_wpf` / `use_windows_forms`).
 
 ### Specialized tools
 
@@ -1525,6 +1544,57 @@ source files compile. Source-directory `Directory.Build.props` files are not
 automatically imported when the generated projects reside elsewhere; express the
 needed settings in the buildscript.
 
+### Windowed apps (no console window)
+
+A C# console app uses `OutputType = Exe`. A windowed app uses
+`OutputType = WinExe`, which sighmake selects with `subsystem = Windows`:
+
+```ini
+[project:WpfApp]
+language = C#
+type = exe
+target_framework = net10.0-windows
+subsystem = Windows
+use_wpf = true
+nullable = enable
+implicit_usings = enable
+sources = src/**/*.cs
+xaml = src/**/*.xaml
+```
+
+```ini
+[project:FormsApp]
+language = C#
+type = exe
+target_framework = net10.0-windows
+subsystem = Windows
+use_windows_forms = true
+nullable = enable
+implicit_usings = enable
+sources = src/**/*.cs
+```
+
+Rules for windowed apps:
+
+- Use a `-windows` target framework such as `net10.0-windows` with
+  `use_wpf = true` (`UseWPF`), `use_windows_forms = true`
+  (`UseWindowsForms`), or both.
+- Keep `type = exe` with `subsystem = Windows` for a GUI app without a
+  console window. Omit `subsystem` (or use `Console`) for a console app.
+- List XAML with `xaml = ...` (`.xaml` files under `sources` are also
+  detected). `App.xaml` becomes `ApplicationDefinition`; other pages become
+  `Page` items with the `MSBuild:Compile` generator. A `Foo.xaml.cs`
+  code-behind file automatically gets `DependentUpon = Foo.xaml`.
+- List `.resx`/`.resw` files with `embedded_resources = ...` (also
+  auto-detected under `sources`); image and font assets referenced by a
+  windowed app are emitted as WPF `Resource` items.
+- Optional branding and hosting settings:
+  `application_icon = app.ico` (`ApplicationIcon`),
+  `application_manifest = app.manifest` (`ApplicationManifest`), and
+  `enable_windows_targeting = true` (`EnableWindowsTargeting`, for building a
+  `-windows` target from a non-Windows host). Icon and manifest paths are
+  resolved relative to the declaring buildscript, like `outdir`.
+
 Generate and build the runnable example:
 
 ```powershell
@@ -1535,8 +1605,8 @@ sighmake --build . --config Release --platform x64
 
 `--build` restores SDK dependencies automatically for generated solutions containing
 C# projects, and `--project` can select a managed project. The Makefile and CMake
-generators currently reject C# projects. Importing existing `.csproj` files,
-NuGet package declarations, and desktop UI SDKs are not yet supported.
+generators currently reject C# projects. Importing existing `.csproj` files and
+NuGet package declarations are not yet supported.
 
 See the [.NET SDK property reference](https://learn.microsoft.com/en-us/dotnet/core/project-sdk/msbuild-props)
 for the generated SDK properties.

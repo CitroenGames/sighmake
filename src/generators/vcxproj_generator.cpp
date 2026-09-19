@@ -363,6 +363,17 @@ bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& s
     props.append_child("AllowUnsafeBlocks").text() = project.allow_unsafe;
     if (project.generate_runtime_configuration_files)
         props.append_child("GenerateRuntimeConfigurationFiles").text() = "true";
+    // Windowed/desktop apps: WPF, WinForms, and cross-OS Windows targeting.
+    if (project.use_wpf)
+        props.append_child("UseWPF").text() = "true";
+    if (project.use_windows_forms)
+        props.append_child("UseWindowsForms").text() = "true";
+    if (project.enable_windows_targeting)
+        props.append_child("EnableWindowsTargeting").text() = "true";
+    if (!project.application_icon.empty())
+        props.append_child("ApplicationIcon").text() = make_relative_path(project.application_icon, output_path).c_str();
+    if (!project.application_manifest.empty())
+        props.append_child("ApplicationManifest").text() = make_relative_path(project.application_manifest, output_path).c_str();
     props.append_child("OutputPath").text() = ("bin/$(Platform)/$(Configuration)/" + project.name + "/").c_str();
     auto resolve_dir = [&](const std::string& raw) {
         std::string result = raw;
@@ -399,13 +410,50 @@ bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& s
         if (!cfg.int_dir.empty()) group.append_child("IntermediateOutputPath").text() = resolve_dir(cfg.int_dir).c_str();
     }
     auto files = root.append_child("ItemGroup");
+    // Index code-behind pairs so Foo.xaml.cs gets <DependentUpon>Foo.xaml</DependentUpon>.
+    std::set<std::string> xaml_basenames;
     for (const auto& src : project.sources) {
-        if (src.type != FileType::CSharpCompile && src.type != FileType::None) {
+        if (src.type == FileType::CSharpXaml)
+            xaml_basenames.insert(fs::path(src.path).stem().string());
+    }
+    for (const auto& src : project.sources) {
+        std::string ext = file_types::lowercase_extension(src.path);
+        const char* item_name = nullptr;
+        bool is_app_xaml = false;
+        if (src.type == FileType::CSharpCompile) {
+            item_name = "Compile";
+        } else if (src.type == FileType::CSharpXaml) {
+            is_app_xaml = to_lower(fs::path(src.path).filename().string()) == "app.xaml";
+            item_name = is_app_xaml ? "ApplicationDefinition" : "Page";
+        } else if (src.type == FileType::CSharpResource) {
+            item_name = "EmbeddedResource";
+        } else if (src.type == FileType::None) {
+            // Image/font assets used by windowed apps become WPF <Resource> items.
+            item_name = is_csharp_wpf_asset(ext) ? "Resource" : "None";
+        } else {
             std::cerr << "Error: Unsupported source in C# project '" << project.name << "': " << src.path << "\n";
             return false;
         }
-        auto item = files.append_child(src.type == FileType::CSharpCompile ? "Compile" : "None");
+        auto item = files.append_child(item_name);
         item.append_attribute("Include") = make_relative_path(src.path, output_path).c_str();
+        if (src.type == FileType::CSharpXaml && !is_app_xaml) {
+            auto gen = item.append_child("Generator");
+            gen.text() = "MSBuild:Compile";
+        }
+        if (src.type == FileType::CSharpCompile && ext == ".cs") {
+            std::string stem = fs::path(src.path).stem().string();
+            // Foo.xaml.cs -> strip trailing ".xaml" is already the stem; check parent name.
+            // A code-behind file is named <Base>.xaml.cs, whose stem is "<Base>.xaml".
+            std::string lower_stem = to_lower(stem);
+            const std::string suffix = ".xaml";
+            if (lower_stem.size() > suffix.size() &&
+                lower_stem.compare(lower_stem.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                std::string base = stem.substr(0, stem.size() - suffix.size());
+                item.append_child("DependentUpon").text() = (base + ".xaml").c_str();
+            } else if (xaml_basenames.count(stem)) {
+                item.append_child("DependentUpon").text() = (stem + ".xaml").c_str();
+            }
+        }
         std::string condition;
         for (const auto& [key, cfg] : project.configurations) {
             auto exclusion = src.settings.excluded.find(key);

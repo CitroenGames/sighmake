@@ -2213,6 +2213,77 @@ bool BuildscriptParser::parse_project_source_setting(const std::string& key, con
                 if (file) file->type = FileType::Midl;
             }
         }
+    }
+    // WPF XAML files (.xaml). Also auto-detected when listed under `sources`.
+    else if (key == "xaml" || key == "xaml_sources" || key == "xaml_files") {
+        auto entries = split(value, ',');
+        std::map<std::string, bool> explicit_overrides;
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+            if (!is_wildcard_path(path) && !condition.empty()) {
+                std::string abs_path = resolve_path(path, state.base_path);
+                explicit_overrides[abs_path] = include;
+                if (include) {
+                    auto* file = find_or_create_source(path, state);
+                    if (file) file->type = FileType::CSharpXaml;
+                }
+            }
+        }
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+            if (!is_wildcard_path(path) && !condition.empty()) continue;
+            if (!is_wildcard_path(path)) {
+                auto* file = find_or_create_source(path, state);
+                if (file) file->type = FileType::CSharpXaml;
+                continue;
+            }
+            if (!include) continue;
+            auto expanded = expand_wildcards(path, state.base_path);
+            for (const auto& expanded_path : expanded) {
+                std::string abs_path = resolve_path(expanded_path, state.base_path);
+                auto it = explicit_overrides.find(abs_path);
+                if (it != explicit_overrides.end()) continue;
+                auto* file = find_or_create_source(expanded_path, state);
+                if (file) file->type = FileType::CSharpXaml;
+            }
+        }
+    // .NET embedded resources (.resx/.resw). Also auto-detected under `sources`.
+    } else if (key == "embedded_resources" || key == "resx" || key == "resx_sources") {
+        auto entries = split(value, ',');
+        std::map<std::string, bool> explicit_overrides;
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+            if (!is_wildcard_path(path) && !condition.empty()) {
+                std::string abs_path = resolve_path(path, state.base_path);
+                explicit_overrides[abs_path] = include;
+                if (include) {
+                    auto* file = find_or_create_source(path, state);
+                    if (file) file->type = FileType::CSharpResource;
+                }
+            }
+        }
+        for (const auto& src : entries) {
+            auto [path, condition, include] = parse_filename_with_condition_extended(src);
+            if (path.empty()) continue;
+            if (!is_wildcard_path(path) && !condition.empty()) continue;
+            if (!is_wildcard_path(path)) {
+                auto* file = find_or_create_source(path, state);
+                if (file) file->type = FileType::CSharpResource;
+                continue;
+            }
+            if (!include) continue;
+            auto expanded = expand_wildcards(path, state.base_path);
+            for (const auto& expanded_path : expanded) {
+                std::string abs_path = resolve_path(expanded_path, state.base_path);
+                auto it = explicit_overrides.find(abs_path);
+                if (it != explicit_overrides.end()) continue;
+                auto* file = find_or_create_source(expanded_path, state);
+                if (file) file->type = FileType::CSharpResource;
+            }
+        }
     } else if (key == "libs" || key == "libraries") {
         auto libs = split(value, ',');
 
@@ -2329,6 +2400,18 @@ bool BuildscriptParser::parse_project_compiler_setting(const std::string& key, c
         proj.allow_unsafe = value == "true";
     } else if (key == "generate_runtime_configuration_files") {
         proj.generate_runtime_configuration_files = value == "true";
+    } else if (key == "use_wpf" || key == "usewpf") {
+        proj.use_wpf = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "use_windows_forms" || key == "use_winforms" || key == "usewindowsforms") {
+        proj.use_windows_forms = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "enable_windows_targeting") {
+        proj.enable_windows_targeting = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "application_icon" || key == "app_icon" || key == "icon") {
+        proj.application_icon = value.find("$(") != std::string::npos
+            ? value : resolve_path(value, state.base_path);
+    } else if (key == "application_manifest" || key == "app_manifest" || key == "manifest") {
+        proj.application_manifest = value.find("$(") != std::string::npos
+            ? value : resolve_path(value, state.base_path);
     } else if (key == "c_standard" || key == "cstd") {
         // Store as-is: "89", "99", "11", "17", "23"
         proj.c_standard = value;
