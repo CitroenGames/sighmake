@@ -26,6 +26,14 @@ std::optional<std::string> resolve_build_platform(
     const std::vector<std::string>& available_platforms,
     const std::string& requested_platform);
 
+// Resolve the target understood by the generated master Makefile. Project
+// aliases select the default configuration, so an explicit project build must
+// name its configuration-specific target (for example, App.Release).
+std::string resolve_make_build_target(
+    const BuildCache& cache,
+    const BuildOptions& options,
+    const std::string& config);
+
 class BuildRunner {
 public:
     // Execute a build based on cache in the given directory

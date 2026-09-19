@@ -40,6 +40,29 @@ std::optional<std::string> resolve_build_platform(
     return std::string("x64");
 }
 
+std::string resolve_make_build_target(
+    const BuildCache& cache,
+    const BuildOptions& options,
+    const std::string& config)
+{
+    if (!options.project.empty()) {
+        const bool has_android = std::any_of(
+            cache.platforms.begin(), cache.platforms.end(), is_android_platform);
+        const bool has_desktop = std::any_of(
+            cache.platforms.begin(), cache.platforms.end(), [](const std::string& platform) {
+                return !is_windows_platform(platform) && !is_android_platform(platform);
+            });
+        return options.project + "." + config + (has_android && !has_desktop ? ".Android" : "");
+    }
+    if (!options.target.empty()) {
+        return options.target;
+    }
+
+    const bool android_only = !cache.platforms.empty() && std::all_of(
+        cache.platforms.begin(), cache.platforms.end(), is_android_platform);
+    return config + (android_only ? ".Android" : "");
+}
+
 static bool contains_path_separator(const std::string& value) {
     return value.find('/') != std::string::npos ||
            value.find('\\') != std::string::npos;
@@ -285,7 +308,7 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
         }
     }
 
-    const std::string requested_target = options.project.empty() ? options.target : options.project;
+    const std::string requested_target = resolve_make_build_target(cache, options, config);
     // Build make command
     std::string cmd = "make -C \"" + build_dir.string() + "\"";
 
@@ -307,12 +330,7 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
         }
     }
 
-    // Add target or config
-    if (!requested_target.empty()) {
-        cmd += " " + requested_target;
-    } else {
-        cmd += " " + config;
-    }
+    cmd += " " + requested_target;
 
     // Parallel build
     if (options.parallel > 0) {

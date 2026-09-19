@@ -39,3 +39,30 @@ TEST_CASE("Build platform supports explicit selection with a legacy empty cache"
     REQUIRE(platform);
     CHECK(*platform == "Win32");
 }
+
+TEST_CASE("Make project builds select the requested configuration", "[build_runner]") {
+    BuildCache cache;
+    cache.platforms = {"Linux"};
+    BuildOptions options;
+    options.project = "OpenStrike";
+
+    CHECK(resolve_make_build_target(cache, options, "Release") == "OpenStrike.Release");
+}
+
+TEST_CASE("Make project builds retain Android target suffix", "[build_runner]") {
+    BuildCache cache;
+    cache.platforms = {"Android"};
+    BuildOptions options;
+    options.project = "Game";
+
+    CHECK(resolve_make_build_target(cache, options, "Release") == "Game.Release.Android");
+}
+
+TEST_CASE("Make explicit targets remain unchanged", "[build_runner]") {
+    BuildCache cache;
+    cache.platforms = {"Linux"};
+    BuildOptions options;
+    options.target = "install";
+
+    CHECK(resolve_make_build_target(cache, options, "Release") == "install");
+}
