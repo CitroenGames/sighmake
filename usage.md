@@ -527,8 +527,10 @@ output when using specialized tools.
 
 ### C and C++ language selection
 
-Projects auto-detect their language from source extensions. Any C++ source makes
-the project C++; a project containing only `.c` sources is C.
+Native projects auto-detect their language from source extensions. Any C++ source
+makes the project C++; a project containing only `.c` sources is C. `.cs` sources
+select [C# project generation](#c-projects); native and C# sources must be in
+separate projects.
 
 ```ini
 language = C
@@ -1311,7 +1313,7 @@ the primary names shown here in hand-written buildscripts.
 | `defines` | Comma-separated preprocessor definitions. |
 | `forced_includes` | Headers forcibly included by the compiler. |
 | `std` | `14`, `17`, `20`, `23`, or `latest`. |
-| `language` | `C` or `C++`; normally auto-detected. |
+| `language` | `C`, `C++`, or `C#` (`CSharp` alias); normally auto-detected. |
 | `c_standard` | `89`/`90`, `99`, `11`, `17`, or `23`. |
 | `optimization` | `Disabled`, `MinSpace`, `MaxSpeed`, or `Full`. |
 | `warning_level` | `Level0` through `Level4`. |
@@ -1480,3 +1482,61 @@ in the main tables, guard raw flags by host/configuration, and inspect the
 generated Makefile or CMakeLists for the exact feature you need. `simd` is one
 such key; [SIMD and vectorization](#simd-and-vectorization) shows the `cflags`
 equivalent for GCC and Clang.
+
+## C# projects
+
+The Visual Studio generator (`-g vcxproj`) supports SDK-style C# executables and
+libraries alongside native projects. Install Visual Studio and a .NET SDK that
+supports the requested target framework.
+
+```ini
+[solution]
+name = ManagedExample
+configurations = Debug, Release
+platforms = x64
+
+[project:ManagedHost]
+language = C#
+type = dll
+target_framework = net10.0
+sources = src/**/*.cs
+nullable = enable
+implicit_usings = enable
+csharp_version = 14.0
+allow_unsafe = true
+generate_runtime_configuration_files = true
+treat_warning_as_error = true
+```
+
+`language = CSharp` is an alias; `.cs` sources also enable automatic C# detection.
+`target_framework` is required. Use `type = exe` for applications or `type = dll`
+for managed libraries. `target_link_libraries(PRIVATE Contracts)` between C#
+projects adds a managed assembly reference. `dependencies = Contracts` adds only
+build ordering. Native projects can depend on managed projects for build ordering;
+managed assemblies are not passed to the native linker. C# dependencies on native
+projects must be declared as build-order-only references.
+
+The optional C# settings shown above are project-wide. Existing `defines`,
+`target_name`, `outdir`, `intdir`, per-file exclusions, and configuration sections
+are supported. `outdir` and `intdir` paths are relative to the declaring buildscript;
+the SDK appends the target framework to output paths. Default intermediate paths
+are unique to each project. SDK source globbing is disabled, so only the listed
+source files compile. Source-directory `Directory.Build.props` files are not
+automatically imported when the generated projects reside elsewhere; express the
+needed settings in the buildscript.
+
+Generate and build the runnable example:
+
+```powershell
+cd examples/CSharp
+sighmake managed.buildscript -g vcxproj
+sighmake --build . --config Release --platform x64
+```
+
+`--build` restores SDK dependencies automatically for generated solutions containing
+C# projects, and `--project` can select a managed project. The Makefile and CMake
+generators currently reject C# projects. Importing existing `.csproj` files,
+NuGet package declarations, and desktop UI SDKs are not yet supported.
+
+See the [.NET SDK property reference](https://learn.microsoft.com/en-us/dotnet/core/project-sdk/msbuild-props)
+for the generated SDK properties.

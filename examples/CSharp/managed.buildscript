@@ -1,0 +1,39 @@
+[solution]
+name = ManagedExample
+configurations = Debug, Release
+platforms = x64
+
+[project:Contracts]
+language = C#
+type = dll
+target_framework = net10.0
+nullable = enable
+implicit_usings = enable
+sources = Contracts.cs
+
+[project:ManagedHost]
+language = C#
+type = dll
+target_framework = net10.0
+nullable = enable
+implicit_usings = enable
+csharp_version = 14.0
+allow_unsafe = true
+generate_runtime_configuration_files = true
+treat_warning_as_error = true
+sources = ManagedHost.cs
+target_link_libraries(PUBLIC Contracts)
+
+[project:ManagedApp]
+language = C#
+type = exe
+target_framework = net10.0
+nullable = enable
+implicit_usings = enable
+sources = Program.cs
+target_link_libraries(PRIVATE ManagedHost)
+
+[project:NativeHost]
+type = exe
+sources = NativeHost.cpp
+dependencies = ManagedHost

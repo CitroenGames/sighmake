@@ -87,7 +87,7 @@ static std::optional<fs::path> resolve_msbuild_project(
     const fs::path build_dir = cache.build_dir.empty()
         ? fs::path()
         : fs::path(cache.build_dir);
-    for (const char* suffix : { "_.vcxproj", ".vcxproj" }) {
+    for (const char* suffix : { "_.vcxproj", ".vcxproj", "_.csproj", ".csproj" }) {
         fs::path candidate = fs::path(cache_dir) / build_dir / (requested_project + suffix);
         if (auto found = existing_path(candidate)) {
             return found;
@@ -199,7 +199,12 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
     // Build MSBuild command
     std::string cmd = "\"\"" + msbuild_path + "\" \"" + build_path.string() + "\"";
     cmd += " /p:Configuration=" + config;
-    cmd += " /p:Platform=" + platform;
+    cmd += " /p:Platform=\"" + platform + "\"";
+
+    if (!options.clean_only && std::any_of(cache.projects.begin(), cache.projects.end(),
+        [](const BuildProjectEntry& project) { return fs::path(project.file).extension() == ".csproj"; })) {
+        cmd += " /restore";
+    }
 
     // Handle target
     if (options.clean_only) {

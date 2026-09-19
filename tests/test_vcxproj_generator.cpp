@@ -3,6 +3,9 @@
 #include "parsers/buildscript_parser.hpp"
 #include "generators/vcxproj_generator.hpp"
 #include "common/build_cache.hpp"
+#include "generators/makefile_generator.hpp"
+#include "generators/cmake_generator.hpp"
+#include "parsers/vcxproj_reader.hpp"
 #include "pugixml.hpp"
 
 using namespace vcxproj;
@@ -85,6 +88,107 @@ static std::string read_file(const fs::path& path) {
     std::ifstream f(path);
     return std::string((std::istreambuf_iterator<char>(f)),
                         std::istreambuf_iterator<char>());
+}
+
+TEST_CASE("C# projects preserve managed settings and references", "[csharp]") {
+    GeneratedProject gen;
+    gen.temp_dir = fs::temp_directory_path() / ("sighmake_csharp_" + generate_uuid());
+    fs::create_directories(gen.temp_dir / "build");
+    BuildscriptParser parser;
+    auto solution = parser.parse_string(R"(
+[solution]
+name = Mixed
+configurations = Debug, Release
+platforms = Win32, x64
+[project:Contracts]
+type = dll
+target_framework = net10.0
+sources = Contracts.cs
+[project:Host]
+language = C#
+type = dll
+target_framework = net10.0
+csharp_version = 14.0
+nullable = enable
+implicit_usings = enable
+allow_unsafe = true
+generate_runtime_configuration_files = true
+outdir = artifacts/host
+defines = HOST
+sources = Host.cs, DebugOnly.cs
+DebugOnly.cs:excluded[Release|x64] = true
+target_link_libraries(PUBLIC Contracts)
+[project:Native]
+type = exe
+sources = main.cpp
+dependencies = Host
+)", gen.temp_dir.string());
+    REQUIRE(solution.projects.size() == 3);
+    auto& host = solution.projects[1];
+    CHECK(host.language == "C#");
+    CHECK(detect_project_language(solution.projects[0]) == "C#");
+    CHECK(host.sources[0].type == FileType::CSharpCompile);
+    VcxprojGenerator generator;
+    auto path = gen.temp_dir / "build" / "Host.csproj";
+    REQUIRE(generator.generate_csproj(host, solution, path.string()));
+    pugi::xml_document doc;
+    REQUIRE(doc.load_file(path.string().c_str()));
+    auto root = doc.child("Project");
+    CHECK(std::string(root.child("PropertyGroup").child_value("BaseIntermediateOutputPath")) == "obj/Host/");
+    CHECK(std::string(root.child("Import").attribute("Sdk").value()) == "Microsoft.NET.Sdk");
+    CHECK(std::string(doc.select_node("/Project/PropertyGroup/TargetFramework").node().child_value()) == "net10.0");
+    CHECK(std::string(doc.select_node("/Project/PropertyGroup/AllowUnsafeBlocks").node().child_value()) == "true");
+    CHECK(std::string(doc.select_node("/Project/PropertyGroup/GenerateRuntimeConfigurationFiles").node().child_value()) == "true");
+    CHECK(std::string(doc.select_node("/Project/PropertyGroup/EnableDefaultItems").node().child_value()) == "false");
+    CHECK(doc.select_nodes("/Project/ItemGroup/Compile").size() == 2);
+    CHECK(std::string(doc.select_node("/Project/ItemGroup/Compile[contains(@Include, 'DebugOnly')]").node().attribute("Condition").value()).find("Release|x64") != std::string::npos);
+    CHECK(std::string(doc.select_node("/Project/PropertyGroup/OutputPath[starts-with(text(), '..')]").node().child_value()).find("artifacts") != std::string::npos);
+    CHECK(std::string(doc.select_node("/Project/PropertyGroup/PlatformTarget").node().child_value()) == "x86");
+    auto ref = doc.select_node("/Project/ItemGroup/ProjectReference").node();
+    CHECK(fs::path(ref.attribute("Include").value()).extension() == ".csproj");
+    CHECK(std::string(ref.child_value("ReferenceOutputAssembly")) == "true");
+    REQUIRE(generator.generate_vcxproj(solution.projects[2], solution, (gen.temp_dir / "build/Native.vcxproj").string()));
+    pugi::xml_document native;
+    REQUIRE(native.load_file((gen.temp_dir / "build/Native.vcxproj").string().c_str()));
+    auto native_ref = native.select_node("//ProjectReference").node();
+    CHECK(fs::path(native_ref.attribute("Include").value()).extension() == ".csproj");
+    CHECK(std::string(native_ref.child_value("LinkLibraryDependencies")) == "false");
+    REQUIRE(generator.generate_sln(solution, (gen.temp_dir / "Mixed.sln").string()));
+    REQUIRE(generator.generate_slnx(solution, (gen.temp_dir / "Mixed.slnx").string()));
+    CHECK(read_file(gen.temp_dir / "Mixed.sln").find("9A19103F-16F7-4668-BE54-9A1E7A4F7556") != std::string::npos);
+    CHECK(read_file(gen.temp_dir / "Mixed.slnx").find(".csproj") != std::string::npos);
+    CHECK(read_file(gen.temp_dir / "Mixed.slnx").find("Solution=\"*|x64\" Project=\"x64\"") != std::string::npos);
+    BuildscriptWriter writer;
+    REQUIRE(writer.write_buildscript(host, (gen.temp_dir / "Host.buildscript").string()));
+    auto roundtrip = parser.parse((gen.temp_dir / "Host.buildscript").string());
+    REQUIRE(roundtrip.projects.size() == 1);
+    CHECK(roundtrip.projects[0].language == "C#");
+    CHECK(roundtrip.projects[0].target_framework == "net10.0");
+    CHECK(roundtrip.projects[0].allow_unsafe);
+    CHECK(roundtrip.projects[0].sources.size() == 2);
+    MakefileGenerator make;
+    CMakeGenerator cmake;
+    CHECK_FALSE(make.generate(solution, gen.temp_dir.string()));
+    CHECK_FALSE(cmake.generate(solution, gen.temp_dir.string()));
+    SECTION("Missing framework fails") {
+        host.target_framework.clear();
+        CHECK_FALSE(generator.generate_csproj(host, solution, path.string()));
+    }
+    SECTION("Native source in managed project fails") {
+        host.sources.push_back(solution.projects[2].sources[0]);
+        CHECK_FALSE(generator.generate_csproj(host, solution, path.string()));
+    }
+    SECTION("Managed source in explicit native project fails") {
+        auto native_project = solution.projects[2];
+        native_project.sources.push_back(host.sources[0]);
+        CHECK_FALSE(generator.generate_vcxproj(native_project, solution, path.string()));
+    }
+    SECTION("Native assembly reference fails") {
+        host.project_references.emplace_back("Native");
+        CHECK_FALSE(generator.generate_csproj(host, solution, path.string()));
+        host.project_references.back().link_library_dependencies = false;
+        CHECK(generator.generate_csproj(host, solution, path.string()));
+    }
 }
 
 // ============================================================================

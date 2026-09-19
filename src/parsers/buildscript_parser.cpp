@@ -2311,12 +2311,24 @@ bool BuildscriptParser::parse_project_compiler_setting(const std::string& key, c
         proj.project_level_defaults.cl_compile.language_standard = std_value;
     } else if (key == "language" || key == "lang") {
         // Validate language value
-        if (value != "C" && value != "C++" && !value.empty()) {
+        if (value != "C" && value != "C++" && value != "C#" && value != "CSharp" && !value.empty()) {
             std::cerr << "Warning: Invalid language '" << value
                       << "' at line " << state.line_number
-                      << ". Use 'C' or 'C++'.\n";
+                      << ". Use 'C', 'C++', or 'C#'.\n";
         }
-        proj.language = value;
+        proj.language = value == "CSharp" ? "C#" : value;
+    } else if (key == "target_framework") {
+        proj.target_framework = value;
+    } else if (key == "csharp_version") {
+        proj.csharp_version = value;
+    } else if (key == "nullable") {
+        proj.nullable = value;
+    } else if (key == "implicit_usings") {
+        proj.implicit_usings = value;
+    } else if (key == "allow_unsafe") {
+        proj.allow_unsafe = value == "true";
+    } else if (key == "generate_runtime_configuration_files") {
+        proj.generate_runtime_configuration_files = value == "true";
     } else if (key == "c_standard" || key == "cstd") {
         // Store as-is: "89", "99", "11", "17", "23"
         proj.c_standard = value;

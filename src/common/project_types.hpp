@@ -22,6 +22,7 @@ constexpr const char* ALL_CONFIGS = "*";
 
 // File types in Visual Studio projects
 enum class FileType {
+    CSharpCompile,  // .cs files
     ClCompile,      // .cpp files
     ClInclude,      // .h, .hpp files
     CustomBuild,    // Files with custom build rules
@@ -313,7 +314,13 @@ struct Project {
     std::string root_namespace;
 
     // Language settings
-    std::string language;                               // "C", "C++", or "" (auto-detect)
+    std::string language;                               // "C", "C++", "C#", or "" (auto-detect)
+    std::string target_framework;                       // SDK target framework, e.g. net10.0
+    std::string csharp_version;
+    std::string nullable;
+    std::string implicit_usings;
+    bool allow_unsafe = false;
+    bool generate_runtime_configuration_files = false;
     std::string c_standard;                             // "89", "99", "11", "17", "23" (for C projects)
 
     bool ignore_warn_compile_duplicated_filename = false;
@@ -458,6 +465,8 @@ inline std::string generate_uuid() {
 inline FileType get_file_type(const std::string& path) {
     std::string ext = file_types::lowercase_extension(path);
 
+    if (ext == ".cs") return FileType::CSharpCompile;
+
     if (file_types::is_c_or_cpp_source(ext)) {
         return FileType::ClCompile;
     } else if (file_types::is_header(ext)) {
@@ -560,6 +569,9 @@ inline std::string detect_project_language(const Project& proj) {
     }
 
     // Decision tree
+    for (const auto& src : proj.sources) {
+        if (src.type == FileType::CSharpCompile) return "C#";
+    }
     if (has_cpp) return "C++";        // Any C++ files → C++ project
     if (has_c) return "C";            // Only C files → C project
     return "C++";                     // Default to C++ for empty projects

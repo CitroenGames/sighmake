@@ -15,10 +15,12 @@
 
 #if PROJ_SEPERATOR
 #define GENERATED_VCXPROJ "_.vcxproj"
+#define GENERATED_CSPROJ "_.csproj"
 #define GENERATED_SLNX "_.slnx"
 #define GENERATED_SLN "_.sln"
 #else
 #define GENERATED_VCXPROJ ".vcxproj"
+#define GENERATED_CSPROJ ".csproj"
 #define GENERATED_SLNX ".slnx"
 #define GENERATED_SLN ".sln"
 #endif
@@ -26,6 +28,11 @@
 namespace fs = std::filesystem;
 
 namespace vcxproj {
+
+static std::string generated_project_filename(const Project& project) {
+    return project.name + (detect_project_language(project) == "C#"
+        ? GENERATED_CSPROJ : GENERATED_VCXPROJ);
+}
 
 // Adjust relative file paths in a custom build command
 static std::string adjust_command_paths(const std::string& command,
@@ -329,8 +336,116 @@ std::string VcxprojGenerator::get_file_type_name(FileType type) {
     }
 }
 
+bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& solution,
+                                      const std::string& output_path) {
+    if (project.target_framework.empty()) {
+        std::cerr << "Error: C# project '" << project.name << "' requires target_framework.\n";
+        return false;
+    }
+    pugi::xml_document doc;
+    auto root = doc.append_child("Project");
+    // Explicit imports allow per-project intermediate paths to be set before SDK.props.
+    auto early = root.append_child("PropertyGroup");
+    early.append_child("BaseIntermediateOutputPath").text() = ("obj/" + project.name + "/").c_str();
+    auto sdk_props = root.append_child("Import");
+    sdk_props.append_attribute("Project") = "Sdk.props";
+    sdk_props.append_attribute("Sdk") = "Microsoft.NET.Sdk";
+    auto props = root.append_child("PropertyGroup");
+    props.append_child("TargetFramework").text() = project.target_framework.c_str();
+    props.append_child("EnableDefaultItems").text() = "false";
+    props.append_child("Configurations").text() = join_vector(solution.configurations, ";").c_str();
+    props.append_child("Platforms").text() = join_vector(solution.platforms, ";").c_str();
+    props.append_child("RootNamespace").text() = project.root_namespace.c_str();
+    props.append_child("AssemblyName").text() = project.name.c_str();
+    if (!project.csharp_version.empty()) props.append_child("LangVersion").text() = project.csharp_version.c_str();
+    if (!project.nullable.empty()) props.append_child("Nullable").text() = project.nullable.c_str();
+    if (!project.implicit_usings.empty()) props.append_child("ImplicitUsings").text() = project.implicit_usings.c_str();
+    props.append_child("AllowUnsafeBlocks").text() = project.allow_unsafe;
+    if (project.generate_runtime_configuration_files)
+        props.append_child("GenerateRuntimeConfigurationFiles").text() = "true";
+    props.append_child("OutputPath").text() = ("bin/$(Platform)/$(Configuration)/" + project.name + "/").c_str();
+    auto resolve_dir = [&](const std::string& raw) {
+        std::string result = raw;
+        if (raw.find("$(") == std::string::npos) {
+            fs::path path(raw);
+            if (!path.is_absolute() && !project.buildscript_path.empty())
+                path = fs::path(project.buildscript_path) / path;
+            result = make_relative_path(path.string(), output_path);
+        }
+        if (!result.empty() && result.back() != '/' && result.back() != '\\') result += '/';
+        return result;
+    };
+
+    for (const auto& [key, cfg] : project.configurations) {
+        auto [config, platform] = parse_config_key(key);
+        if (is_unix_platform(platform)) continue;
+        if (cfg.config_type != "Application" && cfg.config_type != "DynamicLibrary") {
+            std::cerr << "Error: C# project '" << project.name << "' requires type = exe or dll.\n";
+            return false;
+        }
+        auto group = root.append_child("PropertyGroup");
+        group.append_attribute("Condition") = ("'$(Configuration)|$(Platform)'=='" + key + "'").c_str();
+        group.append_child("OutputType").text() = cfg.config_type == "Application"
+            ? (cfg.link.sub_system == "Windows" ? "WinExe" : "Exe") : "Library";
+        group.append_child("PlatformTarget").text() = platform == "Win32" ? "x86"
+            : (platform == "Any CPU" || platform == "AnyCPU" ? "AnyCPU" : platform.c_str());
+        group.append_child("Optimize").text() = !cfg.use_debug_libraries;
+        group.append_child("DebugType").text() = "portable";
+        group.append_child("IntermediateOutputPath").text() = ("obj/" + project.name + "/" + platform + "/" + config + "/").c_str();
+        group.append_child("TreatWarningsAsErrors").text() = cfg.cl_compile.treat_warning_as_error;
+        group.append_child("DefineConstants").text() = ("$(DefineConstants);" + join_vector(cfg.cl_compile.preprocessor_definitions, ";")).c_str();
+        if (!cfg.target_name.empty()) group.append_child("AssemblyName").text() = cfg.target_name.c_str();
+        if (!cfg.out_dir.empty()) group.append_child("OutputPath").text() = resolve_dir(cfg.out_dir).c_str();
+        if (!cfg.int_dir.empty()) group.append_child("IntermediateOutputPath").text() = resolve_dir(cfg.int_dir).c_str();
+    }
+    auto files = root.append_child("ItemGroup");
+    for (const auto& src : project.sources) {
+        if (src.type != FileType::CSharpCompile && src.type != FileType::None) {
+            std::cerr << "Error: Unsupported source in C# project '" << project.name << "': " << src.path << "\n";
+            return false;
+        }
+        auto item = files.append_child(src.type == FileType::CSharpCompile ? "Compile" : "None");
+        item.append_attribute("Include") = make_relative_path(src.path, output_path).c_str();
+        std::string condition;
+        for (const auto& [key, cfg] : project.configurations) {
+            auto exclusion = src.settings.excluded.find(key);
+            if (exclusion == src.settings.excluded.end()) exclusion = src.settings.excluded.find(ALL_CONFIGS);
+            if (exclusion == src.settings.excluded.end() || !exclusion->second) continue;
+            if (!condition.empty()) condition += " And ";
+            condition += "'$(Configuration)|$(Platform)'!='" + key + "'";
+        }
+        if (!condition.empty()) item.append_attribute("Condition") = condition.c_str();
+    }
+    auto refs = root.append_child("ItemGroup");
+    for (const auto& dep : project.project_references) {
+        if (dep.visibility == DependencyVisibility::INTERFACE) continue;
+        const Project* target = find_dependency_project(solution, dep.name);
+        if (!target || target->is_package_project) {
+            std::cerr << "Error: Unknown C# project reference '" << dep.name << "'.\n";
+            return false;
+        }
+        if (dep.link_library_dependencies && detect_project_language(*target) != "C#") {
+            std::cerr << "Error: C# references to native projects must be build-order-only.\n";
+            return false;
+        }
+        auto ref = refs.append_child("ProjectReference");
+        ref.append_attribute("Include") = generated_project_filename(*target).c_str();
+        ref.append_child("ReferenceOutputAssembly").text() = dep.link_library_dependencies;
+    }
+    auto sdk_targets = root.append_child("Import");
+    sdk_targets.append_attribute("Project") = "Sdk.targets";
+    sdk_targets.append_attribute("Sdk") = "Microsoft.NET.Sdk";
+    return doc.save_file(output_path.c_str(), "  ");
+}
+
 bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& solution,
                                          const std::string& output_path) {
+    for (const auto& source : project.sources) {
+        if (source.type == FileType::CSharpCompile) {
+            std::cerr << "Error: C# sources require a C# project: " << project.name << "\n";
+            return false;
+        }
+    }
     pugi::xml_document doc;
 
     // XML declaration
@@ -1462,7 +1577,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
 
                 // All .vcxproj files for a solution live side-by-side in the
                 // effective build root, so the reference is always a bare filename.
-                ref_path = sol_proj->name + GENERATED_VCXPROJ;
+                ref_path = generated_project_filename(*sol_proj);
 
                 ref_elem.append_attribute("Include") = ref_path.c_str();
 
@@ -1483,7 +1598,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                         break;
                     }
                 }
-                if (!dep.link_library_dependencies || !has_linkable_content) {
+                if (!dep.link_library_dependencies || !has_linkable_content || detect_project_language(*sol_proj) == "C#") {
                     ref_elem.append_child("LinkLibraryDependencies").text() = "false";
                 }
             }
@@ -1641,8 +1756,9 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
         if (proj.is_package_project) continue;  // Skip synthetic find_package projects
         // .vcxproj is co-located with this .sln in the effective build root,
         // so the reference is always a bare filename.
-        std::string vcxproj_path = proj.name + GENERATED_VCXPROJ;
-        file << "Project(\"{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}\") = \""
+        std::string vcxproj_path = generated_project_filename(proj);
+        file << "Project(\"{" << (detect_project_language(proj) == "C#"
+             ? "9A19103F-16F7-4668-BE54-9A1E7A4F7556" : "8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942") << "}\") = \""
              << proj.name << "\", \"" << vcxproj_path << "\", \"{"
              << proj.uuid << "}\"\n";
 
@@ -1773,12 +1889,23 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
     // Helper: emit a Project element under a given parent node
     auto emit_project = [&](pugi::xml_node parent, const Project& proj) {
         // .vcxproj is co-located with this .slnx in the effective build root.
-        std::string vcxproj_path = proj.name + GENERATED_VCXPROJ;
+        std::string vcxproj_path = generated_project_filename(proj);
 
         auto project = parent.append_child("Project");
         project.append_attribute("Path") = vcxproj_path.c_str();
-        project.append_attribute("Type") = "8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942"; // C++ GUID
+        project.append_attribute("Type") = detect_project_language(proj) == "C#"
+            ? "9a19103f-16f7-4668-be54-9a1e7a4f7556" : "8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942";
         project.append_attribute("Id") = proj.uuid.c_str();
+
+        // C# solution types default to Any CPU unless explicitly mapped.
+        if (detect_project_language(proj) == "C#") {
+            for (const auto& platform : solution.platforms) {
+                if (is_unix_platform(platform)) continue;
+                auto mapping = project.append_child("Platform");
+                mapping.append_attribute("Solution") = ("*|" + platform).c_str();
+                mapping.append_attribute("Project") = platform.c_str();
+            }
+        }
 
         // Add build dependencies
         for (const auto& dep : proj.project_references) {
@@ -1789,7 +1916,7 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
             std::string dep_path;
             if (const Project* dep_proj = find_dependency_project(solution, dep.name)) {
                 // All vcxproj files live next to this .slnx in the build root.
-                dep_path = dep_proj->name + GENERATED_VCXPROJ;
+                dep_path = generated_project_filename(*dep_proj);
             }
 
             if (!dep_path.empty()) {
@@ -1926,6 +2053,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
     };
 
     for (auto& proj : solution.projects) {
+        if (detect_project_language(proj) == "C#") continue;
         if (proj.is_package_project) continue;  // Skip synthetic find_package projects
         debug_stream() << "[DEBUG] Processing project: " << proj.name << "\n";
         for (auto& config_pair : proj.configurations) {
@@ -1970,10 +2098,12 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
     // 3. THIRD: Generate project files (now with correct toolsets)
     for (const auto& project : solution.projects) {
         if (project.is_package_project) continue;  // Skip synthetic find_package projects
-        std::string filename = project.name + GENERATED_VCXPROJ;
+        std::string filename = generated_project_filename(project);
         fs::path vcxproj_path = effective_build_root / filename;
 
-        if (!generate_vcxproj(project, solution, vcxproj_path.string())) {
+        if (!(detect_project_language(project) == "C#"
+              ? generate_csproj(project, solution, vcxproj_path.string())
+              : generate_vcxproj(project, solution, vcxproj_path.string()))) {
             std::cerr << "Error: Failed to generate " << vcxproj_path << "\n";
             return false;
         }
@@ -2035,7 +2165,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
         // platform declared by the source buildscript. Unix and Android
         // platforms are intentionally omitted from vcxproj output.
         for (const auto& platform : solution.platforms) {
-            if (!is_windows_platform(platform)) continue;
+            if (!is_windows_platform(platform) && platform != "AnyCPU" && platform != "Any CPU") continue;
             const std::string normalized = normalize_platform(platform);
             if (std::find(cache.platforms.begin(), cache.platforms.end(), normalized) ==
                 cache.platforms.end()) {
@@ -2045,7 +2175,7 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
         for (const auto& project : solution.projects) {
             if (project.is_package_project) continue;
 
-            const std::string filename = project.name + GENERATED_VCXPROJ;
+            const std::string filename = generated_project_filename(project);
             const std::string project_file = build_dir_.empty()
                 ? filename
                 : (fs::path(build_dir_) / filename).string();

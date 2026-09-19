@@ -1348,6 +1348,12 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
 // Generate all Makefiles for a solution
 bool MakefileGenerator::generate(Solution& solution, const std::string& output_dir) {
+    for (const auto& project : solution.projects) {
+        if (detect_project_language(project) == "C#") {
+            std::cerr << "Error: C# projects require the vcxproj generator.\n";
+            return false;
+        }
+    }
     namespace fs = std::filesystem;
 
     // Create output directory if it doesn't exist

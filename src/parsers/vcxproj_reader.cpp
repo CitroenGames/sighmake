@@ -2374,6 +2374,15 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
     };
 
     out << "[project:" << project.name << "]\n";
+    if (detect_project_language(project) == "C#") {
+        out << "language = C#\n";
+        out << "target_framework = " << project.target_framework << "\n";
+        if (!project.csharp_version.empty()) out << "csharp_version = " << project.csharp_version << "\n";
+        if (!project.nullable.empty()) out << "nullable = " << project.nullable << "\n";
+        if (!project.implicit_usings.empty()) out << "implicit_usings = " << project.implicit_usings << "\n";
+        out << "allow_unsafe = " << (project.allow_unsafe ? "true" : "false") << "\n";
+        out << "generate_runtime_configuration_files = " << (project.generate_runtime_configuration_files ? "true" : "false") << "\n";
+    }
 
     // Write global project properties
     if (!project.project_name.empty())
@@ -2394,7 +2403,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
     // Source files
     std::vector<std::string> cpp_files, h_files, rc_files, masm_files, nasm_files, mc_files, idl_files;
     for (const auto& src : project.sources) {
-        if (src.type == FileType::ClCompile) {
+        if (src.type == FileType::ClCompile || src.type == FileType::CSharpCompile) {
             cpp_files.push_back(src.path);
         } else if (src.type == FileType::ClInclude) {
             h_files.push_back(src.path);
