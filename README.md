@@ -1,8 +1,9 @@
 # sighmake
 
-sighmake is a build system generator for C and C++ projects. It reads concise
+sighmake is a build system generator for C, C++, and C# projects. It reads concise
 `.buildscript` files, basic CMake projects, and supported conversion inputs, then
-generates project files for Visual Studio, CMake, or Make.
+generates project files for Visual Studio, CMake, or Make. C# support currently
+targets Visual Studio with SDK-style .NET projects.
 
 The goal is to keep build configuration readable, portable, and easy to review in
 version control.
@@ -10,10 +11,11 @@ version control.
 ## Features
 
 - Human-readable INI-style buildscript format
-- Visual Studio project and solution generation (`.vcxproj`, `.sln`, `.slnx`)
+- Visual Studio project and solution generation (`.vcxproj`, `.csproj`, `.sln`, `.slnx`)
 - Makefile and CMake generation
 - Direct build command with `sighmake --build`
-- C and C++ language support
+- C and C++ language support, plus C# executables and libraries in Visual Studio
+- Mixed native/managed solutions, managed assembly references, and automatic .NET restore
 - Debug and Release defaults when no explicit configs are provided
 - Per-config, per-platform, and per-file settings
 - Project dependencies with `PUBLIC`, `PRIVATE`, and `INTERFACE` visibility
@@ -103,6 +105,41 @@ sighmake --build . --config Release --parallel 8
 
 On Windows, the default generator writes Visual Studio files under `build/`.
 On Linux and macOS, the default generator writes Makefiles under `build/`.
+
+### C# Quick Start
+
+Install Visual Studio and a .NET SDK supporting your chosen target framework.
+For example, save this as `managed.buildscript`:
+
+```ini
+[solution]
+name = ManagedApp
+platforms = x64
+
+[project:ManagedApp]
+language = C#
+type = exe
+target_framework = net10.0
+sources = src/**/*.cs
+nullable = enable
+implicit_usings = enable
+```
+
+Generate and build from the directory containing the buildscript:
+
+```powershell
+sighmake managed.buildscript -g vcxproj
+sighmake --build . --config Release --platform x64
+```
+
+Use `type = dll` for managed libraries and `target_link_libraries(PRIVATE Contracts)`
+to reference another managed project. `dependencies = Contracts` adds build ordering
+only. `--project ManagedApp` selects a single project and builds its references.
+
+See the [mixed C++/C# example](examples/CSharp/managed.buildscript) and
+[C# settings reference](usage.md#c-projects) for unsafe code, runtime configuration
+files, and other options. C# generation for Makefile/CMake, importing `.csproj`
+files, and NuGet package declarations are not yet supported.
 
 ## Command Summary
 
@@ -199,6 +236,7 @@ The full syntax reference is in [usage.md](usage.md).
 - [Full usage guide](usage.md)
 - [VS Code extension](editors/vscode/README.md)
 - [Multi-project example](examples/Multi%20Project%20Example)
+- [Mixed C++/C# example](examples/CSharp/managed.buildscript)
 
 ## License
 
