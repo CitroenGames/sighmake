@@ -905,7 +905,10 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     };
     std::vector<ArchiveEntry> dep_archives;
 
-    // Add project reference outputs (.a files) to link line, including transitive PUBLIC deps
+    // Add project reference outputs (.a files) to the link line. PUBLIC and
+    // INTERFACE dependencies propagate normally. PRIVATE dependencies of a
+    // static library are link-only requirements of its final consumer, so they
+    // must propagate as well (matching CMake's $<LINK_ONLY:...> semantics).
     if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
         // Collect all project .a files by traversing the dependency tree
         std::set<std::string> visited_deps;
@@ -970,6 +973,10 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             const Project* dep_proj = find_project(project_lookup, dep_name);
             if (!dep_proj) return;
 
+            const auto dep_config_it = dep_proj->configurations.find(config_key);
+            const bool is_static_library = dep_config_it != dep_proj->configurations.end() &&
+                dep_config_it->second.config_type == "StaticLibrary";
+
             // Add this project's archive if it's a library
             if (add_locally) {
                 std::string archive = get_archive_path(*dep_proj, config_key, config_name);
@@ -979,9 +986,11 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                 }
             }
 
-            // Follow transitive PUBLIC dependencies (transitive deps are never whole-archive)
+            // A static library does not perform a final link, so its PRIVATE
+            // libraries remain required when a final binary consumes it.
+            // Shared-library PRIVATE dependencies stay encapsulated.
             for (const auto& sub_dep : dep_proj->project_references) {
-                if (sub_dep.visibility == DependencyVisibility::PRIVATE) continue;
+                if (sub_dep.visibility == DependencyVisibility::PRIVATE && !is_static_library) continue;
                 if (!sub_dep.link_library_dependencies) continue;
                 collect_deps(sub_dep.name, true, false);
             }

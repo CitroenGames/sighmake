@@ -488,6 +488,37 @@ target_link_libraries(
 #endif
 }
 
+TEST_CASE("MakefileGenerator propagates private static-library link requirements", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:ManagedRuntime]
+type = lib
+sources = managed.cpp
+
+[project:Runtime]
+type = lib
+sources = runtime.cpp
+target_link_libraries(PRIVATE ManagedRuntime)
+
+[project:Host]
+type = dll
+sources = host.cpp
+target_link_libraries(PRIVATE Runtime)
+)", {"managed.cpp", "runtime.cpp", "host.cpp"});
+
+    REQUIRE(result.files.count("Host.Release"));
+    const std::string& host_makefile = result.files["Host.Release"];
+    const size_t runtime = host_makefile.find("Runtime.a");
+    const size_t managed = host_makefile.find("ManagedRuntime.a");
+    REQUIRE(runtime != std::string::npos);
+    REQUIRE(managed != std::string::npos);
+    CHECK(runtime < managed);
+}
+
 #ifndef _WIN32
 TEST_CASE("MakefileGenerator reconciles symlink aliases in generated paths", "[makefile_generator]") {
     const fs::path test_root = fs::temp_directory_path() / "sighmake_test_makefile_symlink_alias";
