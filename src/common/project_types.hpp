@@ -96,6 +96,7 @@ struct ClCompileSettings {
     std::string floating_point_model;                   // "Precise", "Fast", "Strict"
     bool force_conformance_in_for_loop_scope = true;
     bool runtime_type_info = true;
+    std::optional<bool> support_just_my_code;           // Unset preserves MSBuild defaults
     PrecompiledHeader pch;
     std::string assembler_listing_location;
     std::string object_file_name;

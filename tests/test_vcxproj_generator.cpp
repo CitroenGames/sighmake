@@ -90,6 +90,74 @@ static std::string read_file(const fs::path& path) {
                         std::istreambuf_iterator<char>());
 }
 
+TEST_CASE("Just My Code emits exact compiler XML only for selected configurations", "[vcxproj_generator][jmc]") {
+    std::string settings;
+    std::map<std::string, bool> expected;
+    SECTION("absent") {}
+    SECTION("true") {
+        settings = "support_just_my_code = true\n";
+        expected = {{"Debug|Win32", true}, {"Debug|x64", true},
+                    {"Release|Win32", true}, {"Release|x64", true}};
+    }
+    SECTION("false") {
+        settings = "support_just_my_code = false\n";
+        expected = {{"Debug|Win32", false}, {"Debug|x64", false},
+                    {"Release|Win32", false}, {"Release|x64", false}};
+    }
+    SECTION("configuration across platforms") {
+        settings = "support_just_my_code[Debug|Win32] = false\n"
+                   "support_just_my_code[Debug|x64] = false\n";
+        expected = {{"Debug|Win32", false}, {"Debug|x64", false}};
+    }
+    SECTION("platform") {
+        settings = "support_just_my_code[x64] = false\n";
+        expected = {{"Debug|x64", false}, {"Release|x64", false}};
+    }
+    SECTION("combined selector") {
+        settings = "support_just_my_code[Debug|Win32] = false\n";
+        expected = {{"Debug|Win32", false}};
+    }
+    SECTION("configuration section") {
+        settings = "[config:Debug|Win32]\nsupport_just_my_code = false\n"
+                   "[config:Debug|x64]\n[config:Release|Win32]\n[config:Release|x64]\n";
+        expected = {{"Debug|Win32", false}};
+    }
+    auto gen = generate_from_buildscript(
+        "[solution]\nname = Jmc\nconfigurations = Debug, Release\nplatforms = Win32, x64\n"
+        "[project:App]\n" + settings);
+    pugi::xml_document doc;
+    REQUIRE(doc.load_file(gen.vcxproj_path.string().c_str()));
+    const auto root = doc.child("Project");
+    size_t groups = 0;
+    for (auto group : root.children("ItemDefinitionGroup")) {
+        ++groups;
+        const std::string condition = group.attribute("Condition").value();
+        const auto start = condition.find("=='");
+        REQUIRE(start != std::string::npos);
+        const auto key = condition.substr(start + 3, condition.size() - start - 4);
+        const auto cl = group.child("ClCompile");
+        const auto node = cl.child("SupportJustMyCode");
+        const auto it = expected.find(key);
+        const auto setting = gen.solution.projects[0].configurations.at(key).cl_compile.support_just_my_code;
+        if (it == expected.end()) {
+            CHECK_FALSE(node);
+            CHECK_FALSE(setting.has_value());
+        } else {
+            REQUIRE(node);
+            CHECK(setting == it->second);
+            std::ostringstream xml;
+            node.print(xml, "", pugi::format_raw);
+            CHECK(xml.str() == std::string("<SupportJustMyCode>") +
+                  (it->second ? "true" : "false") + "</SupportJustMyCode>");
+        }
+        CHECK(std::string(cl.child("AdditionalOptions").text().get()).find("/JMC") == std::string::npos);
+        CHECK(std::string(cl.child("Optimization").text().get()) ==
+              (key.find("Debug|") == 0 ? "Disabled" : "MaxSpeed"));
+    }
+    CHECK(groups == 4);
+    CHECK(doc.select_nodes("//SupportJustMyCode").size() == expected.size());
+}
+
 TEST_CASE("C# projects preserve managed settings and references", "[csharp]") {
     GeneratedProject gen;
     gen.temp_dir = fs::temp_directory_path() / ("sighmake_csharp_" + generate_uuid());

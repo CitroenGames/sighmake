@@ -30,6 +30,60 @@ static bool contains_substring(const std::vector<std::string>& vec, const std::s
 // Solution-level parsing
 // ============================================================================
 
+TEST_CASE("Just My Code is optional and typed", "[buildscript_parser][jmc]") {
+    const auto value = GENERATE("", "true", "false", "yes", "no", "1", "0");
+    std::string script = "[project:App]\n";
+    if (*value) script += std::string("support_just_my_code = ") + value + "\n";
+    BuildscriptParser parser;
+    const auto sol = parser.parse_string(script);
+    REQUIRE(sol.projects.size() == 1);
+    for (const auto& key : sol.get_config_keys()) {
+        const auto setting = sol.projects[0].configurations.at(key).cl_compile.support_just_my_code;
+        CHECK(setting.has_value() == (*value != '\0'));
+        if (*value) CHECK(setting.value() == (std::string(value) == "true" ||
+                                            std::string(value) == "yes" || std::string(value) == "1"));
+    }
+}
+
+TEST_CASE("Just My Code rejects malformed values in all parsing routes", "[buildscript_parser][jmc]") {
+    const auto value = GENERATE("", "maybe", "2", "TRUE", "false trailing");
+    const auto prefix = GENERATE("[project:App]\nsupport_just_my_code = ",
+                                "[project:App]\nsupport_just_my_code[x64] = ",
+                                "[project:App]\nsupport_just_my_code[Debug|Win32] = ",
+                                "[project:App]\n[config:Debug|Win32]\nsupport_just_my_code = ");
+    BuildscriptParser parser;
+    CHECK_THROWS_WITH(parser.parse_string(std::string(prefix) + value + "\n"),
+                     "Invalid Boolean value for support_just_my_code: '" + std::string(value) +
+                     "' (expected true/false, yes/no, or 1/0)");
+}
+
+TEST_CASE("Just My Code inherits project defaults in discovered configurations", "[buildscript_parser][jmc]") {
+    BuildscriptParser parser;
+    const auto sol = parser.parse_string(R"(
+[project:App]
+support_just_my_code = true
+[config:Custom|x64]
+support_just_my_code = false
+[config:Other|x64]
+)");
+    CHECK(sol.projects[0].configurations.at("Custom|x64").cl_compile.support_just_my_code == false);
+    CHECK(sol.projects[0].configurations.at("Other|x64").cl_compile.support_just_my_code == true);
+}
+
+TEST_CASE("Just My Code template inheritance preserves explicit overrides", "[buildscript_parser][jmc]") {
+    const bool enabled = GENERATE(false, true);
+    BuildscriptParser parser;
+    const auto sol = parser.parse_string(std::string(R"(
+[project:App]
+[config:Base|Win32]
+support_just_my_code = )") + (enabled ? "true" : "false") + R"(
+[config:Inherited|Win32] : Template:Base
+[config:Override|Win32] : Template:Base
+support_just_my_code = )" + (enabled ? "false\n" : "true\n"));
+    CHECK(sol.projects[0].configurations.at("Inherited|Win32").cl_compile.support_just_my_code == enabled);
+    CHECK(sol.projects[0].configurations.at("Override|Win32").cl_compile.support_just_my_code == !enabled);
+}
+
 TEST_CASE("Parse solution name", "[buildscript_parser]") {
     BuildscriptParser parser;
     auto sol = parser.parse_string(R"(

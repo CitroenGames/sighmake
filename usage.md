@@ -1324,6 +1324,7 @@ the primary names shown here in hand-written buildscripts.
 | `debug_info` | `EditAndContinue`, `ProgramDatabase`, or `OldStyle`. |
 | `exceptions` | `true`/`Sync`, `Async`, or `false`. |
 | `rtti` | Boolean runtime type information. |
+| `support_just_my_code` | Optional Boolean for Visual Studio C/C++ Just My Code debugging. Unset preserves MSBuild defaults. |
 | `multiprocessor` | Boolean parallel compilation setting. |
 | `simd` | MSVC instruction set, e.g. `AdvancedVectorExtensions2`. Visual Studio only; see [SIMD and vectorization](#simd-and-vectorization). |
 | `floating_point` | `Precise`, `Strict`, or `Fast`. |
@@ -1332,6 +1333,25 @@ the primary names shown here in hand-written buildscripts.
 | `objcflags` | Additional flags for `.m`/`.mm` files. |
 | `compile_as` | `Default`, `CompileAsC`, or `CompileAsCpp`. |
 | `pch`, `pch_header`, `pch_output` | Precompiled-header policy. |
+
+For Visual Studio C/C++ projects, use `support_just_my_code` instead of adding
+`/JMC-` to `cflags`. It emits `<SupportJustMyCode>false</SupportJustMyCode>`
+(or `true`) inside the configuration's `ItemDefinitionGroup/ClCompile`.
+Accepted values are `true`/`false`, `yes`/`no`, and `1`/`0` (case-sensitive);
+other values are rejected. Omitting it emits no property and preserves prior
+behavior. Makefile, CMake, and C# generation do not use this setting.
+
+```ini
+[project:App]
+support_just_my_code = false
+# Optional overrides, using the existing selector rules:
+support_just_my_code[x64] = true
+support_just_my_code[Debug|Win32] = false
+```
+
+Full `[config:Debug|Win32]` sections and configuration template inheritance also
+support this property. A single-token bracket selector is a platform selector;
+to target Debug on several platforms, specify each `Debug|Platform` pair.
 
 Other recognized compiler keys include `disable_warnings`, `error_reporting`,
 `assembler_listing`, `object_file_name`, `program_database_file`,

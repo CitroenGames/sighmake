@@ -9,6 +9,13 @@ namespace fs = std::filesystem;
 
 namespace vcxproj {
 
+static bool parse_support_just_my_code(const std::string& value) {
+    if (value == "true" || value == "yes" || value == "1") return true;
+    if (value == "false" || value == "no" || value == "0") return false;
+    throw std::runtime_error("Invalid Boolean value for support_just_my_code: '" + value +
+                             "' (expected true/false, yes/no, or 1/0)");
+}
+
 // Helper function to normalize paths using std::filesystem
 static std::string normalize_path(const std::string& path) {
     if (path.empty()) return path;
@@ -741,6 +748,8 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 cl.objcxx_flags = d.objcxx_flags;
             if (!cl.runtime_type_info && d.runtime_type_info)
                 cl.runtime_type_info = d.runtime_type_info;
+            if (!cl.support_just_my_code.has_value())
+                cl.support_just_my_code = d.support_just_my_code;
             if (!cl.utf8_source && d.utf8_source)
                 cl.utf8_source = d.utf8_source;
             if (!cl.multi_processor_compilation && d.multi_processor_compilation)
@@ -2480,6 +2489,12 @@ bool BuildscriptParser::parse_project_compiler_setting(const std::string& key, c
             proj.configurations[config_key].cl_compile.exception_handling = eh_value;
         }
         proj.project_level_defaults.cl_compile.exception_handling = eh_value;
+    } else if (key == "support_just_my_code") {
+        const bool enabled = parse_support_just_my_code(value);
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].cl_compile.support_just_my_code = enabled;
+        }
+        proj.project_level_defaults.cl_compile.support_just_my_code = enabled;
     } else if (key == "rtti" || key == "runtime_type_info") {
         bool rtti = (value == "true" || value == "yes" || value == "1");
         for (const auto& config_key : state.solution->get_config_keys()) {
@@ -3250,6 +3265,8 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
         else if (value == "true" || value == "yes" || value == "sync") eh_value = "Sync";
         else if (value == "async") eh_value = "Async";
         cfg.cl_compile.exception_handling = eh_value;
+    } else if (key == "support_just_my_code") {
+        cfg.cl_compile.support_just_my_code = parse_support_just_my_code(value);
     } else if (key == "runtime_type_info" || key == "rtti") {
         cfg.cl_compile.runtime_type_info = (value == "true" || value == "yes" || value == "1");
     } else if (key == "multi_processor_compilation" || key == "multiprocessor" || key == "mp") {
@@ -3612,6 +3629,8 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
         d_cl.force_conformance_in_for_loop_scope = t_cl.force_conformance_in_for_loop_scope;
     if (!d_cl.runtime_type_info && t_cl.runtime_type_info)
         d_cl.runtime_type_info = t_cl.runtime_type_info;
+    if (!d_cl.support_just_my_code.has_value())
+        d_cl.support_just_my_code = t_cl.support_just_my_code;
     if (!d_cl.openmp_support && t_cl.openmp_support)
         d_cl.openmp_support = t_cl.openmp_support;
     if (!d_cl.treat_wchar_t_as_built_in_type && t_cl.treat_wchar_t_as_built_in_type)

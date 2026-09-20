@@ -846,6 +846,9 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
         // Always write RuntimeTypeInfo explicitly
         if (cfg.cl_compile.runtime_type_info)
             cl.append_child("RuntimeTypeInfo").text() = "true";
+        if (cfg.cl_compile.support_just_my_code.has_value())
+            cl.append_child("SupportJustMyCode").text() =
+                *cfg.cl_compile.support_just_my_code ? "true" : "false";
         if (cfg.cl_compile.multi_processor_compilation)
             cl.append_child("MultiProcessorCompilation").text() = "true";
 
