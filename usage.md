@@ -1426,6 +1426,8 @@ selectors.
 | `use_wpf`, `use_windows_forms` | `UseWPF` / `UseWindowsForms` for windowed apps. |
 | `enable_windows_targeting` | `EnableWindowsTargeting` for `-windows` TFMs on other hosts. |
 | `application_icon`, `application_manifest` | `ApplicationIcon` / `ApplicationManifest` paths. |
+| `append_target_framework_to_output_path` | `AppendTargetFrameworkToOutputPath`. Default `true` (unchanged SDK behaviour); set `false` so `outdir` is used exactly, without an SDK-appended `net10.0/` subfolder. |
+| `assembly_references` | Comma-separated paths to prebuilt managed assemblies. Each becomes a `<Reference Include="<stem>"><HintPath>...</HintPath><Private>true</Private></Reference>` item. |
 
 See [C# projects](#c-projects) for the windowed-app recipe
 (`net*-windows` + `subsystem = Windows` + `use_wpf` / `use_windows_forms`).
@@ -1558,11 +1560,34 @@ projects must be declared as build-order-only references.
 The optional C# settings shown above are project-wide. Existing `defines`,
 `target_name`, `outdir`, `intdir`, per-file exclusions, and configuration sections
 are supported. `outdir` and `intdir` paths are relative to the declaring buildscript;
-the SDK appends the target framework to output paths. Default intermediate paths
+the SDK appends the target framework to output paths, unless
+`append_target_framework_to_output_path = false`. Default intermediate paths
 are unique to each project. SDK source globbing is disabled, so only the listed
 source files compile. Source-directory `Directory.Build.props` files are not
 automatically imported when the generated projects reside elsewhere; express the
 needed settings in the buildscript.
+
+### Referencing a prebuilt assembly
+
+Use `assembly_references` to link against a managed assembly that isn't a
+sibling project in the solution, such as a prebuilt SDK DLL:
+
+```ini
+[project:ManagedHost]
+language = C#
+type = dll
+target_framework = net10.0
+sources = src/**/*.cs
+outdir = bin/host
+append_target_framework_to_output_path = false
+assembly_references = ${FERRITE_SDK}/managed/Ferrite.Managed.Abstractions.dll
+```
+
+Paths are resolved relative to the declaring buildscript, like `outdir`, and
+`$(...)` MSBuild expressions are left untouched. Each entry becomes a
+`<Reference>` item with a `HintPath` pointing at the resolved assembly and
+`Private = true` (the assembly is copied to the output directory); there is
+currently no per-item syntax to disable that copy.
 
 ### Windowed apps (no console window)
 

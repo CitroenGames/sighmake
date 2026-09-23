@@ -182,6 +182,8 @@ implicit_usings = enable
 allow_unsafe = true
 generate_runtime_configuration_files = true
 outdir = artifacts/host
+append_target_framework_to_output_path = false
+assembly_references = libs/Prebuilt.dll
 defines = HOST
 sources = Host.cs, DebugOnly.cs
 DebugOnly.cs:excluded[Release|x64] = true
@@ -215,6 +217,14 @@ dependencies = Host
     auto ref = doc.select_node("/Project/ItemGroup/ProjectReference").node();
     CHECK(fs::path(ref.attribute("Include").value()).extension() == ".csproj");
     CHECK(std::string(ref.child_value("ReferenceOutputAssembly")) == "true");
+    CHECK(std::string(doc.select_node("/Project/PropertyGroup/AppendTargetFrameworkToOutputPath").node().child_value()) == "false");
+    auto asm_ref = doc.select_node("/Project/ItemGroup/Reference").node();
+    CHECK(std::string(asm_ref.attribute("Include").value()) == "Prebuilt");
+    CHECK(std::string(asm_ref.child_value("HintPath")).find("Prebuilt.dll") != std::string::npos);
+    // libs/Prebuilt.dll (relative to the buildscript in temp_dir) must resolve
+    // relative to build/Host.csproj, i.e. one level up (..\libs\Prebuilt.dll).
+    CHECK(std::string(asm_ref.child_value("HintPath")).substr(0, 2) == "..");
+    CHECK(std::string(asm_ref.child_value("Private")) == "true");
     REQUIRE(generator.generate_vcxproj(solution.projects[2], solution, (gen.temp_dir / "build/Native.vcxproj").string()));
     pugi::xml_document native;
     REQUIRE(native.load_file((gen.temp_dir / "build/Native.vcxproj").string().c_str()));
@@ -233,6 +243,9 @@ dependencies = Host
     CHECK(roundtrip.projects[0].language == "C#");
     CHECK(roundtrip.projects[0].target_framework == "net10.0");
     CHECK(roundtrip.projects[0].allow_unsafe);
+    CHECK_FALSE(roundtrip.projects[0].append_target_framework_to_output_path);
+    REQUIRE(roundtrip.projects[0].assembly_references.size() == 1);
+    CHECK(roundtrip.projects[0].assembly_references[0].find("Prebuilt.dll") != std::string::npos);
     CHECK(roundtrip.projects[0].sources.size() == 2);
     MakefileGenerator make;
     CMakeGenerator cmake;
@@ -257,6 +270,65 @@ dependencies = Host
         host.project_references.back().link_library_dependencies = false;
         CHECK(generator.generate_csproj(host, solution, path.string()));
     }
+}
+
+TEST_CASE("C# AppendTargetFrameworkToOutputPath is opt-in and assembly references emit HintPath", "[csharp]") {
+    std::string settings;
+    bool expect_node = false;
+    SECTION("default (unset) omits the property") {
+        expect_node = false;
+    }
+    SECTION("explicit true omits the property") {
+        settings = "append_target_framework_to_output_path = true\n";
+        expect_node = false;
+    }
+    SECTION("explicit false emits the property") {
+        settings = "append_target_framework_to_output_path = false\n";
+        expect_node = true;
+    }
+
+    GeneratedProject gen;
+    gen.temp_dir = fs::temp_directory_path() / ("sighmake_csharp_atf_" + generate_uuid());
+    fs::create_directories(gen.temp_dir / "build");
+    BuildscriptParser parser;
+    auto solution = parser.parse_string(
+        "[solution]\nname = Atf\nconfigurations = Debug\nplatforms = x64\n"
+        "[project:Host]\nlanguage = C#\ntype = dll\ntarget_framework = net10.0\n"
+        "sources = Host.cs\n"
+        "assembly_references = libs/External.dll, libs/Other.dll\n" + settings,
+        gen.temp_dir.string());
+    REQUIRE(solution.projects.size() == 1);
+    auto& host = solution.projects[0];
+    REQUIRE(host.assembly_references.size() == 2);
+    CHECK(host.append_target_framework_to_output_path == !expect_node);
+
+    VcxprojGenerator generator;
+    auto path = gen.temp_dir / "build" / "Host.csproj";
+    REQUIRE(generator.generate_csproj(host, solution, path.string()));
+
+    pugi::xml_document doc;
+    REQUIRE(doc.load_file(path.string().c_str()));
+    auto node = doc.select_node("/Project/PropertyGroup/AppendTargetFrameworkToOutputPath").node();
+    if (expect_node) {
+        REQUIRE(node);
+        CHECK(std::string(node.child_value()) == "false");
+    } else {
+        CHECK_FALSE(node);
+    }
+
+    auto refs = doc.select_nodes("/Project/ItemGroup/Reference");
+    REQUIRE(refs.size() == 2);
+    auto first = refs[0].node();
+    CHECK(std::string(first.attribute("Include").value()) == "External");
+    std::string hint = first.child_value("HintPath");
+    CHECK(hint.find("External.dll") != std::string::npos);
+    // libs/External.dll (relative to the buildscript in temp_dir) must resolve
+    // relative to build/Host.csproj, i.e. one level up.
+    CHECK(hint.substr(0, 2) == "..");
+    CHECK(std::string(first.child_value("Private")) == "true");
+    auto second = refs[1].node();
+    CHECK(std::string(second.attribute("Include").value()) == "Other");
+    CHECK(std::string(second.child_value("HintPath")).find("Other.dll") != std::string::npos);
 }
 
 // ============================================================================

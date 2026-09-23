@@ -2421,6 +2421,16 @@ bool BuildscriptParser::parse_project_compiler_setting(const std::string& key, c
     } else if (key == "application_manifest" || key == "app_manifest" || key == "manifest") {
         proj.application_manifest = value.find("$(") != std::string::npos
             ? value : resolve_path(value, state.base_path);
+    } else if (key == "append_target_framework_to_output_path") {
+        proj.append_target_framework_to_output_path = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "assembly_references" || key == "assembly_reference" || key == "references") {
+        // Prebuilt managed assembly paths. Resolved relative to the declaring
+        // buildscript, like outdir; $(...) MSBuild expressions are preserved.
+        auto refs = split(value, ',');
+        for (const auto& ref : refs) {
+            proj.assembly_references.push_back(
+                ref.find("$(") != std::string::npos ? ref : resolve_path(ref, state.base_path));
+        }
     } else if (key == "c_standard" || key == "cstd") {
         // Store as-is: "89", "99", "11", "17", "23"
         proj.c_standard = value;

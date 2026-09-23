@@ -332,6 +332,13 @@ struct Project {
     bool enable_windows_targeting = false;              // EnableWindowsTargeting for cross-OS builds
     std::string application_icon;                       // .ico path, resolved like other asset paths
     std::string application_manifest;                   // app.manifest path, resolved like other asset paths
+    // When false, emits <AppendTargetFrameworkToOutputPath>false</...> so `outdir`
+    // is used exactly, without an SDK-appended net10.0/ subfolder. Default true
+    // matches unmodified SDK behaviour.
+    bool append_target_framework_to_output_path = true;
+    // Prebuilt managed assembly paths, resolved like other asset paths. Emitted as
+    // <Reference Include="stem"><HintPath>...</HintPath><Private>true</Private></Reference>.
+    std::vector<std::string> assembly_references;
     std::string c_standard;                             // "89", "99", "11", "17", "23" (for C projects)
 
     bool ignore_warn_compile_duplicated_filename = false;

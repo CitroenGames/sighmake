@@ -2387,6 +2387,8 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         if (project.enable_windows_targeting) out << "enable_windows_targeting = true\n";
         if (!project.application_icon.empty()) out << "application_icon = " << convert_path(project.application_icon) << "\n";
         if (!project.application_manifest.empty()) out << "application_manifest = " << convert_path(project.application_manifest) << "\n";
+        if (!project.append_target_framework_to_output_path) out << "append_target_framework_to_output_path = false\n";
+        if (!project.assembly_references.empty()) out << "assembly_references = " << join_paths(project.assembly_references) << "\n";
     }
 
     // Write global project properties

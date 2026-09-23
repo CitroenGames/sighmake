@@ -374,6 +374,8 @@ bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& s
         props.append_child("ApplicationIcon").text() = make_relative_path(project.application_icon, output_path).c_str();
     if (!project.application_manifest.empty())
         props.append_child("ApplicationManifest").text() = make_relative_path(project.application_manifest, output_path).c_str();
+    if (!project.append_target_framework_to_output_path)
+        props.append_child("AppendTargetFrameworkToOutputPath").text() = "false";
     props.append_child("OutputPath").text() = ("bin/$(Platform)/$(Configuration)/" + project.name + "/").c_str();
     auto resolve_dir = [&](const std::string& raw) {
         std::string result = raw;
@@ -479,6 +481,16 @@ bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& s
         auto ref = refs.append_child("ProjectReference");
         ref.append_attribute("Include") = generated_project_filename(*target).c_str();
         ref.append_child("ReferenceOutputAssembly").text() = dep.link_library_dependencies;
+    }
+    if (!project.assembly_references.empty()) {
+        auto asm_refs = root.append_child("ItemGroup");
+        for (const auto& asm_path : project.assembly_references) {
+            std::string stem = fs::path(asm_path).stem().string();
+            auto reference = asm_refs.append_child("Reference");
+            reference.append_attribute("Include") = stem.c_str();
+            reference.append_child("HintPath").text() = make_relative_path(asm_path, output_path).c_str();
+            reference.append_child("Private").text() = "true";
+        }
     }
     auto sdk_targets = root.append_child("Import");
     sdk_targets.append_attribute("Project") = "Sdk.targets";
