@@ -1220,23 +1220,68 @@ cmake -B build-android \
 
 ### Visual Studio to buildscript
 
+#### Convert a `.sln` solution to a buildscript
+
+1. Run the converter against your solution file (the `-c` flag is an alias
+   for `--convert`):
+
 ```text
 sighmake --convert Game.sln
+sighmake -c Game.sln
 sighmake --convert Game.slnx
+```
+
+2. Find the generated files next to the originals:
+
+- One `<Project>.buildscript` is written next to each project file
+  (for example `src/Core/Core.buildscript` for `src/Core/Core.vcxproj`).
+- One root `<Solution>.buildscript` (for example `Game.buildscript`) is
+  written next to the `.sln`/`.slnx` file. It holds the `[solution]` matrix
+  plus one `include = ...` line per project.
+- If a project shares the solution's name and directory, the two are merged
+  into a single `<Solution>.buildscript` containing both sections.
+
+Example layout after `sighmake --convert Game.sln`:
+
+```text
+Game.sln
+Game.buildscript          # [solution] + include directives
+src/Core/Core.vcxproj
+src/Core/Core.buildscript
+src/App/App.vcxproj
+src/App/App.buildscript
+```
+
+The root file looks like this:
+
+```ini
+[solution]
+name = Game
+configurations = Debug, Release
+platforms = Win32, x64
+
+include = src/Core/Core.buildscript
+include = src/App/App.buildscript
+```
+
+3. Review the generated files, then verify the round trip before deleting the
+   originals:
+
+```text
+sighmake Game.buildscript -g vcxproj
+sighmake --build . --config Release
+```
+
+A project listed in the solution but missing or unreadable on disk is
+reported as a warning and skipped; conversion still succeeds with the
+remaining projects.
+
+Other conversion inputs use the same workflow:
+
+```text
 sighmake --convert Game.vcxproj
 sighmake --convert Legacy.vcproj
 ```
-
-The conversion reader supports `.sln` and `.slnx` solutions containing
-`.vcxproj` or legacy `.vcproj` projects. Standalone projects are wrapped as
-one-project solutions. A project file listed in the solution but missing or
-unreadable is reported as a warning and skipped; the conversion still succeeds
-with the remaining projects.
-
-Output layout: one `<Project>.buildscript` is written next to each project
-file, and a root `<Solution>.buildscript` containing `include` directives is
-written next to the solution. When a project shares the solution's name and
-directory, the two are merged into a single file.
 
 Conversion preserves the supported identity, configuration, compiler/linker,
 file, filter, dependency, property-sheet, and build-event data. Visual Studio
