@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "target_receipt_support.hpp"
 #include "makefile_generator.hpp"
 #include "common/build_cache.hpp"
 #include "common/string_utils.hpp"
@@ -330,16 +331,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-function New-FileRecord([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "target receipt input is missing: $Path"
-    }
-    $item = Get-Item -LiteralPath $Path
-    return [ordered]@{
-        Size = [uint64]$item.Length
-        SHA256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
-    }
-}
+)PS" << sighmake::target_receipt_file_record_powershell << R"PS(
 
 $primary = New-FileRecord $PrimaryArtifact
 $runtime = @()

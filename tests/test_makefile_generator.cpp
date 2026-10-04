@@ -1226,6 +1226,14 @@ target_link_libraries(PRIVATE RuntimeBase)
     const fs::path build_dir = temp_dir / "build";
     REQUIRE(fs::exists(build_dir / "write-sighmake-target-receipt.py"));
     REQUIRE(fs::exists(build_dir / "Write-SighmakeTargetReceipt.ps1"));
+    const std::string receipt_script = read_file(build_dir / "Write-SighmakeTargetReceipt.ps1");
+    CHECK(receipt_script.find("Get-FileHash") == std::string::npos);
+    CHECK(receipt_script.find("[IO.File]::OpenRead($Path)") != std::string::npos);
+    CHECK(receipt_script.find("[uint64]$stream.Length") != std::string::npos);
+    CHECK(receipt_script.find("$hash.ComputeHash($stream)") != std::string::npos);
+    CHECK(receipt_script.find(".ToLowerInvariant()") != std::string::npos);
+    CHECK(receipt_script.find("$stream.Dispose()") != std::string::npos);
+    CHECK(receipt_script.find("$hash.Dispose()") != std::string::npos);
     REQUIRE(fs::exists(build_dir / "App.runtime-dependencies.txt"));
 
     const std::string metadata = read_file(build_dir / "App.runtime-dependencies.txt");

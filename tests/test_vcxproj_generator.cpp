@@ -2265,6 +2265,14 @@ target_link_libraries(PRIVATE RuntimeBase)
     REQUIRE(fs::exists(gen.vcxproj_path));
     const fs::path generated = gen.vcxproj_path.parent_path();
     REQUIRE(fs::exists(generated / "Write-SighmakeTargetReceipt.ps1"));
+    const std::string receipt_script = read_file(generated / "Write-SighmakeTargetReceipt.ps1");
+    CHECK(receipt_script.find("Get-FileHash") == std::string::npos);
+    CHECK(receipt_script.find("[IO.File]::OpenRead($Path)") != std::string::npos);
+    CHECK(receipt_script.find("[uint64]$stream.Length") != std::string::npos);
+    CHECK(receipt_script.find("$hash.ComputeHash($stream)") != std::string::npos);
+    CHECK(receipt_script.find(".ToLowerInvariant()") != std::string::npos);
+    CHECK(receipt_script.find("$stream.Dispose()") != std::string::npos);
+    CHECK(receipt_script.find("$hash.Dispose()") != std::string::npos);
     REQUIRE(fs::exists(generated / "App.runtime-dependencies.txt"));
     const std::string metadata = read_file(generated / "App.runtime-dependencies.txt");
     CHECK(metadata.find("Codec|") != std::string::npos);
