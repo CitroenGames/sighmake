@@ -466,6 +466,71 @@ bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& s
         }
         if (!condition.empty()) item.append_attribute("Condition") = condition.c_str();
     }
+    // Reuse runtime dependency declarations as SDK content: the SDK owns copying,
+    // incrementality, publishing, and output-directory selection for every configuration.
+    if (!project.runtime_dependencies.empty()) {
+        auto runtime = root.append_child("ItemGroup");
+        auto required = root.append_child("ItemGroup");
+        std::map<std::string, std::string> destinations;
+        auto escape_item = [](const std::string& value) {
+            std::string escaped;
+            for (unsigned char ch : value) {
+                // Keep property expressions (e.g. $(Configuration)) evaluable, but
+                // prevent literal item separators, wildcards, and condition quotes.
+                if (ch == '%' || ch == ';' || ch == '\'' || ch == '*' || ch == '?' || ch == '@') {
+                    const char* hex = "0123456789ABCDEF";
+                    escaped += '%'; escaped += hex[ch >> 4]; escaped += hex[ch & 15];
+                } else escaped += static_cast<char>(ch);
+            }
+            return escaped;
+        };
+        for (const auto& dependency : project.runtime_dependencies) {
+            std::string stage = dependency.stage_path;
+            std::replace(stage.begin(), stage.end(), '\\', '/');
+            fs::path path(stage);
+            bool safe = !stage.empty() && stage.front() != '/' && !path.is_absolute();
+            for (const auto& part : path) {
+                const auto component = part.string();
+                if (component.empty() || component == "." || component == ".." ||
+                    component.find_first_of(":$%;*?@'<>\"|\r\n") != std::string::npos)
+                    safe = false;
+            }
+            if (!safe || stage.back() == '/' || dependency.source.empty()) {
+                std::cerr << "Error: C# runtime dependency requires a safe relative file stage path: "
+                          << dependency.stage_path << "\n";
+                return false;
+            }
+            stage = path.lexically_normal().generic_string();
+            const std::string key = to_lower(stage);
+            const auto inserted = destinations.emplace(key, dependency.source);
+            if (!inserted.second) {
+                std::cerr << "Error: C# runtime dependencies collide at stage path: " << stage << "\n";
+                return false;
+            }
+            const auto source = escape_item(make_relative_path(dependency.source, output_path));
+            auto content = runtime.append_child("Content");
+            content.append_attribute("Include") = source.c_str();
+            // Optional inputs can appear after generation (or differ by configuration).
+            if (!dependency.required)
+                content.append_attribute("Condition") = ("Exists('" + source + "')").c_str();
+            content.append_child("Link").text() = stage.c_str();
+            content.append_child("TargetPath").text() = stage.c_str();
+            content.append_child("CopyToOutputDirectory").text() = "PreserveNewest";
+            content.append_child("CopyToPublishDirectory").text() = "PreserveNewest";
+            if (dependency.required) {
+                auto item = required.append_child("_SighmakeRequiredRuntimeDependency");
+                item.append_attribute("Include") = source.c_str();
+            }
+        }
+        auto validation = root.append_child("Target");
+        validation.append_attribute("Name") = "ValidateSighmakeRuntimeDependencies";
+        validation.append_attribute("BeforeTargets") = "GetCopyToOutputDirectoryItems;ComputeFilesToPublish";
+        // Generated dependencies may be produced by build-order references.
+        validation.append_attribute("DependsOnTargets") = "ResolveProjectReferences";
+        auto error = validation.append_child("Error");
+        error.append_attribute("Condition") = "'@(_SighmakeRequiredRuntimeDependency)' != '' And !Exists('%(_SighmakeRequiredRuntimeDependency.Identity)')";
+        error.append_attribute("Text") = "Required runtime dependency is missing: %(_SighmakeRequiredRuntimeDependency.Identity)";
+    }
     auto refs = root.append_child("ItemGroup");
     for (const auto& dep : project.project_references) {
         if (dep.visibility == DependencyVisibility::INTERFACE) continue;

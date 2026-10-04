@@ -63,7 +63,7 @@ static std::optional<RuntimeDependency> parse_runtime_dependency(
     const std::string source = trim(fields[1]);
     result.source = fs::path(source).is_absolute()
         ? fs::path(source).lexically_normal().string()
-        : (fs::path(base_path) / source).lexically_normal().string();
+        : (fs::absolute(fs::path(base_path)) / source).lexically_normal().string();
     result.stage_path = trim(fields[2]);
     if (fields.size() == 4) {
         const std::string required = to_lower(trim(fields[3]));

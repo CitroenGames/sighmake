@@ -1612,6 +1612,19 @@ source files compile. Source-directory `Directory.Build.props` files are not
 automatically imported when the generated projects reside elsewhere; express the
 needed settings in the buildscript.
 
+### Copying runtime content
+
+C# projects also support `runtime_dependencies = Name|Source|StagePath|Required`.
+For example, `runtime_dependencies = Replay|data/replay.json|replay.json|true`
+copies the declared file into both build and publish output using the SDK
+`PreserveNewest` policy. Source paths are relative to the declaring buildscript;
+`$(Configuration)` and other MSBuild property expressions remain evaluable.
+Missing required files fail build and publish. Optional files are included only
+when present at project evaluation. Stage paths must name safe relative files,
+without traversal, absolute paths, MSBuild expressions, or reserved characters.
+Destinations must be unique, including case differences, across the propagated
+runtime dependency closure. C# content copying does not emit a native target receipt.
+
 ### Referencing a prebuilt assembly
 
 Use `assembly_references` to link against a managed assembly that isn't a

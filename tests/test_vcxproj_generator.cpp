@@ -2281,3 +2281,78 @@ target_link_libraries(PRIVATE RuntimeBase)
     CHECK(std::string(exec.attribute("Command").value()).find(
         "$(TargetName).targetreceipt.json") != std::string::npos);
 }
+
+TEST_CASE("C# runtime content uses SDK build and publish copying", "[csharp][runtime-content]") {
+    GeneratedProject gen;
+    gen.temp_dir = fs::temp_directory_path() / ("sighmake_content_" + generate_uuid());
+    fs::create_directories(gen.temp_dir / "build");
+    BuildscriptParser parser;
+    auto solution = parser.parse_string(R"(
+[solution]
+name = Content
+configurations = Debug, Release
+platforms = x64
+[project:Host]
+language = C#
+type = exe
+target_framework = net10.0
+sources = Program.cs
+runtime_dependencies = Replay|data/replay.json|fixtures/replay.json|true
+runtime_dependencies = Optional|data/optional.json|optional.json|false
+)", gen.temp_dir.string());
+    REQUIRE(solution.projects.size() == 1);
+    auto& project = solution.projects[0];
+    VcxprojGenerator generator;
+    const auto output = gen.temp_dir / "build/Host.csproj";
+    REQUIRE(generator.generate_csproj(project, solution, output.string()));
+    pugi::xml_document doc;
+    REQUIRE(doc.load_file(output.string().c_str()));
+    CHECK(doc.select_nodes("/Project/ItemGroup/Content").size() == 2);
+    CHECK(doc.select_nodes("/Project/ItemGroup/_SighmakeRequiredRuntimeDependency").size() == 1);
+    auto content = doc.select_node("/Project/ItemGroup/Content[TargetPath='fixtures/replay.json']").node();
+    REQUIRE(content);
+    CHECK(std::string(content.child_value("Link")) == "fixtures/replay.json");
+    CHECK(std::string(content.child_value("CopyToOutputDirectory")) == "PreserveNewest");
+    CHECK(std::string(content.child_value("CopyToPublishDirectory")) == "PreserveNewest");
+    CHECK(std::string(content.attribute("Include").value()).find("..") == 0);
+    CHECK_FALSE(content.attribute("Condition"));
+    CHECK(std::string(doc.select_node("/Project/ItemGroup/Content[TargetPath='optional.json']").node().attribute("Condition").value()).find("Exists('") == 0);
+    auto target = doc.select_node("/Project/Target[@Name='ValidateSighmakeRuntimeDependencies']").node();
+    REQUIRE(target);
+    CHECK(std::string(target.attribute("BeforeTargets").value()).find("ComputeFilesToPublish") != std::string::npos);
+    CHECK(std::string(target.child("Error").attribute("Condition").value()).find("Identity") != std::string::npos);
+    SECTION("unsafe stage paths reject") {
+        for (const char* stage : {"../escape.json", "/absolute.json", "C:/absolute.json",
+                                  "dir/../escape.json", "$(Configuration)/data.json", "data;other.json", "dir/"}) {
+            project.runtime_dependencies[0].stage_path = stage;
+            CHECK_FALSE(generator.generate_csproj(project, solution, output.string()));
+        }
+    }
+    SECTION("case insensitive output collisions reject") {
+        project.runtime_dependencies[1].stage_path = "Fixtures/Replay.json";
+        CHECK_FALSE(generator.generate_csproj(project, solution, output.string()));
+    }
+    SECTION("equivalent separator output collisions reject") {
+        project.runtime_dependencies[1].stage_path = "fixtures//replay.json";
+        CHECK_FALSE(generator.generate_csproj(project, solution, output.string()));
+    }
+    SECTION("literal special source names are MSBuild escaped") {
+        project.runtime_dependencies[0].source = (gen.temp_dir / "data/a'b;100%.json").string();
+        REQUIRE(generator.generate_csproj(project, solution, output.string()));
+        REQUIRE(doc.load_file(output.string().c_str()));
+        auto escaped = doc.select_node("/Project/ItemGroup/Content").node();
+        CHECK(std::string(escaped.attribute("Include").value()).find("a%27b%3B100%25.json") != std::string::npos);
+    }
+    SECTION("relative buildscript roots preserve runtime property source ownership") {
+        auto relative = parser.parse_string("[project:Host]\nlanguage = C#\ntype = exe\ntarget_framework = net10.0\nsources = Program.cs\nruntime_dependencies = Generated|data/$(Configuration)/owner.dll|owner.dll|true\n", "relative-root");
+        REQUIRE(relative.projects.size() == 1);
+        REQUIRE(relative.projects[0].runtime_dependencies.size() == 1);
+        CHECK(fs::path(relative.projects[0].runtime_dependencies[0].source).is_absolute());
+        CHECK(relative.projects[0].runtime_dependencies[0].source.find("$(Configuration)") != std::string::npos);
+    }
+    SECTION("configuration expressions remain evaluable") {
+        project.runtime_dependencies[0].source = (gen.temp_dir / "data/$(Configuration)/replay.json").string();
+        REQUIRE(generator.generate_csproj(project, solution, output.string()));
+        CHECK(read_file(output).find("$(Configuration)/replay.json") != std::string::npos);
+    }
+}
