@@ -798,6 +798,7 @@ target_link_libraries(
 }
 
 TEST_CASE("Runtime dependencies propagate through the complete link closure", "[buildscript_parser][receipt]") {
+    const fs::path fixture_root = fs::absolute(fs::temp_directory_path() / "ReceiptFixture");
     BuildscriptParser parser;
     auto sol = parser.parse_string(R"(
 [solution]
@@ -816,7 +817,7 @@ target_link_libraries(PRIVATE RuntimeBase)
 [project:App]
 type = exe
 target_link_libraries(PRIVATE Middle)
-)", "C:/ReceiptFixture");
+)", fixture_root.string());
     auto* base = find_project(sol, "RuntimeBase");
     auto* app = find_project(sol, "App");
     REQUIRE(base != nullptr);
@@ -825,7 +826,7 @@ target_link_libraries(PRIVATE Middle)
     REQUIRE(app->runtime_dependencies.size() == 1);
     CHECK(app->runtime_dependencies[0].name == "Codec");
     CHECK(fs::path(app->runtime_dependencies[0].source).lexically_normal() ==
-          fs::path("C:/ReceiptFixture/thirdparty/codec.dll").lexically_normal());
+          (fixture_root / "thirdparty/codec.dll").lexically_normal());
     CHECK(app->runtime_dependencies[0].stage_path == "Codec.dll");
     CHECK(app->runtime_dependencies[0].required);
 }
