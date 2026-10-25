@@ -1186,13 +1186,13 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             out << " $(PCH_OUTPUT)";
         }
         out << ": | prebuild\n\n";
-        out << "$(TARGET): $(OBJS)";
+        out << "$(TARGET): $(OBJS) " << project.name << "." << config_name;
         if (!dep_archives.empty()) {
             out << " $(PROJECT_DEPS)";
         }
         out << " | prebuild\n";
     } else {
-        out << "$(TARGET): $(OBJS)";
+        out << "$(TARGET): $(OBJS) " << project.name << "." << config_name;
         if (!dep_archives.empty()) {
             out << " $(PROJECT_DEPS)";
         }
@@ -1215,6 +1215,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         }
     } else if (config.config_type == "StaticLibrary") {
         // Create static library (Android uses the NDK's llvm-ar via $(AR))
+        // ar replaces listed members but retains removed source objects unless recreated.
+        out << "\trm -f $@\n";
         out << "\t" << (android ? "$(AR)" : "ar") << " rcs $@ $(OBJS)\n";
     }
 

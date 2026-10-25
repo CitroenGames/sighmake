@@ -2116,6 +2116,23 @@ bool VcxprojGenerator::generate(Solution& solution, const std::string& output_di
         }
     }
 
+#ifndef _WIN32
+    // SDK-style C# projects and .NET 10 solutions do not require Visual Studio.
+    const bool managed_only = !solution.projects.empty() &&
+        std::all_of(solution.projects.begin(), solution.projects.end(), [](const auto& project) {
+            return project.is_package_project || detect_project_language(project) == "C#";
+        });
+    if (managed_only) {
+        for (const auto& project : solution.projects) {
+            if (project.is_package_project) continue;
+            if (!generate_csproj(project, solution,
+                    (effective_build_root / generated_project_filename(project)).string())) return false;
+        }
+        const std::string name = solution.name.empty() ? solution.projects[0].name : solution.name;
+        return generate_slnx(solution, (effective_build_root / (name + GENERATED_SLNX)).string());
+    }
+#endif
+
     // 1. FIRST: Detect Visual Studio installation
     auto vs_info = VSDetector::detect_latest_vs();
 
