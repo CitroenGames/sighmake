@@ -64,12 +64,30 @@ std::string make_project_config_target(const Project& project, const std::string
     return project.name + "." + config_name + (android ? ".Android" : "");
 }
 
+// How well a non-Windows platform matches the host the makefiles are generated on. Linux and macOS
+// configs share one makefile name (App.Release), so when a project declares both, the host's own
+// platform wins and the other host's platform is used only as a fallback.
+int makefile_platform_rank(const std::string& platform) {
+    const std::string p = to_lower(platform);
+    const bool apple = p == "macos" || p == "darwin" || p == "osx";
+#ifdef __APPLE__
+    const bool native = apple;
+    const bool foreign = is_linux_platform(p);
+#else
+    const bool native = is_linux_platform(p);
+    const bool foreign = apple;
+#endif
+    return native ? 2 : (foreign ? 0 : 1);
+}
+
 // Find a config key the makefile generator can build for this config name.
 // android=true selects Android configs; android=false selects the other
 // non-Windows configs (Linux/macOS). They get separate makefiles so a solution
 // can target both without the outputs colliding.
 std::optional<std::string> find_makefile_config_key(const Project& project, const std::string& config_name,
                                                     bool android) {
+    std::optional<std::string> best;
+    int best_rank = -1;
     for (const auto& [config_key, config] : project.configurations) {
         (void)config;
         size_t pipe_pos = config_key.find('|');
@@ -81,10 +99,14 @@ std::optional<std::string> find_makefile_config_key(const Project& project, cons
             : "";
         if (cfg == config_name && !is_windows_platform(platform) &&
             is_android_platform(platform) == android) {
-            return config_key;
+            const int rank = makefile_platform_rank(platform);
+            if (rank > best_rank) {
+                best = config_key;
+                best_rank = rank;
+            }
         }
     }
-    return std::nullopt;
+    return best;
 }
 
 // Android loaders (System.loadLibrary, APK packaging) require the "lib" prefix
@@ -584,8 +606,9 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
         ss << flags::warning_level_to_gnu_flags(config.cl_compile.warning_level) << " ";
     }
 
-    // Position-independent code for shared libraries
-    if (config.config_type == "DynamicLibrary") {
+    // Position-independent code for shared libraries, and for static libraries since those are
+    // commonly linked into a shared library (non-PIC objects cannot be).
+    if (config.config_type == "DynamicLibrary" || config.config_type == "StaticLibrary") {
         ss << "-fPIC ";
     }
 
@@ -1208,10 +1231,18 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
         // Link executable or shared library
         std::string compiler = links_with_cxx ? "$(CXX)" : "$(CC)";
+#ifdef __APPLE__
+        // ld64 resolves static archives regardless of their order on the command line.
+        const char* ldlibs = "$(LDLIBS)";
+#else
+        // GNU ld and lld scan each static archive once, in order; a group rescans them until no
+        // new symbols resolve, so dependency order between archives does not matter.
+        const char* ldlibs = "-Wl,--start-group $(LDLIBS) -Wl,--end-group";
+#endif
         if (config.config_type == "DynamicLibrary") {
-            out << "\t" << compiler << " -shared $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)\n";
+            out << "\t" << compiler << " -shared $(LDFLAGS) -o $@ $(OBJS) " << ldlibs << "\n";
         } else {
-            out << "\t" << compiler << " $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)\n";
+            out << "\t" << compiler << " $(LDFLAGS) -o $@ $(OBJS) " << ldlibs << "\n";
         }
     } else if (config.config_type == "StaticLibrary") {
         // Create static library (Android uses the NDK's llvm-ar via $(AR))
@@ -1415,6 +1446,8 @@ bool MakefileGenerator::generate(Solution& solution, const std::string& output_d
 
             // Skip Windows configs for makefile generator
             if (is_windows_platform(platform)) continue;
+            // Only the best host match among configs sharing this makefile is generated.
+            if (find_makefile_config_key(project, config_name, is_android_platform(platform)) != config_key) continue;
 
             // Generate Makefile path (Android configs get their own makefiles,
             // e.g. App.Debug.Android, so they don't collide with Linux/macOS ones)
