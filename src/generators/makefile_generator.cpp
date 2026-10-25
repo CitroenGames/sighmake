@@ -359,6 +359,22 @@ if (Test-Path -LiteralPath $Metadata -PathType Leaf) {
     }
 }
 
+# Ordinal ordering on lower-cased StagePath/Name/Source; the package validator compares ordinally,
+# while Sort-Object is culture-sensitive and ignores '-' and '_'.
+function Sort-ReceiptRecords($Records) {
+    $list = [Collections.Generic.List[object]]::new()
+    foreach ($r in $Records) { $list.Add($r) }
+    $list.Sort([Comparison[object]]{
+        param($a, $b)
+        foreach ($k in 'StagePath', 'Name', 'Source') {
+            $c = [string]::CompareOrdinal(([string]$a[$k]).ToLowerInvariant(), ([string]$b[$k]).ToLowerInvariant())
+            if ($c -ne 0) { return $c }
+        }
+        return 0
+    })
+    return $list.ToArray()
+}
+
 $receipt = [ordered]@{
     FormatVersion = 1
     Target = $Target
@@ -368,14 +384,8 @@ $receipt = [ordered]@{
     PrimaryArtifact = [IO.Path]::GetFileName($PrimaryArtifact)
     PrimaryArtifactSize = $primary.Size
     PrimaryArtifactSHA256 = $primary.SHA256
-    RuntimeDependencies = @($runtime | Sort-Object `
-        @{Expression={$_.StagePath.ToLowerInvariant()}}, `
-        @{Expression={$_.Name.ToLowerInvariant()}}, `
-        @{Expression={$_.Source.ToLowerInvariant()}})
-    SkippedRuntimeDependencies = @($skipped | Sort-Object `
-        @{Expression={$_.StagePath.ToLowerInvariant()}}, `
-        @{Expression={$_.Name.ToLowerInvariant()}}, `
-        @{Expression={$_.Source.ToLowerInvariant()}})
+    RuntimeDependencies = @(Sort-ReceiptRecords $runtime)
+    SkippedRuntimeDependencies = @(Sort-ReceiptRecords $skipped)
 }
 
 $parent = Split-Path -Parent $Output
