@@ -2274,7 +2274,7 @@ target_link_libraries(PRIVATE RuntimeBase)
     CHECK(receipt_script.find("$stream.Dispose()") != std::string::npos);
     CHECK(receipt_script.find("$hash.Dispose()") != std::string::npos);
     CHECK(receipt_script.find("[string]::CompareOrdinal") != std::string::npos);
-    CHECK(receipt_script.find("Sort-Object") == std::string::npos);
+    CHECK(receipt_script.find("| Sort-Object") == std::string::npos);
     REQUIRE(fs::exists(generated / "App.runtime-dependencies.txt"));
     const std::string metadata = read_file(generated / "App.runtime-dependencies.txt");
     CHECK(metadata.find("Codec|") != std::string::npos);

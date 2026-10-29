@@ -462,7 +462,7 @@ target_link_libraries(
     REQUIRE(result.files.count("App.Release"));
     const std::string& app_makefile = result.files["App.Release"];
     CHECK(app_makefile.find("PROJECT_DEPS =") != std::string::npos);
-    CHECK(app_makefile.find("$(TARGET): $(OBJS) $(PROJECT_DEPS)") != std::string::npos);
+    CHECK(app_makefile.find("$(TARGET): $(OBJS) App.Release $(PROJECT_DEPS)") != std::string::npos);
 
 #ifndef _WIN32
     std::ofstream(result.temp_dir / "core.cpp") << "int core() { return 1; }\n";
@@ -914,7 +914,7 @@ postbuild = echo postbuild_step
         CHECK(result.content.find("prebuild") != std::string::npos);
         CHECK(result.content.find(".DEFAULT_GOAL := all") != std::string::npos);
         CHECK(result.content.find("$(OBJS): | prebuild") != std::string::npos);
-        CHECK(result.content.find("$(TARGET): $(OBJS) | prebuild") != std::string::npos);
+        CHECK(result.content.find("$(TARGET): $(OBJS) App.Release | prebuild") != std::string::npos);
         CHECK(result.content.find("$(TARGET): prebuild $(OBJS)") == std::string::npos);
 
         const auto default_goal = result.content.find(".DEFAULT_GOAL := all");
@@ -936,9 +936,13 @@ sources = main.cpp
 prebuild = echo prebuild_step
 )");
     REQUIRE(!result.content.empty());
-    CHECK(result.content.find("$(TARGET): $(OBJS) | prebuild") != std::string::npos);
+    CHECK(result.content.find("$(TARGET): $(OBJS) App.Release | prebuild") != std::string::npos);
     CHECK(result.content.find("$(TARGET): prebuild $(OBJS)") == std::string::npos);
+#ifdef __APPLE__
     CHECK(result.content.find("-o $@ $(OBJS) $(LDLIBS)") != std::string::npos);
+#else
+    CHECK(result.content.find("-o $@ $(OBJS) -Wl,--start-group $(LDLIBS) -Wl,--end-group") != std::string::npos);
+#endif
     CHECK(result.content.find("$^") == std::string::npos);
 }
 
