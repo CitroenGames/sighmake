@@ -168,6 +168,55 @@ std::string anchor_variable_dir(const std::string& dir, const Project& project,
     }
 }
 
+// Writes the Android ABI/API variables, NDK discovery and toolchain directory shared by every
+// Android makefile (compiled projects and external CMake builds).
+static void write_android_setup(std::ostream& out) {
+    out << "# Android NDK toolchain (requires NDK r19 or newer)\n";
+    out << "# Override at build time, e.g.: make ANDROID_ABI=x86_64 ANDROID_API=26\n";
+    out << "ANDROID_ABI ?= arm64-v8a\n";
+    out << "ANDROID_API ?= 24\n";
+    out << "# NDK lookup: ANDROID_NDK_HOME, ANDROID_NDK_ROOT, ANDROID_NDK, the newest\n";
+    out << "# $(ANDROID_HOME)/ndk/<version> (or ANDROID_SDK_ROOT), then the NDK found at generation time.\n";
+    out << "ifeq ($(strip $(ANDROID_NDK_HOME)),)\n";
+    out << "  ANDROID_NDK_HOME := $(ANDROID_NDK_ROOT)\n";
+    out << "endif\n";
+    out << "ifeq ($(strip $(ANDROID_NDK_HOME)),)\n";
+    out << "  ANDROID_NDK_HOME := $(ANDROID_NDK)\n";
+    out << "endif\n";
+    out << "ifeq ($(strip $(ANDROID_NDK_HOME)),)\n";
+    out << "  ANDROID_NDK_HOME := $(lastword $(sort $(wildcard $(ANDROID_HOME)/ndk/*) $(wildcard $(ANDROID_SDK_ROOT)/ndk/*)))\n";
+    out << "endif\n";
+    {
+        // Last resort: the NDK sighmake found while generating (Android Studio's default
+        // install location is only known here, not in the environment of `make`).
+        std::string generated_ndk;
+        if (auto ndk = android_sdk::find_ndk()) generated_ndk = ndk->generic_string();
+        if (!generated_ndk.empty()) {
+            out << "ifeq ($(strip $(ANDROID_NDK_HOME)),)\n";
+            out << "  ANDROID_NDK_HOME := $(wildcard " << generated_ndk << ")\n";
+            out << "endif\n";
+        }
+    }
+    out << "ifeq ($(strip $(ANDROID_NDK_HOME)),)\n";
+    out << "  ifneq ($(MAKECMDGOALS),clean)\n";
+    out << "    $(error ANDROID_NDK_HOME is not set and no NDK was found. Set ANDROID_NDK_HOME or ANDROID_HOME)\n";
+    out << "  endif\n";
+    out << "endif\n";
+    out << "ifeq ($(ANDROID_ABI),arm64-v8a)\n";
+    out << "  ANDROID_TRIPLE := aarch64-linux-android\n";
+    out << "else ifeq ($(ANDROID_ABI),armeabi-v7a)\n";
+    out << "  ANDROID_TRIPLE := armv7a-linux-androideabi\n";
+    out << "else ifeq ($(ANDROID_ABI),x86_64)\n";
+    out << "  ANDROID_TRIPLE := x86_64-linux-android\n";
+    out << "else ifeq ($(ANDROID_ABI),x86)\n";
+    out << "  ANDROID_TRIPLE := i686-linux-android\n";
+    out << "else\n";
+    out << "  $(error Unsupported ANDROID_ABI '$(ANDROID_ABI)'. Supported: arm64-v8a, armeabi-v7a, x86_64, x86)\n";
+    out << "endif\n";
+    out << "ANDROID_TOOLCHAIN := $(ANDROID_NDK_HOME)/toolchains/llvm/prebuilt/"
+        << ANDROID_HOST_TAG << "/bin\n";
+}
+
 std::string stable_hash8(const std::string& value) {
     unsigned int hash = 2166136261u;
     for (unsigned char c : value) {
@@ -776,6 +825,197 @@ std::string MakefileGenerator::get_linker_libs(const Configuration& config) {
     return ss.str();
 }
 
+// Libraries produced by an external CMake build that dependants link against (static and shared
+// libraries; other produced files are only copied to the output directory).
+static std::vector<std::string> external_cmake_link_outputs(const Project& project) {
+    std::vector<std::string> result;
+    for (const auto& output : project.external_cmake.outputs) {
+        const std::string name = std::filesystem::path(output).filename().string();
+        const std::string ext = to_lower(std::filesystem::path(name).extension().string());
+        if (ext == ".a" || ext == ".so" || ext == ".dylib" || ext == ".lib") result.push_back(name);
+    }
+    return result;
+}
+
+static bool looks_like_commit_id(const std::string& ref) {
+    if (ref.size() < 7 || ref.size() > 40) return false;
+    return std::all_of(ref.begin(), ref.end(), [](unsigned char c) { return std::isxdigit(c) != 0; });
+}
+
+// A project of type external_cmake: one makefile per configuration that (optionally) clones the
+// pinned git source, runs `cmake` configure + build into a per-configuration (and, for Android,
+// per-ABI) build directory, and copies the declared outputs into the project's outdir where
+// dependants pick them up as link inputs.
+bool MakefileGenerator::generate_external_cmake_makefile(const Project& project, const Configuration& config,
+                                                         const std::string& config_key,
+                                                         const std::string& output_path) {
+    namespace fs = std::filesystem;
+    const auto& ext = project.external_cmake;
+    const std::string config_name = parse_config_key(config_key).first;
+    const std::string platform = parse_config_key(config_key).second;
+    const bool android = is_android_platform(platform);
+
+    if (ext.empty()) {
+        std::cerr << "Error: external_cmake project '" << project.name
+                  << "' needs cmake_source (a local path) or cmake_git (a repository URL).\n";
+        return false;
+    }
+    if (!ext.source_dir.empty() && !ext.git_url.empty()) {
+        std::cerr << "Error: external_cmake project '" << project.name
+                  << "' sets both cmake_source and cmake_git; choose one.\n";
+        return false;
+    }
+    if (ext.git_url.empty() == false && ext.git_ref.empty()) {
+        std::cerr << "Warning: external_cmake project '" << project.name
+                  << "' has no cmake_git_tag; the repository's default branch is not a pinned version.\n";
+    }
+
+    fs::path makefile_dir = fs::path(output_path).parent_path();
+    if (makefile_dir.empty()) makefile_dir = ".";
+
+    std::string out_dir = compute_relative_path(
+        config.out_dir.empty() ? default_makefile_out_dir(config_name, android)
+                               : anchor_variable_dir(config.out_dir, project, config_key), makefile_dir);
+    std::string int_dir = compute_relative_path(
+        config.int_dir.empty() ? default_makefile_int_dir(config_name, project.name, android)
+                               : anchor_variable_dir(config.int_dir, project, config_key), makefile_dir);
+    while (out_dir.size() > 1 && out_dir.back() == '/') out_dir.pop_back();
+    while (int_dir.size() > 1 && int_dir.back() == '/') int_dir.pop_back();
+
+    const bool use_git = !ext.git_url.empty();
+    std::string source_dir;
+    if (use_git) {
+        source_dir = ext.checkout_dir.empty() ? "_external/" + project.name + "/source"
+                                              : compute_relative_path(ext.checkout_dir, makefile_dir);
+    } else {
+        source_dir = compute_relative_path(ext.source_dir, makefile_dir);
+    }
+    while (source_dir.size() > 1 && source_dir.back() == '/') source_dir.pop_back();
+    const std::string cmake_source = ext.source_subdir.empty() ? "$(EXT_SOURCE)"
+                                                               : "$(EXT_SOURCE)/" + ext.source_subdir;
+
+    std::ofstream out(output_path);
+    if (!out) {
+        std::cerr << "Error: Failed to create Makefile: " << output_path << "\n";
+        return false;
+    }
+
+    out << "# Auto-generated Makefile for " << project.name << " (" << config_name
+        << (android ? ", Android" : "") << ") - external CMake project\n";
+    out << "# Generated by sighmake\n\n";
+    out << "MAKEFILE_DIR := $(dir $(lastword $(MAKEFILE_LIST)))\n\n";
+
+    if (android) {
+        write_android_setup(out);
+        out << "ANDROID_MAX_PAGE_SIZE ?= 16384\n";
+    }
+
+    out << "CMAKE ?= cmake\n";
+    out << "GIT ?= git\n";
+    out << "EXT_BUILD_TYPE = " << (ext.build_type.empty() ? config_name : ext.build_type) << "\n";
+    out << "EXT_CONFIG = " << (ext.build_type.empty() ? config_name : ext.build_type) << "\n";
+
+    // Generator: the buildscript's cmake_generator, else Ninja when installed, else Unix Makefiles.
+    out << "CMAKE_GENERATOR ?= " << ext.generator << "\n";
+    out << "ifeq ($(strip $(CMAKE_GENERATOR)),)\n";
+    out << "  ifneq ($(strip $(shell ninja --version 2>/dev/null)),)\n";
+    out << "    CMAKE_GENERATOR := Ninja\n";
+    out << "  else\n";
+    out << "    CMAKE_GENERATOR := Unix Makefiles\n";
+    out << "  endif\n";
+    out << "endif\n";
+    out << "EXT_GENERATOR_ARGS :=\n";
+    out << "ifeq ($(CMAKE_GENERATOR),Unix Makefiles)\n";
+    out << "  EXT_GENERATOR_ARGS := -DCMAKE_MAKE_PROGRAM=\"$(MAKE)\"\n";
+    out << "endif\n";
+
+    out << "EXT_PLATFORM_ARGS :=\n";
+    if (android) {
+        out << "EXT_PLATFORM_ARGS := -DCMAKE_TOOLCHAIN_FILE=\"$(ANDROID_NDK_HOME)/build/cmake/android.toolchain.cmake\""
+               " -DANDROID_ABI=$(ANDROID_ABI) -DANDROID_PLATFORM=android-$(ANDROID_API)\n";
+        out << "ifneq ($(filter arm64-v8a x86_64,$(ANDROID_ABI)),)\n";
+        out << "  ifneq ($(strip $(ANDROID_MAX_PAGE_SIZE)),)\n";
+        out << "    EXT_PLATFORM_ARGS += -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON\n";
+        out << "  endif\n";
+        out << "endif\n";
+    }
+    out << "EXT_OPTIONS =";
+    for (const auto& option : ext.options) out << " " << option;
+    out << "\n";
+    out << "EXT_TARGETS =";
+    for (const auto& target : ext.targets) out << " --target " << target;
+    out << "\n\n";
+
+    out << "EXT_SOURCE = " << source_dir << "\n";
+    out << "EXT_BUILD_DIR = " << int_dir << "\n";
+    out << "EXT_OUT_DIR = " << out_dir << "\n";
+    std::string first_output;
+    out << "EXT_OUTPUTS =";
+    for (const auto& output : ext.outputs) {
+        const std::string base = fs::path(output).filename().string();
+        if (first_output.empty()) first_output = base;
+        out << " $(EXT_OUT_DIR)/" << base;
+    }
+    out << "\n";
+    out << "TARGET = $(EXT_OUT_DIR)/" << (first_output.empty() ? project.name + ".cmake-build" : first_output) << "\n\n";
+
+    out << ".PHONY: all clean external-build\n";
+    out << ".DEFAULT_GOAL := all\n\n";
+    out << "all: external-build\n\n";
+
+    if (use_git) {
+        // The checkout is pinned: a stamp file records "<url>@<ref>" and the source is fetched
+        // again whenever the buildscript pins something else.
+        const std::string pin = ext.git_url + "@" + ext.git_ref;
+        out << "EXT_PIN = " << pin << "\n";
+        out << "EXT_STAMP = $(EXT_SOURCE).pin\n";
+        out << "ifneq ($(shell cat \"$(EXT_STAMP)\" 2>/dev/null),$(EXT_PIN))\n";
+        out << ".PHONY: $(EXT_STAMP)\n";
+        out << "endif\n";
+        out << "$(EXT_STAMP):\n";
+        out << "\t@echo \"Fetching " << project.name << " (" << pin << ")\"\n";
+        out << "\t@rm -rf \"$(EXT_SOURCE)\"\n";
+        out << "\t@mkdir -p \"$(dir $(EXT_SOURCE))\"\n";
+        if (ext.git_ref.empty()) {
+            out << "\t$(GIT) clone -q --depth 1 " << ext.git_url << " \"$(EXT_SOURCE)\"\n";
+        } else if (looks_like_commit_id(ext.git_ref)) {
+            out << "\t$(GIT) init -q \"$(EXT_SOURCE)\"\n";
+            out << "\t$(GIT) -C \"$(EXT_SOURCE)\" remote add origin " << ext.git_url << "\n";
+            out << "\t$(GIT) -C \"$(EXT_SOURCE)\" fetch -q --depth 1 origin " << ext.git_ref << "\n";
+            out << "\t$(GIT) -C \"$(EXT_SOURCE)\" checkout -q FETCH_HEAD\n";
+        } else {
+            out << "\t$(GIT) clone -q --depth 1 --branch " << ext.git_ref << " " << ext.git_url
+                << " \"$(EXT_SOURCE)\"\n";
+        }
+        out << "\t@echo \"$(EXT_PIN)\" > \"$@\"\n\n";
+        out << "external-build: $(EXT_STAMP)\n";
+    } else {
+        out << "external-build:\n";
+    }
+
+    out << "\t@mkdir -p \"$(EXT_BUILD_DIR)\" \"$(EXT_OUT_DIR)\"\n";
+    out << "\t$(CMAKE) -S \"" << cmake_source << "\" -B \"$(EXT_BUILD_DIR)\" -G \"$(CMAKE_GENERATOR)\""
+           " -DCMAKE_BUILD_TYPE=$(EXT_BUILD_TYPE) $(EXT_GENERATOR_ARGS) $(EXT_PLATFORM_ARGS) $(EXT_OPTIONS)\n";
+    out << "\t$(CMAKE) --build \"$(EXT_BUILD_DIR)\" --config $(EXT_CONFIG) $(EXT_TARGETS) --parallel\n";
+    for (const auto& output : ext.outputs) {
+        const std::string base = fs::path(output).filename().string();
+        out << "\t@test -f \"$(EXT_BUILD_DIR)/" << output << "\" || { echo \"sighmake: the CMake build of "
+            << project.name << " did not produce " << output << "\"; exit 1; }\n";
+        out << "\t@cmp -s \"$(EXT_BUILD_DIR)/" << output << "\" \"$(EXT_OUT_DIR)/" << base
+            << "\" 2>/dev/null || cp -f \"$(EXT_BUILD_DIR)/" << output << "\" \"$(EXT_OUT_DIR)/" << base << "\"\n";
+    }
+    out << "\n";
+
+    out << "clean:\n";
+    out << "\trm -rf \"$(EXT_BUILD_DIR)\"";
+    if (!ext.outputs.empty()) out << " $(EXT_OUTPUTS)";
+    out << "\n";
+    out.close();
+
+    std::cout << "Generated: " << output_path << "\n";
+    return true;
+}
+
 // Generate a single Makefile for a project and configuration
 bool MakefileGenerator::generate_makefile(const Project& project, const Solution& solution,
                                          const std::string& config_key, const std::string& output_path) {
@@ -796,6 +1036,10 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         return false;
     }
     const Configuration& config = it->second;
+
+    if (config.config_type == "ExternalCMake") {
+        return generate_external_cmake_makefile(project, config, config_key, output_path);
+    }
 
     // Parse config key into config and platform
     std::string config_name, platform;
@@ -914,54 +1158,22 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         // Android NDK toolchain. The --target wrappers are what the NDK's own
         // clang launcher scripts do, but calling clang directly works on every
         // host OS (the .cmd wrappers are Windows-only, the bare ones POSIX-only).
-        out << "# Android NDK toolchain (requires NDK r19 or newer)\n";
-        out << "# Override at build time, e.g.: make ANDROID_ABI=x86_64 ANDROID_API=26\n";
-        out << "ANDROID_ABI ?= arm64-v8a\n";
-        out << "ANDROID_API ?= 24\n";
-        out << "# NDK lookup: ANDROID_NDK_HOME, ANDROID_NDK_ROOT, ANDROID_NDK, the newest\n";
-        out << "# $(ANDROID_HOME)/ndk/<version> (or ANDROID_SDK_ROOT), then the NDK found at generation time.\n";
-        out << "ifeq ($(strip $(ANDROID_NDK_HOME)),)\n";
-        out << "  ANDROID_NDK_HOME := $(ANDROID_NDK_ROOT)\n";
-        out << "endif\n";
-        out << "ifeq ($(strip $(ANDROID_NDK_HOME)),)\n";
-        out << "  ANDROID_NDK_HOME := $(ANDROID_NDK)\n";
-        out << "endif\n";
-        out << "ifeq ($(strip $(ANDROID_NDK_HOME)),)\n";
-        out << "  ANDROID_NDK_HOME := $(lastword $(sort $(wildcard $(ANDROID_HOME)/ndk/*) $(wildcard $(ANDROID_SDK_ROOT)/ndk/*)))\n";
-        out << "endif\n";
-        {
-            // Last resort: the NDK sighmake found while generating (Android Studio's default
-            // install location is only known here, not in the environment of `make`).
-            std::string generated_ndk;
-            if (auto ndk = android_sdk::find_ndk()) generated_ndk = ndk->generic_string();
-            if (!generated_ndk.empty()) {
-                out << "ifeq ($(strip $(ANDROID_NDK_HOME)),)\n";
-                out << "  ANDROID_NDK_HOME := $(wildcard " << generated_ndk << ")\n";
-                out << "endif\n";
-            }
-        }
-        out << "ifeq ($(strip $(ANDROID_NDK_HOME)),)\n";
-        out << "  ifneq ($(MAKECMDGOALS),clean)\n";
-        out << "    $(error ANDROID_NDK_HOME is not set and no NDK was found. Set ANDROID_NDK_HOME or ANDROID_HOME)\n";
-        out << "  endif\n";
-        out << "endif\n";
-        out << "ifeq ($(ANDROID_ABI),arm64-v8a)\n";
-        out << "  ANDROID_TRIPLE := aarch64-linux-android\n";
-        out << "else ifeq ($(ANDROID_ABI),armeabi-v7a)\n";
-        out << "  ANDROID_TRIPLE := armv7a-linux-androideabi\n";
-        out << "else ifeq ($(ANDROID_ABI),x86_64)\n";
-        out << "  ANDROID_TRIPLE := x86_64-linux-android\n";
-        out << "else ifeq ($(ANDROID_ABI),x86)\n";
-        out << "  ANDROID_TRIPLE := i686-linux-android\n";
-        out << "else\n";
-        out << "  $(error Unsupported ANDROID_ABI '$(ANDROID_ABI)'. Supported: arm64-v8a, armeabi-v7a, x86_64, x86)\n";
-        out << "endif\n";
-        out << "ANDROID_TOOLCHAIN := $(ANDROID_NDK_HOME)/toolchains/llvm/prebuilt/"
-            << ANDROID_HOST_TAG << "/bin\n";
+        write_android_setup(out);
         out << "CXX = \"$(ANDROID_TOOLCHAIN)/clang++\" --target=$(ANDROID_TRIPLE)$(ANDROID_API)\n";
         out << "CC = \"$(ANDROID_TOOLCHAIN)/clang\" --target=$(ANDROID_TRIPLE)$(ANDROID_API)\n";
         out << "AR = \"$(ANDROID_TOOLCHAIN)/llvm-ar\"\n";
         out << "STRIP = \"$(ANDROID_TOOLCHAIN)/llvm-strip\"\n";
+        if (links_binary) {
+            out << "# 16 KB page alignment (Android 15+ devices; NDK r27 does not do this by default).\n";
+            out << "# Applies to the 64-bit ABIs; override with ANDROID_MAX_PAGE_SIZE=4096, or empty to disable.\n";
+            out << "ANDROID_MAX_PAGE_SIZE ?= 16384\n";
+            out << "ANDROID_LINK_FLAGS :=\n";
+            out << "ifneq ($(filter arm64-v8a x86_64,$(ANDROID_ABI)),)\n";
+            out << "  ifneq ($(strip $(ANDROID_MAX_PAGE_SIZE)),)\n";
+            out << "    ANDROID_LINK_FLAGS += -Wl,-z,max-page-size=$(ANDROID_MAX_PAGE_SIZE)\n";
+            out << "  endif\n";
+            out << "endif\n";
+        }
     } else {
         if (links_with_cxx) {
 #ifdef __APPLE__
@@ -1009,13 +1221,27 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
         // Helper to compute a project's output archive path
         auto get_archive_path = [&](const Project& dep_proj, const std::string& cfg_key,
-                                     const std::string& cfg_name) -> std::string {
+                                     const std::string& cfg_name) -> std::vector<std::string> {
             auto dep_config_it = dep_proj.configurations.find(cfg_key);
-            if (dep_config_it == dep_proj.configurations.end()) return "";
+            if (dep_config_it == dep_proj.configurations.end()) return {};
             const auto& dep_config = dep_config_it->second;
 
+            // An external CMake build exposes the libraries it produces (copied into its outdir).
+            if (dep_config.config_type == "ExternalCMake") {
+                std::string ext_out_dir = dep_config.out_dir.empty()
+                    ? default_makefile_out_dir(cfg_name, android)
+                    : anchor_variable_dir(dep_config.out_dir, dep_proj, cfg_key);
+                if (!ext_out_dir.empty() && ext_out_dir.back() != '/' && ext_out_dir.back() != '\\')
+                    ext_out_dir += '/';
+                std::vector<std::string> linked;
+                for (const auto& output : external_cmake_link_outputs(dep_proj)) {
+                    linked.push_back(ext_out_dir + output);
+                }
+                return linked;
+            }
+
             if (dep_config.config_type != "StaticLibrary" &&
-                dep_config.config_type != "DynamicLibrary") return "";
+                dep_config.config_type != "DynamicLibrary") return {};
 
             std::string dep_target_name = decorate_target_name(
                 dep_config.target_name.empty() ? dep_proj.name : dep_config.target_name,
@@ -1041,7 +1267,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             if (!dep_out_dir.empty() && dep_out_dir.back() != '/' && dep_out_dir.back() != '\\')
                 dep_out_dir += '/';
 
-            return dep_out_dir + dep_target_name + dep_target_ext;
+            return {dep_out_dir + dep_target_name + dep_target_ext};
         };
 
         // Recursive traversal: visit a dependency and its transitive PUBLIC deps
@@ -1056,7 +1282,6 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                     for (auto& archive : dep_archives) {
                         if (archive.project_name == dep_name) {
                             archive.whole_archive = true;
-                            break;
                         }
                     }
                 }
@@ -1073,8 +1298,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
             // Add this project's archive if it's a library
             if (add_locally) {
-                std::string archive = get_archive_path(*dep_proj, config_key, config_name);
-                if (!archive.empty()) {
+                for (const auto& archive : get_archive_path(*dep_proj, config_key, config_name)) {
                     dep_archives.push_back({dep_name, compute_relative_path(archive, makefile_dir),
                                             is_whole_archive});
                 }
@@ -1304,7 +1528,20 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         // new symbols resolve, so dependency order between archives does not matter.
         const char* ldlibs = "-Wl,--start-group $(LDLIBS) -Wl,--end-group";
 #endif
-        if (config.config_type == "DynamicLibrary") {
+        if (android) {
+            // Objects and libraries go through a response file (GNU make writes it while it expands
+            // the recipe, so the output directory is created in the same step): link lines of
+            // large projects exceed the Windows command-line limit. Shared libraries get a
+            // soname equal to their file name, which is what the Android loader and the APK
+            // packager (lib<name>.so) expect; ANDROID_LINK_FLAGS carries the page-size alignment.
+            out << "\t$(shell mkdir -p $(dir $@))$(file >$@.rsp,$(OBJS) " << ldlibs << ")\n";
+            if (config.config_type == "DynamicLibrary") {
+                out << "\t" << compiler << " -shared -Wl,-soname,$(notdir $@) $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp\n";
+            } else {
+                out << "\t" << compiler << " $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp\n";
+            }
+            out << "\t@rm -f $@.rsp\n";
+        } else if (config.config_type == "DynamicLibrary") {
             out << "\t" << compiler << " -shared $(LDFLAGS) -o $@ $(OBJS) " << ldlibs << "\n";
         } else {
             out << "\t" << compiler << " $(LDFLAGS) -o $@ $(OBJS) " << ldlibs << "\n";

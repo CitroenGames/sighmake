@@ -1002,6 +1002,15 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
     // This must happen after all projects are parsed and defaults are applied
     propagate_target_link_libraries(solution);
 
+    // A cloned external_cmake source defaults to <buildscript dir>/build/_external/<Name>/source, an
+    // absolute location so that public_includes can name headers inside it.
+    for (auto& project : solution.projects) {
+        auto& ext = project.external_cmake;
+        if (ext.git_url.empty() || !ext.checkout_dir.empty()) continue;
+        ext.checkout_dir = (fs::absolute(fs::path(project.buildscript_path.empty() ? "." : project.buildscript_path)) /
+                            "build" / "_external" / project.name / "source").lexically_normal().string();
+    }
+
     // Phase 4: Apply per-project platform filters (the project-level `platforms` key). Done last
     // because earlier phases create a configuration for every cell of the solution matrix.
     for (auto& project : solution.projects) {
@@ -1901,6 +1910,29 @@ bool BuildscriptParser::parse_project_basic_setting(const std::string& key, cons
         proj.name = value;
     } else if (key == "project_name") {
         proj.project_name = value;
+    } else if (key == "cmake_source" || key == "cmake_source_dir") {
+        // Local CMake source tree of an external_cmake project
+        proj.external_cmake.source_dir = resolve_path(value, state.base_path);
+    } else if (key == "cmake_git" || key == "cmake_git_url") {
+        proj.external_cmake.git_url = value;
+    } else if (key == "cmake_git_tag" || key == "cmake_tag" || key == "cmake_ref") {
+        proj.external_cmake.git_ref = value;
+    } else if (key == "cmake_checkout_dir") {
+        proj.external_cmake.checkout_dir = resolve_path(value, state.base_path);
+    } else if (key == "cmake_source_subdir") {
+        proj.external_cmake.source_subdir = value;
+    } else if (key == "cmake_generator") {
+        proj.external_cmake.generator = value;
+    } else if (key == "cmake_build_type") {
+        proj.external_cmake.build_type = value;
+    } else if (key == "cmake_options" || key == "cmake_targets" || key == "cmake_outputs") {
+        auto& list = key == "cmake_options" ? proj.external_cmake.options
+                   : key == "cmake_targets" ? proj.external_cmake.targets
+                                            : proj.external_cmake.outputs;
+        for (const auto& entry : split(value, ',')) {
+            const std::string t = trim(entry);
+            if (!t.empty()) list.push_back(t);
+        }
     } else if (key == "platforms" || key == "supported_platforms") {
         // Per-project platform filter: configurations for other platforms are dropped after parsing.
         proj.platform_filter.clear();

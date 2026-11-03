@@ -692,3 +692,236 @@ TEST_CASE("Android-only Make caches build the Android targets by default", "[and
     CHECK(make_build_targets_android(cache, options));
     CHECK(resolve_make_build_target(cache, options, "Release") == "Release.Android");
 }
+
+// ============================================================================
+// Shared libraries and executables for Android
+// ============================================================================
+
+TEST_CASE("Android shared library links through a response file with soname and page alignment", "[android][makefile_generator][shared]") {
+    AndroidOsScope scope;
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:Base]
+type = lib
+sources = main.cpp
+
+[project:Plugin]
+type = shared
+target_name = plugin
+sources = main.cpp
+target_link_libraries(
+    Base PUBLIC
+)
+)");
+    const std::string& mk = g.files["Plugin.Release.Android"];
+    // lib<name>.so naming for loaders and APK packaging
+    CHECK(mk.find("libplugin.so") != std::string::npos);
+    CHECK(mk.find("$(shell mkdir -p $(dir $@))$(file >$@.rsp,$(OBJS) -Wl,--start-group $(LDLIBS) -Wl,--end-group)") != std::string::npos);
+    CHECK(mk.find("-shared -Wl,-soname,$(notdir $@) $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp") != std::string::npos);
+    CHECK(mk.find("@rm -f $@.rsp") != std::string::npos);
+    CHECK(mk.find("ANDROID_MAX_PAGE_SIZE ?= 16384") != std::string::npos);
+    CHECK(mk.find("-Wl,-z,max-page-size=$(ANDROID_MAX_PAGE_SIZE)") != std::string::npos);
+    // The object list is no longer on the command line.
+    CHECK(mk.find("-o $@ $(OBJS)") == std::string::npos);
+}
+
+TEST_CASE("Android executables use the response file but no soname", "[android][makefile_generator][shared]") {
+    AndroidOsScope scope;
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:Tool]
+type = exe
+sources = main.cpp
+)");
+    const std::string& mk = g.files["Tool.Release.Android"];
+    CHECK(mk.find("$(CXX) $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp") != std::string::npos);
+    CHECK(mk.find("-soname") == std::string::npos);
+    CHECK(mk.find("-shared") == std::string::npos);
+}
+
+TEST_CASE("Desktop shared libraries are unchanged by the Android link rule", "[makefile_generator][shared]") {
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:Plugin]
+type = dll
+sources = main.cpp
+)");
+    const std::string& mk = g.files["Plugin.Release"];
+    CHECK(mk.find("-soname") == std::string::npos);
+    CHECK(mk.find("ANDROID_LINK_FLAGS") == std::string::npos);
+    CHECK(mk.find("@$@.rsp") == std::string::npos);
+}
+
+// ============================================================================
+// external_cmake
+// ============================================================================
+
+TEST_CASE("external_cmake settings are parsed", "[android][external_cmake]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:SDL3]
+type = external_cmake
+cmake_git = https://example.com/sdl.git
+cmake_git_tag = release-3.2.8
+cmake_options = -DSDL_SHARED=ON, -DSDL_STATIC=OFF
+cmake_targets = SDL3-shared
+cmake_outputs = libSDL3.so
+cmake_generator = Ninja
+cmake_source_subdir = cmake
+public_includes = third_party/sdl/include
+)", "/work/proj");
+    REQUIRE(sol.projects.size() == 1);
+    const auto& project = sol.projects[0];
+    const auto& ext = project.external_cmake;
+    CHECK(project.configurations.at("Release|Android").config_type == "ExternalCMake");
+    CHECK(ext.git_url == "https://example.com/sdl.git");
+    CHECK(ext.git_ref == "release-3.2.8");
+    CHECK(ext.options == std::vector<std::string>{"-DSDL_SHARED=ON", "-DSDL_STATIC=OFF"});
+    CHECK(ext.targets == std::vector<std::string>{"SDL3-shared"});
+    CHECK(ext.outputs == std::vector<std::string>{"libSDL3.so"});
+    CHECK(ext.generator == "Ninja");
+    CHECK(ext.source_subdir == "cmake");
+    // Default checkout location is below the generated build directory.
+    const std::string checkout = fs::path(ext.checkout_dir).generic_string();
+    CHECK(checkout.find("build/_external/SDL3/source") != std::string::npos);
+    CHECK(project_excluded_from_visual_studio(project));
+}
+
+TEST_CASE("external_cmake local source makefile configures, builds and copies outputs", "[android][external_cmake][makefile_generator]") {
+    AndroidOsScope scope;
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = Android
+
+[project:Native]
+type = external_cmake
+cmake_source = vendor/native
+cmake_options = -DNATIVE_TESTS=OFF, -DNATIVE_SHARED=ON
+cmake_targets = native
+cmake_outputs = lib/libnative.so, native.json
+)");
+    REQUIRE(g.files.count("Native.Release.Android"));
+    REQUIRE(g.files.count("Native.Debug.Android"));
+    const std::string& mk = g.files["Native.Release.Android"];
+    CHECK(mk.find("external CMake project") != std::string::npos);
+    CHECK(mk.find("EXT_SOURCE = ../vendor/native") != std::string::npos);
+    // Per-configuration, per-ABI build directory
+    CHECK(mk.find("Release/android/$(ANDROID_ABI)/obj/Native") != std::string::npos);
+    CHECK(g.files["Native.Debug.Android"].find("Debug/android/$(ANDROID_ABI)/obj/Native") != std::string::npos);
+    CHECK(mk.find("EXT_BUILD_TYPE = Release") != std::string::npos);
+    CHECK(mk.find("android.toolchain.cmake") != std::string::npos);
+    CHECK(mk.find("-DANDROID_ABI=$(ANDROID_ABI)") != std::string::npos);
+    CHECK(mk.find("-DANDROID_PLATFORM=android-$(ANDROID_API)") != std::string::npos);
+    CHECK(mk.find("EXT_OPTIONS = -DNATIVE_TESTS=OFF -DNATIVE_SHARED=ON") != std::string::npos);
+    CHECK(mk.find("EXT_TARGETS = --target native") != std::string::npos);
+    CHECK(mk.find("$(CMAKE) -S \"$(EXT_SOURCE)\" -B \"$(EXT_BUILD_DIR)\"") != std::string::npos);
+    CHECK(mk.find("$(CMAKE) --build \"$(EXT_BUILD_DIR)\" --config $(EXT_CONFIG) $(EXT_TARGETS) --parallel") != std::string::npos);
+    CHECK(mk.find("$(EXT_BUILD_DIR)/lib/libnative.so") != std::string::npos);
+    CHECK(mk.find("$(EXT_OUT_DIR)/libnative.so") != std::string::npos);
+    CHECK(mk.find("$(EXT_OUT_DIR)/native.json") != std::string::npos);
+    CHECK(mk.find("clone") == std::string::npos);
+    CHECK(g.master.find("Native.Release.Android") != std::string::npos);
+}
+
+TEST_CASE("external_cmake git source is pinned and re-fetched when the pin changes", "[android][external_cmake][makefile_generator]") {
+    AndroidOsScope scope;
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:SDL3]
+type = external_cmake
+cmake_git = https://example.com/sdl.git
+cmake_git_tag = release-3.2.8
+cmake_outputs = libSDL3.so
+
+[project:Pinned]
+type = external_cmake
+cmake_git = https://example.com/other.git
+cmake_git_tag = 0123456789abcdef0123456789abcdef01234567
+cmake_outputs = libother.so
+)");
+    const std::string& tag = g.files["SDL3.Release.Android"];
+    CHECK(tag.find("$(GIT) clone -q --depth 1 --branch release-3.2.8 https://example.com/sdl.git \"$(EXT_SOURCE)\"") != std::string::npos);
+    CHECK(tag.find("EXT_PIN = https://example.com/sdl.git@release-3.2.8") != std::string::npos);
+    CHECK(tag.find("EXT_STAMP = $(EXT_SOURCE).pin") != std::string::npos);
+    CHECK(tag.find(".PHONY: $(EXT_STAMP)") != std::string::npos);
+    CHECK(tag.find("external-build: $(EXT_STAMP)") != std::string::npos);
+    CHECK(tag.find("EXT_SOURCE = _external/SDL3/source") != std::string::npos);
+
+    const std::string& commit = g.files["Pinned.Release.Android"];
+    CHECK(commit.find("fetch -q --depth 1 origin 0123456789abcdef0123456789abcdef01234567") != std::string::npos);
+    CHECK(commit.find("checkout -q FETCH_HEAD") != std::string::npos);
+    CHECK(commit.find("--branch") == std::string::npos);
+}
+
+TEST_CASE("Projects depending on an external_cmake project link its libraries", "[android][external_cmake][makefile_generator]") {
+    AndroidOsScope scope;
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:SDL3]
+type = external_cmake
+cmake_source = vendor/sdl
+cmake_outputs = libSDL3.so, SDL3.json
+public_includes = vendor/sdl/include
+outdir = bin/android/$(ANDROID_ABI)
+
+[project:Game]
+type = dll
+sources = main.cpp
+outdir = bin/android/$(ANDROID_ABI)
+target_link_libraries(
+    SDL3 PUBLIC
+)
+)");
+    const std::string& game = g.files["Game.Release.Android"];
+    CHECK(game.find("bin/android/$(ANDROID_ABI)/libSDL3.so") != std::string::npos);
+    // Only libraries become link inputs, not other produced files.
+    CHECK(game.find("SDL3.json") == std::string::npos);
+    CHECK(game.find("-I\"../vendor/sdl/include\"") != std::string::npos);
+    // The master Makefile builds SDL3 before Game.
+    CHECK(g.master.find("Game.Release.Android: SDL3.Release.Android") != std::string::npos);
+}
+
+TEST_CASE("external_cmake without a source is rejected", "[android][external_cmake][makefile_generator]") {
+    AndroidOsScope scope;
+    TempDir dir("sighmake_test_external_invalid");
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:Broken]
+type = external_cmake
+cmake_outputs = libbroken.so
+)", dir.path.string());
+    MakefileGenerator generator;
+    CHECK_FALSE(generator.generate(sol, dir.path.string()));
+}

@@ -2,6 +2,7 @@
 
 #include "string_utils.hpp"
 #include "file_types.hpp"
+#include <algorithm>
 #include <cstdint>
 
 namespace vcxproj {
@@ -309,6 +310,22 @@ inline std::string visibility_to_string(DependencyVisibility vis) {
     }
 }
 
+// Settings of a project of type `external_cmake`: a third-party CMake project that is configured and
+// built by running cmake, not compiled from sources listed in the buildscript. Makefile generator only.
+struct ExternalCMakeSettings {
+    std::string source_dir;                 // Local CMake source tree (absolute, resolved at parse time)
+    std::string git_url;                    // Git repository to clone when source_dir is not given
+    std::string git_ref;                    // Tag, branch or commit to check out (pinned)
+    std::string checkout_dir;               // Clone destination (absolute); default: <intdir>/source
+    std::string source_subdir;              // Directory inside the source tree that holds CMakeLists.txt
+    std::vector<std::string> options;       // Extra cmake arguments, usually -DNAME=VALUE
+    std::vector<std::string> targets;       // --target list (empty = default target)
+    std::vector<std::string> outputs;       // Produced files, relative to the cmake build directory
+    std::string generator;                  // cmake -G value (empty = Ninja when available, else Unix Makefiles)
+    std::string build_type;                 // CMAKE_BUILD_TYPE override (empty = the configuration name)
+    bool empty() const { return source_dir.empty() && git_url.empty(); }
+};
+
 // Project
 struct Project {
     std::string name;
@@ -383,6 +400,9 @@ struct Project {
 
     // True for synthetic projects created from find_package() results
     bool is_package_project = false;
+
+    // Third-party CMake build (type = external_cmake)
+    ExternalCMakeSettings external_cmake;
 
     // Optional per-project platform filter (the project-level `platforms` key). Empty means the
     // project is built for every platform in the solution matrix. See project_supports_platform().
@@ -595,7 +615,12 @@ inline bool project_supports_platform(const Project& project, const std::string&
 // A project with a platform filter and no remaining configuration for a Visual Studio platform is
 // not part of the generated Visual Studio graph (it only builds with the Make generator).
 inline bool project_excluded_from_visual_studio(const Project& project) {
-    if (project.platform_filter.empty() || project.is_package_project) return false;
+    if (project.is_package_project) return false;
+    const bool external_cmake = !project.configurations.empty() &&
+        std::all_of(project.configurations.begin(), project.configurations.end(),
+                    [](const auto& entry) { return entry.second.config_type == "ExternalCMake"; });
+    if (external_cmake) return true;  // Built through cmake by the Makefile generator only
+    if (project.platform_filter.empty()) return false;
     for (const auto& [key, cfg] : project.configurations) {
         (void)cfg;
         size_t pos = key.find('|');

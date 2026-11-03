@@ -58,7 +58,11 @@ void CMakeGenerator::write_target_definition(std::ostream& out, const Project& p
         }
     }
 
-    if (config_type == "StaticLibrary") {
+    if (config_type == "ExternalCMake") {
+        // Third-party CMake builds are driven by the Makefile generator; keep the target name resolvable.
+        out << "# external_cmake project: not built by this generator\n";
+        out << "add_library(" << project.name << " INTERFACE)\n";
+    } else if (config_type == "StaticLibrary") {
         out << "add_library(" << project.name << " STATIC)\n";
     } else if (config_type == "DynamicLibrary") {
         out << "add_library(" << project.name << " SHARED)\n";

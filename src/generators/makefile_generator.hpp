@@ -35,6 +35,10 @@ private:
                                        const std::string& config_key, const std::string& output_path,
                                        const ProjectLookup& project_lookup);
 
+    // Makefile for a project of type external_cmake (cmake configure + build of a third-party tree)
+    bool generate_external_cmake_makefile(const Project& project, const Configuration& config,
+                                          const std::string& config_key, const std::string& output_path);
+
     // Helper functions for assembling flag strings
     std::string get_compiler_flags(const Configuration& config, const Project& project,
                                    const std::filesystem::path& makefile_dir, bool c_flags);

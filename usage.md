@@ -600,6 +600,7 @@ per-file exclusion settings when one run must describe several target OSes.
 | `interface` | Header-only or usage-requirement target; no binary is built. |
 | `sys` | Kernel-mode driver project. |
 | `sys_lib` | Kernel-mode static library with exceptions, RTTI, and buffer security checks disabled by default. |
+| `external_cmake` | A third-party CMake project that is configured and built with `cmake` (Makefile generator only), see [External CMake projects](#external-cmake-projects). |
 
 Canonical type names above are preferred. Accepted compatibility aliases include
 `application`, `static`, `staticlib`, `shared`, `dynamiclib`, `header-only`,
@@ -609,6 +610,74 @@ Canonical type names above are preferred. Accepted compatibility aliases include
 `sys` and `sys_lib` primarily target Visual Studio. Other generators can emit a
 file with a corresponding type, but they do not provide a Windows driver
 toolchain.
+
+### External CMake projects
+
+A project of type `external_cmake` builds a third-party CMake source tree instead of
+compiling sources listed in the buildscript, and exposes what it produces to the
+projects that depend on it. It is supported by the Makefile generator (including
+Android); the Visual Studio generator leaves such projects out and the CMake
+generator emits an `INTERFACE` placeholder.
+
+```ini
+[project:SDL3]
+type = external_cmake
+
+# The source: a pinned git checkout ...
+cmake_git = https://github.com/libsdl-org/SDL.git
+cmake_git_tag = release-3.2.8
+# ... or a tree already on disk (use one of the two):
+# cmake_source = third_party/SDL
+
+cmake_options = -DSDL_SHARED=ON, -DSDL_STATIC=OFF, -DSDL_TEST_LIBRARY=OFF
+cmake_targets = SDL3-shared
+cmake_outputs = libSDL3.so
+
+public_includes = build/_external/SDL3/source/include
+outdir[*|Android] = bin/android/$(ANDROID_ABI)
+
+[project:Game]
+type = shared
+sources = src/*.cpp
+target_link_libraries(
+    SDL3 PUBLIC
+)
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `cmake_source` | Local CMake source tree, relative to the buildscript. |
+| `cmake_git`, `cmake_git_tag` | Repository to clone and the tag, branch or commit to check out. A hexadecimal commit id (7-40 digits) is fetched with `git fetch --depth 1`; anything else is cloned with `--branch`. A repository without a tag is not pinned and produces a warning. |
+| `cmake_checkout_dir` | Where the clone goes. Default: `build/_external/<Project>/source` next to the buildscript (shared by all configurations and ABIs). |
+| `cmake_source_subdir` | Directory inside the source tree that holds `CMakeLists.txt`. |
+| `cmake_options` | Comma-separated extra `cmake` arguments, usually `-DNAME=VALUE`. Make variables such as `$(ANDROID_ABI)` expand. |
+| `cmake_targets` | Comma-separated `--target` names; default: the default target. |
+| `cmake_outputs` | Comma-separated files the build produces, relative to the cmake build directory. Each is copied (only when it changed) into the project's `outdir`. |
+| `cmake_generator` | The `cmake -G` generator. Default: Ninja when `ninja` is installed, else `Unix Makefiles` (with the running make as `CMAKE_MAKE_PROGRAM`). `make CMAKE_GENERATOR=...` overrides it. |
+| `cmake_build_type` | `CMAKE_BUILD_TYPE` for every configuration. Default: the configuration name (`Debug`, `Release`, ...). |
+
+Every configuration (and every Android ABI) configures into its own build directory,
+`<intdir>` of the project (default `build/<Config>/android/$(ANDROID_ABI)/obj/<Project>`),
+so ABIs and configurations never share a CMake cache. The makefile re-runs the
+(idempotent) cmake configure and build on every `make`, so changes to
+`cmake_options` and to the third-party sources are always picked up, and missing
+outputs fail the build with a message naming the file.
+
+A pinned checkout is tracked with a stamp file (`<checkout dir>.pin` holding
+`<url>@<ref>`); changing `cmake_git` or `cmake_git_tag` in the buildscript deletes
+the old checkout and fetches the new one. Delete the checkout directory to force a
+fresh clone. Use `make clean` to remove build directories and copied outputs (the
+checkout is kept).
+
+Projects that list an `external_cmake` project in `target_link_libraries` build after it
+(`dependencies` only orders the build), and every produced `.a`, `.so`, `.dylib` or `.lib` in `cmake_outputs`
+becomes a link input of the dependant (`public_includes` and `public_defines` propagate as
+for any project). Other produced files are only copied. For Android the build uses the NDK
+toolchain file with `ANDROID_ABI`, `ANDROID_PLATFORM=android-$(ANDROID_API)` and, for the
+64-bit ABIs, `ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON` (16 KB alignment, see
+[Shared libraries](#shared-libraries-and-executables)). `CMAKE=` and `GIT=` select other
+programs. `cmake` must be installed (the copy bundled with the Android SDK lives in
+`<sdk>/cmake/<version>/bin`).
 
 ### Platform filter
 
@@ -1358,6 +1427,28 @@ Each Android makefile looks for the NDK in this order and stops at the first hit
 If nothing is found the build stops with a message (`make clean` still works).
 `find_package(Vulkan)` and `find_package(OpenGL)` use the same lookup at
 generation time.
+
+#### Shared libraries and executables
+
+`type = shared` (alias of `dll`) produces `lib<target_name>.so`; the `lib` prefix is
+added when missing. Android links with a response file, so the length of the object
+and library list is no longer limited by the Windows command line:
+
+```text
+clang++ --target=aarch64-linux-android24 -shared -Wl,-soname,libgame.so \
+    <LDFLAGS> -Wl,-z,max-page-size=16384 -o libgame.so @libgame.so.rsp
+```
+
+| Item | Behaviour |
+| --- | --- |
+| `-shared`, `-fPIC` | Always for shared libraries; static libraries are compiled `-fPIC` so they can be linked into one. |
+| `-Wl,-soname,<file name>` | Shared libraries only. The loader and the APK packager rely on it. |
+| 16 KB page alignment | `-Wl,-z,max-page-size=16384` for `arm64-v8a` and `x86_64` (required for Android 15+ devices; NDK r27 does not enable it itself). `make ANDROID_MAX_PAGE_SIZE=4096` changes it, `ANDROID_MAX_PAGE_SIZE=` (empty) turns it off. `armeabi-v7a` and `x86` are never aligned. |
+| Archives | Linked inside `--start-group ... --end-group`, so their order does not matter. `whole_archive` dependencies use `--whole-archive`. |
+| C++ runtime | `clang++` from the NDK links `libc++_shared.so` dynamically. Bundle it with the app (the APK target below does) or link it statically with `ldflags = -static-libstdc++`. |
+| Stripping | Release shared libraries and executables are stripped with `llvm-strip`. |
+
+Executables use the same response-file link without `-shared`/`-soname`.
 
 #### Using the NDK's make
 
