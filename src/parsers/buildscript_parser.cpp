@@ -1014,6 +1014,12 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
     // Phase 4: Apply per-project platform filters (the project-level `platforms` key). Done last
     // because earlier phases create a configuration for every cell of the solution matrix.
     for (auto& project : solution.projects) {
+        // An APK only exists for Android.
+        if (project.platform_filter.empty() && !project.configurations.empty() &&
+            std::all_of(project.configurations.begin(), project.configurations.end(),
+                        [](const auto& entry) { return entry.second.config_type == "AndroidApk"; })) {
+            project.platform_filter = {"Android"};
+        }
         if (project.platform_filter.empty()) continue;
         for (auto it = project.configurations.begin(); it != project.configurations.end();) {
             const std::string platform = parse_config_key(it->first).second;
@@ -1933,6 +1939,8 @@ bool BuildscriptParser::parse_project_basic_setting(const std::string& key, cons
             const std::string t = trim(entry);
             if (!t.empty()) list.push_back(t);
         }
+    } else if (key.rfind("android_", 0) == 0 && parse_android_apk_setting(key, value, state)) {
+        // handled
     } else if (key == "platforms" || key == "supported_platforms") {
         // Per-project platform filter: configurations for other platforms are dropped after parsing.
         proj.platform_filter.clear();
@@ -4055,6 +4063,41 @@ void BuildscriptParser::parse_uses_pch(const std::string& line, ParseState& stat
             }
         }
     }
+}
+
+// Settings of android_apk projects (android_package, android_assets, ...). Returns false for keys that
+// are not APK settings so other android_* spellings can still be handled elsewhere.
+bool BuildscriptParser::parse_android_apk_setting(const std::string& key, const std::string& value,
+                                                  ParseState& state) {
+    auto& apk = state.current_project->android_apk;
+    auto add_list = [&](std::vector<std::string>& list, bool resolve) {
+        for (const auto& entry : split(value, ',')) {
+            const std::string t = trim(entry);
+            if (!t.empty()) list.push_back(resolve ? resolve_path(t, state.base_path) : t);
+        }
+    };
+    if (key == "android_package") apk.package = value;
+    else if (key == "android_label") apk.label = value;
+    else if (key == "android_activity") apk.activity = value;
+    else if (key == "android_native_lib") apk.native_lib = value;
+    else if (key == "android_min_sdk") apk.min_sdk = value;
+    else if (key == "android_target_sdk") apk.target_sdk = value;
+    else if (key == "android_version_code") apk.version_code = value;
+    else if (key == "android_version_name") apk.version_name = value;
+    else if (key == "android_manifest") apk.manifest = resolve_path(value, state.base_path);
+    else if (key == "android_res") apk.res_dir = resolve_path(value, state.base_path);
+    else if (key == "android_icon") apk.icon = value;
+    else if (key == "android_activity_attrs") apk.activity_attrs = value;
+    else if (key == "android_application_attrs") apk.application_attrs = value;
+    else if (key == "android_cpp_shared") apk.cpp_shared = to_lower(value);
+    else if (key == "android_assets") add_list(apk.assets, true);
+    else if (key == "android_java") add_list(apk.java, true);
+    else if (key == "android_jars") add_list(apk.jars, true);
+    else if (key == "android_native_libs") add_list(apk.native_libs, true);
+    else if (key == "android_permissions") add_list(apk.permissions, false);
+    else if (key == "android_features") add_list(apk.features, false);
+    else return false;
+    return true;
 }
 
 BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const std::string& condition) {

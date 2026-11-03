@@ -150,5 +150,39 @@ inline std::optional<fs::path> find_build_tools(const fs::path& sdk) {
     return newest_subdirectory(sdk / "build-tools");
 }
 
+// Newest installed platform (<sdk>/platforms/android-<level>) that contains android.jar. `api` is the
+// numeric API level of that platform ("36" for android-36.1), empty when none is installed.
+struct PlatformJar {
+    fs::path jar;
+    std::string api;
+};
+
+inline std::optional<PlatformJar> find_platform_jar(const fs::path& sdk) {
+    std::error_code ec;
+    const fs::path platforms = sdk / "platforms";
+    if (!fs::is_directory(platforms, ec)) return std::nullopt;
+    std::optional<PlatformJar> best;
+    std::string best_version;
+    for (const auto& entry : fs::directory_iterator(platforms, ec)) {
+        const std::string name = entry.path().filename().string();
+        if (name.rfind("android-", 0) != 0) continue;
+        const std::string version = name.substr(8);
+        if (version.empty() || version[0] < '0' || version[0] > '9') continue;
+        const fs::path jar = entry.path() / "android.jar";
+        std::error_code jar_ec;
+        if (!fs::is_regular_file(jar, jar_ec)) continue;
+        if (!best || version_less(best_version, version)) {
+            std::string api;
+            for (char c : version) {
+                if (c < '0' || c > '9') break;
+                api += c;
+            }
+            best = PlatformJar{jar, api};
+            best_version = version;
+        }
+    }
+    return best;
+}
+
 } // namespace android_sdk
 } // namespace vcxproj

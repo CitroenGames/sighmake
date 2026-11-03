@@ -41,6 +41,20 @@ std::optional<std::string> resolve_build_platform(
     return std::string("x64");
 }
 
+std::vector<std::string> split_abi_list(const std::string& abi_list) {
+    std::vector<std::string> abis;
+    std::string current;
+    for (char c : abi_list + ",") {
+        if (c == ',' || c == ' ' || c == ';') {
+            if (!current.empty()) abis.push_back(current);
+            current.clear();
+        } else {
+            current += c;
+        }
+    }
+    return abis;
+}
+
 bool make_build_targets_android(const BuildCache& cache, const BuildOptions& options) {
     const bool has_android = std::any_of(
         cache.platforms.begin(), cache.platforms.end(), is_android_platform);
@@ -406,9 +420,12 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
     ensure_posix_shell_on_path();
     std::string cmd = (make_program == "make" ? make_program : "\"" + make_program + "\"") +
                       " -C \"" + build_dir.string() + "\"";
+    // Android: --abi may name several ABIs (multi-ABI APK). Each is built in its own make run with
+    // packaging skipped; a final run packages every listed ABI. Passed as make variables; the
+    // generated Makefiles default them with ?=.
+    std::vector<std::string> abis;
     if (android_build) {
-        // Passed as make variables; the generated Makefiles default them with ?=.
-        if (!options.abi.empty()) cmd += " ANDROID_ABI=" + options.abi;
+        abis = split_abi_list(options.abi);
         if (!options.api.empty()) cmd += " ANDROID_API=" + options.api;
     }
 #ifdef _WIN32
@@ -422,21 +439,37 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
     auto run_command = [](const std::string& command) { return std::system(command.c_str()); };
 #endif
 
+    // ANDROID_ABI variants of a command: one entry per ABI (or the plain command).
+    auto abi_commands = [&](const std::string& base) {
+        std::vector<std::string> commands;
+        if (abis.empty()) {
+            commands.push_back(base);
+        } else {
+            for (const auto& abi : abis) commands.push_back(base + " ANDROID_ABI=" + abi);
+        }
+        return commands;
+    };
+
     // Clean only if requested
     if (options.clean_only) {
-        std::string clean_cmd = cmd + " clean";
         std::cout << "Cleaning: " << cache.solution_name << " [" << config << "]" << std::endl;
-        return run_command(clean_cmd);
+        int result = 0;
+        for (const auto& clean_cmd : abi_commands(cmd + " clean")) {
+            const int code = run_command(clean_cmd);
+            if (code != 0) result = code;
+        }
+        return result;
     }
 
     // Clean first if requested
     if (options.clean_first) {
-        std::string clean_cmd = cmd + " clean";
         std::cout << "Cleaning...\n";
-        int clean_result = run_command(clean_cmd);
-        if (clean_result != 0) {
-            std::cerr << "Warning: clean step returned non-zero exit code ("
-                      << clean_result << "), continuing with build.\n";
+        for (const auto& clean_cmd : abi_commands(cmd + " clean")) {
+            int clean_result = run_command(clean_cmd);
+            if (clean_result != 0) {
+                std::cerr << "Warning: clean step returned non-zero exit code ("
+                          << clean_result << "), continuing with build.\n";
+            }
         }
     }
 
@@ -448,6 +481,26 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
     }
 
     std::cout << "Building: " << cache.solution_name << " [" << config << "]" << std::endl;
+
+    if (abis.size() > 1) {
+        std::string abi_list;
+        for (const auto& abi : abis) abi_list += (abi_list.empty() ? "" : " ") + abi;
+        for (size_t i = 0; i < abis.size(); ++i) {
+            const bool last = i + 1 == abis.size();
+            std::string abi_cmd = cmd + " ANDROID_ABI=" + abis[i];
+            if (!last) {
+                std::cout << "Android ABI " << abis[i] << "\n";
+                abi_cmd += " SIGHMAKE_SKIP_PACKAGING=1";
+            } else {
+                std::cout << "Android ABI " << abis[i] << " (packaging " << abi_list << ")\n";
+                abi_cmd += " ANDROID_APK_ABIS=\"" + abi_list + "\"";
+            }
+            const int code = run_command(abi_cmd);
+            if (code != 0) return code;
+        }
+        return 0;
+    }
+    if (abis.size() == 1) cmd += " ANDROID_ABI=" + abis[0];
 
     return run_command(cmd);
 }

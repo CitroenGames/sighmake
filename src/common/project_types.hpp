@@ -326,6 +326,32 @@ struct ExternalCMakeSettings {
     bool empty() const { return source_dir.empty() && git_url.empty(); }
 };
 
+// Settings of a project of type `android_apk`: an installable Android package assembled from the
+// native libraries of its dependencies, optional Java code, resources and assets. Makefile generator
+// (Android platform) only.
+struct AndroidApkSettings {
+    std::string package;                    // applicationId / manifest package (required unless android_manifest is set)
+    std::string label;                      // Application label (default: the project name)
+    std::string activity;                   // Launcher activity class (default android.app.NativeActivity)
+    std::string native_lib = "main";        // NativeActivity android.app.lib_name (lib<name>.so)
+    std::string min_sdk;                    // Default: ANDROID_API
+    std::string target_sdk;                 // Default: the API level of the platform android.jar that is used
+    std::string version_code = "1";
+    std::string version_name = "1.0";
+    std::string manifest;                   // Custom AndroidManifest.xml (absolute); skips manifest generation
+    std::string res_dir;                    // Android resource directory (res/)
+    std::string icon;                       // android:icon value, for example @mipmap/ic_launcher
+    std::string activity_attrs;             // Raw extra attributes of the launcher <activity>
+    std::string application_attrs;          // Raw extra attributes of <application>
+    std::string cpp_shared = "auto";        // Bundle libc++_shared.so: auto, true, false
+    std::vector<std::string> assets;        // Directories merged into assets/ (stored uncompressed)
+    std::vector<std::string> java;          // Directories scanned for .java sources
+    std::vector<std::string> jars;          // Extra jars compiled against and dexed
+    std::vector<std::string> native_libs;   // Extra prebuilt .so files (may contain $(ANDROID_ABI))
+    std::vector<std::string> permissions;   // uses-permission names (android.permission. prefix optional)
+    std::vector<std::string> features;      // uses-feature entries: name, name:false, glEsVersion=0x00030000
+};
+
 // Project
 struct Project {
     std::string name;
@@ -403,6 +429,9 @@ struct Project {
 
     // Third-party CMake build (type = external_cmake)
     ExternalCMakeSettings external_cmake;
+
+    // Android package (type = android_apk)
+    AndroidApkSettings android_apk;
 
     // Optional per-project platform filter (the project-level `platforms` key). Empty means the
     // project is built for every platform in the solution matrix. See project_supports_platform().

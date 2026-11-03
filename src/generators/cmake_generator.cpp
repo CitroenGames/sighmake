@@ -58,7 +58,7 @@ void CMakeGenerator::write_target_definition(std::ostream& out, const Project& p
         }
     }
 
-    if (config_type == "ExternalCMake") {
+    if (config_type == "ExternalCMake" || config_type == "AndroidApk") {
         // Third-party CMake builds are driven by the Makefile generator; keep the target name resolvable.
         out << "# external_cmake project: not built by this generator\n";
         out << "add_library(" << project.name << " INTERFACE)\n";

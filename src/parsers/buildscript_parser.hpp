@@ -173,6 +173,7 @@ private:
     bool parse_project_source_setting(const std::string& key, const std::string& value, ParseState& state);
     bool parse_project_compiler_setting(const std::string& key, const std::string& value, ParseState& state);
     bool parse_project_linker_setting(const std::string& key, const std::string& value, ParseState& state);
+    bool parse_android_apk_setting(const std::string& key, const std::string& value, ParseState& state);
     bool parse_project_misc_setting(const std::string& key, const std::string& value, ParseState& state);
     
     // Parse file-level settings (file.cpp:setting = value)

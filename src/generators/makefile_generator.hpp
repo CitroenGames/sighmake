@@ -39,6 +39,11 @@ private:
     bool generate_external_cmake_makefile(const Project& project, const Configuration& config,
                                           const std::string& config_key, const std::string& output_path);
 
+    // Makefile for a project of type android_apk (assemble, align, sign and verify an APK)
+    bool generate_android_apk_makefile(const Project& project, const Configuration& config,
+                                       const std::string& config_key, const std::string& output_path,
+                                       const ProjectLookup& project_lookup);
+
     // Helper functions for assembling flag strings
     std::string get_compiler_flags(const Configuration& config, const Project& project,
                                    const std::filesystem::path& makefile_dir, bool c_flags);

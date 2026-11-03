@@ -27,6 +27,7 @@ inline constexpr ConfigTypeInfo kConfigTypes[] = {
     {"DynamicLibrary", false, "dll",       {"dll", "shared", "dynamiclib", "DynamicLibrary", nullptr}, "Dynamic Library", "dll"},
     {"Utility",        false, "interface", {"interface", "header-only", "Utility", nullptr},         "Utility",         "utility"},
     {"ExternalCMake",  false, "external_cmake", {"external_cmake", "cmake_project", "ExternalCMake", nullptr}, "External CMake",  "utility"},
+    {"AndroidApk",     false, "android_apk", {"android_apk", "apk", "AndroidApk", nullptr},        "Android APK",     "exe"},
     {"Driver",         true,  "sys",       {"sys", "driver", "Driver", nullptr},                     nullptr,           nullptr},
     {"StaticLibrary",  true,  "sys_lib",   {"sys_lib", "kernel_lib", nullptr},                       nullptr,           nullptr},
 };

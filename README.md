@@ -23,6 +23,7 @@ version control.
 - Android cross-compilation with the NDK (`platforms = Android`), including generating from a Windows host with `--target-os android`
 - Cross-generation: `--target-os` evaluates `if(windows)`, `if(posix)` and `[windows]` tags for the target OS instead of the host; `if(host_windows)` / `if(host_posix)` branch on the build machine
 - `external_cmake` projects: clone (pinned) or use a local third-party CMake tree, build it per configuration/ABI, and link its outputs into dependants
+- `apk` projects (Android): manifest, dex, uncompressed assets and native libs per ABI, zipalign, debug/release signing via SDK build-tools; `--abi a,b` builds a multi-ABI package
 - Android shared libraries linked through response files with `-soname` and 16 KB page alignment
 - Per-project platform filters (`platforms = Windows, macOS`), wildcard configuration sections (`[config:*|Android]`) and `Template:Release|x64` inheritance
 - Android NDK/SDK auto-detection, `sighmake --build --platform android` (uses the NDK's make when the host has none), `find_package(Vulkan)` from the NDK sysroot

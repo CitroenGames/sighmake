@@ -679,6 +679,54 @@ toolchain file with `ANDROID_ABI`, `ANDROID_PLATFORM=android-$(ANDROID_API)` and
 programs. `cmake` must be installed (the copy bundled with the Android SDK lives in
 `<sdk>/cmake/<version>/bin`).
 
+### Android packages (APK)
+
+A project of type `apk` (alias `android_apk`) assembles an installable Android package from the shared libraries
+of the projects it depends on, using the Android SDK build-tools (`aapt2`, `d8`, `zipalign`, `apksigner`,
+found through `ANDROID_HOME`/`ANDROID_SDK_ROOT`, with `ANDROID_BUILD_TOOLS` and `ANDROID_JAR` as overrides).
+It exists only for the Android platform and is dropped from every other cell of the matrix. Makefile
+generator only. Nothing is installed or run on a device.
+
+```ini
+[project:GameApk]
+type = apk
+android_package = com.example.game
+android_label = My Game
+android_native_lib = game          # NativeActivity loads libgame.so
+android_assets = content           # stored uncompressed under assets/
+android_permissions = INTERNET
+target_name = Game
+outdir = bin/android
+target_link_libraries(
+    GameLib PUBLIC                 # type = dll projects (and external_cmake .so outputs) are packaged
+)
+```
+
+| Setting | Meaning |
+| --- | --- |
+| `android_package` | applicationId (required unless `android_manifest` is set). |
+| `android_label`, `android_icon`, `android_version_code`, `android_version_name` | Application label (default: project name), `@mipmap/...` icon, version. |
+| `android_activity` | Launcher activity (default `android.app.NativeActivity`, needs no Java). |
+| `android_native_lib` | `lib<name>.so` loaded by NativeActivity (default `main`). |
+| `android_min_sdk`, `android_target_sdk` | Default: `ANDROID_API`, and the newest installed platform. |
+| `android_manifest` | Use your own AndroidManifest.xml instead of the generated one. |
+| `android_res`, `android_assets` | Resource directory; asset directories merged into `assets/`. |
+| `android_java`, `android_jars` | Java source directories (compiled with `javac`, dexed with `d8`) and extra jars. |
+| `android_native_libs` | Extra prebuilt `.so` files (may contain `$(ANDROID_ABI)`). |
+| `android_permissions`, `android_features` | `uses-permission` names (`android.permission.` optional); `uses-feature` entries (`name`, `name:false`, `glEsVersion=0x00030000`). |
+| `android_cpp_shared` | Bundle `libc++_shared.so`: `auto` (when a library references it), `true`, `false`. |
+| `android_activity_attrs`, `android_application_attrs` | Raw extra attributes. |
+
+Native libraries are stored uncompressed and zipaligned (16 KB with build-tools 35+; the manifest sets
+`extractNativeLibs=false`). Signing: Release uses the keystore in `ANDROID_KEYSTORE` with
+`ANDROID_KEYSTORE_PASSWORD` (optional `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`); other configurations
+use `~/.android/debug.keystore`, created with `keytool` when missing. `ANDROID_SIGN=debug|release`
+overrides this. The result is verified with `apksigner verify` and `zipalign -c`.
+
+Several ABIs: `sighmake --build ... --platform Android --abi arm64-v8a,x86_64` builds each ABI and packages
+all of them into one APK (make variables `ANDROID_APK_ABIS`, `SIGHMAKE_SKIP_PACKAGING`). `.aab` bundles
+are not generated yet.
+
 ### Platform filter
 
 By default every project is built for every platform in the solution matrix.

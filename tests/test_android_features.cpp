@@ -925,3 +925,113 @@ cmake_outputs = libbroken.so
     MakefileGenerator generator;
     CHECK_FALSE(generator.generate(sol, dir.path.string()));
 }
+
+// ============================================================================
+// android_apk
+// ============================================================================
+
+TEST_CASE("android_apk settings are parsed and the project is Android-only", "[android][apk]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = x64, Android
+
+[project:Game]
+type = apk
+android_package = com.example.game
+android_label = My Game
+android_native_lib = game
+android_min_sdk = 26
+android_permissions = INTERNET, com.example.CUSTOM
+android_features = glEsVersion=0x00030000, android.hardware.vulkan.level:false
+android_assets = content, more
+android_java = java
+)", "/work/proj");
+    REQUIRE(sol.projects.size() == 1);
+    const auto& project = sol.projects[0];
+    const auto& apk = project.android_apk;
+    CHECK(apk.package == "com.example.game");
+    CHECK(apk.label == "My Game");
+    CHECK(apk.native_lib == "game");
+    CHECK(apk.min_sdk == "26");
+    CHECK(apk.permissions == std::vector<std::string>{"INTERNET", "com.example.CUSTOM"});
+    CHECK(apk.features.size() == 2);
+    CHECK(apk.assets.size() == 2);
+    CHECK(apk.java.size() == 1);
+    CHECK(project.configurations.count("Release|Android") == 1);
+    CHECK(project.configurations.count("Release|x64") == 0);
+    CHECK(project.configurations.at("Release|Android").config_type == "AndroidApk");
+}
+
+TEST_CASE("android_apk makefile packages dependency libraries, assets and signs", "[android][apk][makefile_generator]") {
+    AndroidOsScope scope;
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = Android
+
+[project:Game]
+type = dll
+sources = main.cpp
+target_name = game
+outdir = bin/android/$(ANDROID_ABI)
+
+[project:GameApk]
+type = apk
+android_package = com.example.game
+android_native_lib = game
+android_permissions = INTERNET
+android_assets = content
+target_name = GameApp
+outdir = bin/android
+target_link_libraries(
+    Game PUBLIC
+)
+)");
+    REQUIRE(g.files.count("GameApk.Release.Android"));
+    const std::string& mk = g.files["GameApk.Release.Android"];
+    CHECK(mk.find("APK_NAME = GameApp.apk") != std::string::npos);
+    CHECK(mk.find("bin/android/$(ANDROID_ABI)/libgame.so") != std::string::npos);
+    CHECK(mk.find("$(AAPT2) link") != std::string::npos);
+    CHECK(mk.find("--no-compress") != std::string::npos);
+    CHECK(mk.find("$(ZIPALIGN)") != std::string::npos);
+    CHECK(mk.find("$(APKSIGNER)") != std::string::npos);
+    CHECK(mk.find("SIGHMAKE_SKIP_PACKAGING") != std::string::npos);
+    CHECK(mk.find("ANDROID_APK_ABIS") != std::string::npos);
+    CHECK(mk.find("APK_SIGN_MODE = $(if $(filter auto,$(ANDROID_SIGN)),release,") != std::string::npos);
+    CHECK(g.files["GameApk.Debug.Android"].find("APK_SIGN_MODE = $(if $(filter auto,$(ANDROID_SIGN)),debug,") != std::string::npos);
+    // No Java code: the generated manifest is a pure NativeActivity one.
+    const std::string manifest = g.files["GameApk.Release.AndroidManifest.xml"];
+    CHECK(manifest.find("package=\"com.example.game\"") != std::string::npos);
+    CHECK(manifest.find("android.app.NativeActivity") != std::string::npos);
+    CHECK(manifest.find("android:value=\"game\"") != std::string::npos);
+    CHECK(manifest.find("android.permission.INTERNET") != std::string::npos);
+    CHECK(manifest.find("android:hasCode=\"false\"") != std::string::npos);
+    CHECK(g.master.find("GameApk.Release.Android: Game.Release.Android") != std::string::npos);
+}
+
+TEST_CASE("android_apk without a package or manifest is rejected", "[android][apk][makefile_generator]") {
+    AndroidOsScope scope;
+    TempDir dir("sighmake_test_apk_invalid");
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:Broken]
+type = apk
+)", dir.path.string());
+    MakefileGenerator generator;
+    CHECK_FALSE(generator.generate(sol, dir.path.string()));
+}
+
+TEST_CASE("split_abi_list accepts commas, spaces and semicolons", "[android][build_runner]") {
+    CHECK(split_abi_list("arm64-v8a,x86_64") == std::vector<std::string>{"arm64-v8a", "x86_64"});
+    CHECK(split_abi_list("arm64-v8a x86_64;x86") == std::vector<std::string>{"arm64-v8a", "x86_64", "x86"});
+    CHECK(split_abi_list("").empty());
+}
