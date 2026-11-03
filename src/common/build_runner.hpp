@@ -17,6 +17,8 @@ struct BuildOptions {
     bool clean_only = false;        // --clean (optional, clean without building)
     bool build_project_references = true; // false with --no-project-references
     int parallel = 0;               // --parallel <N> (optional, 0 = default)
+    std::string abi;                // --abi <abi> (optional, Android makefile builds: ANDROID_ABI)
+    std::string api;                // --api <level> (optional, Android makefile builds: ANDROID_API)
 };
 
 // Resolve an explicitly requested platform, including aliases such as
@@ -25,6 +27,9 @@ struct BuildOptions {
 std::optional<std::string> resolve_build_platform(
     const std::vector<std::string>& available_platforms,
     const std::string& requested_platform);
+
+// True when the requested --platform selects the Android build of a makefile cache.
+bool make_build_targets_android(const BuildCache& cache, const BuildOptions& options);
 
 // Resolve the target understood by the generated master Makefile. Project
 // aliases select the default configuration, so an explicit project build must

@@ -1955,6 +1955,9 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
             for (const auto& platform : solution.platforms) {
                 if (is_unix_platform(platform)) continue;  // Skip Unix configs for vcxproj
                 std::string key = config + "|" + platform;
+                // A project restricted by `platforms` has no configuration for the others: it is
+                // simply not mapped (and so not built) in those solution configurations.
+                if (!proj.platform_filter.empty() && !proj.configurations.count(key)) continue;
                 std::string guid = "{" + proj.uuid + "}";
                 file << "\t\t" << guid << "." << key << ".ActiveCfg = " << key << "\n";
                 file << "\t\t" << guid << "." << key << ".Build.0 = " << key << "\n";
@@ -2067,6 +2070,21 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
                 dep_elem.append_attribute("Project") = dep_path.c_str();
             }
         }
+
+        // A project restricted by `platforms` is not built in the solution configurations whose
+        // platform it does not support.
+        if (!proj.platform_filter.empty()) {
+            for (const auto& config : solution.configurations) {
+                for (const auto& platform : solution.platforms) {
+                    if (is_unix_platform(platform)) continue;
+                    const std::string key = config + "|" + platform;
+                    if (proj.configurations.count(key)) continue;
+                    auto build = project.append_child("Build");
+                    build.append_attribute("Solution") = key.c_str();
+                    build.append_attribute("Project") = "false";
+                }
+            }
+        }
     };
 
     // Solution folders — .slnx requires ALL folders as direct children of <Solution>
@@ -2099,8 +2117,36 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
     return doc.save_file(output_path.c_str(), "\t", pugi::format_default);
 }
 
+// Projects whose platform filter leaves no Visual Studio platform are not part of the generated
+// graph (they are built through the Make generator only). Remove them, and the references to them.
+static void prune_projects_excluded_from_visual_studio(Solution& solution) {
+    std::set<std::string> removed;
+    for (const auto& project : solution.projects) {
+        if (project_excluded_from_visual_studio(project)) removed.insert(project.name);
+    }
+    if (removed.empty()) return;
+    solution.projects.erase(
+        std::remove_if(solution.projects.begin(), solution.projects.end(),
+                       [&](const Project& project) { return removed.count(project.name) > 0; }),
+        solution.projects.end());
+    for (auto& project : solution.projects) {
+        auto& refs = project.project_references;
+        refs.erase(std::remove_if(refs.begin(), refs.end(),
+                                  [&](const ProjectDependency& dep) { return removed.count(dep.name) > 0; }),
+                   refs.end());
+    }
+}
+
 bool VcxprojGenerator::generate(Solution& solution, const std::string& output_dir) {
     namespace fs = std::filesystem;
+
+    const size_t project_count_before_pruning = solution.projects.size();
+    prune_projects_excluded_from_visual_studio(solution);
+    if (solution.projects.empty() && project_count_before_pruning > 0) {
+        std::cerr << "Error: Every project is restricted (via `platforms`) to platforms the Visual Studio "
+                     "generator does not build.\n";
+        return false;
+    }
 
     // Create output directory if it doesn't exist
     if (!output_dir.empty() && !fs::exists(output_dir)) {

@@ -42,7 +42,10 @@ void print_usage(const char* program_name) {
     std::cout << "Build options:\n";
     std::cout << "  -b, --build <dir>          Build using previously generated project files\n";
     std::cout << "      --config <cfg>         Build configuration (e.g. Debug, Release)\n";
-    std::cout << "      --platform <name>      Build platform for Visual Studio (e.g. x64, Win32, x86)\n";
+    std::cout << "      --platform <name>      Build platform for Visual Studio (e.g. x64, Win32, x86);\n";
+    std::cout << "                             with Makefiles, Android selects the Android build\n";
+    std::cout << "      --abi <abi>            Android ABI for Makefile builds (default: arm64-v8a)\n";
+    std::cout << "      --api <level>          Android API level for Makefile builds (default: 24)\n";
     std::cout << "      --target <tgt>         Build specific target\n";
     std::cout << "      --project <name|file>  Build a generated project instead of the whole graph\n";
     std::cout << "      --no-project-references Do not build referenced projects with --project\n";
@@ -76,6 +79,7 @@ void print_usage(const char* program_name) {
     std::cout << "  SIGHMAKE_DEFAULT_TOOLSET   Default toolset when -t is not specified\n";
     std::cout << "  SIGHMAKE_UPDATE_MANIFEST_URL Override updater manifest URL\n";
     std::cout << "  SIGHMAKE_TARGET_OS         Target OS for conditions when --target-os is not specified\n";
+    std::cout << "  SIGHMAKE_MAKE              make program used by --build for Makefile builds\n";
     std::cout << "  SIGHMAKE_DEBUG             Set to 1 for verbose [DEBUG] diagnostics\n";
 }
 
@@ -210,6 +214,10 @@ int main(int argc, char* argv[]) {
                 options.config = argv[++i];
             } else if (strcmp(argv[i], "--platform") == 0 && i + 1 < argc) {
                 options.platform = argv[++i];
+            } else if (strcmp(argv[i], "--abi") == 0 && i + 1 < argc) {
+                options.abi = argv[++i];
+            } else if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
+                options.api = argv[++i];
             } else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
                 options.target = argv[++i];
             } else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) {

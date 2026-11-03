@@ -21,7 +21,9 @@ version control.
 - Project dependencies with `PUBLIC`, `PRIVATE`, and `INTERFACE` visibility
 - Wildcard source matching and platform-specific file filters
 - Android cross-compilation with the NDK (`platforms = Android`), including generating from a Windows host with `--target-os android`
-- Cross-generation: `--target-os` evaluates `if(windows)`, `if(posix)` and `[windows]` tags for the target OS instead of the host
+- Cross-generation: `--target-os` evaluates `if(windows)`, `if(posix)` and `[windows]` tags for the target OS instead of the host; `if(host_windows)` / `if(host_posix)` branch on the build machine
+- Per-project platform filters (`platforms = Windows, macOS`), wildcard configuration sections (`[config:*|Android]`) and `Template:Release|x64` inheritance
+- Android NDK/SDK auto-detection, `sighmake --build --platform android` (uses the NDK's make when the host has none), `find_package(Vulkan)` from the NDK sysroot
 - Visual Studio solution folders and project filters
 - `find_package()` support for common SDKs such as Vulkan, SDL, DirectX, and OpenGL
 - Visual Studio solution conversion back to buildscripts
@@ -170,7 +172,9 @@ Common build options:
 
 ```text
 --config <cfg>             Build configuration, for example Debug or Release
---platform <name>          Visual Studio platform, for example x64 or Win32 (x86 aliases Win32)
+--platform <name>          Visual Studio platform, for example x64 or Win32 (x86 aliases Win32);
+                           with Makefiles, Android selects the Android targets
+--abi <abi>, --api <n>     Android ABI / API level for Makefile builds
 --target <tgt>             Build a target
 --project <name|file>      Build one generated project
 --no-project-references    Do not build referenced projects with --project
@@ -198,13 +202,12 @@ set SIGHMAKE_DEFAULT_TOOLSET=msvc2022
 export SIGHMAKE_DEFAULT_TOOLSET=msvc2022
 ```
 
-Generate Android Makefiles from a Windows host (requires the Android NDK, see
-[usage.md](usage.md#android)):
+Generate and build Android with the NDK from a Windows host (the NDK is found via
+`ANDROID_NDK_HOME` or `ANDROID_HOME`, see [usage.md](usage.md#android)):
 
 ```batch
-set ANDROID_NDK_HOME=C:\Android\ndk\27.0.12077973
 sighmake --target-os android -g makefile app.buildscript
-make -C build Release.Android ANDROID_ABI=arm64-v8a
+sighmake --build . --config Release --platform android --abi arm64-v8a
 ```
 
 ## Buildscript Example

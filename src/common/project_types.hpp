@@ -383,6 +383,10 @@ struct Project {
 
     // True for synthetic projects created from find_package() results
     bool is_package_project = false;
+
+    // Optional per-project platform filter (the project-level `platforms` key). Empty means the
+    // project is built for every platform in the solution matrix. See project_supports_platform().
+    std::vector<std::string> platform_filter;
 };
 
 struct SolutionFolder {
@@ -552,6 +556,53 @@ inline bool is_android_platform(const std::string& platform) {
 inline bool is_unix_platform(const std::string& platform) {
     std::string p = to_lower(platform);
     return p == "linux" || p == "macos" || p == "darwin" || p == "osx" || p == "android";
+}
+
+// Does one entry of a project's `platforms` filter match a solution platform? Matching is
+// case-insensitive. Besides exact names, the group names `windows` (Win32, x64, ARM, ARM64),
+// `macos`/`osx`/`darwin`, `x86` (Win32) and `unix`/`posix` (Linux, macOS, Android, iOS) are accepted.
+inline bool platform_filter_entry_matches(const std::string& entry, const std::string& platform) {
+    const std::string e = to_lower(trim(entry));
+    const std::string p = to_lower(platform);
+    if (e.empty()) return false;
+    if (e == p) return true;
+    if (e == "windows" || e == "win") return is_windows_platform(p);
+    if (e == "x86") return p == "win32";
+    if (e == "macos" || e == "osx" || e == "darwin") return p == "macos" || p == "osx" || p == "darwin";
+    if (e == "unix" || e == "posix") return is_unix_platform(p) || p == "ios";
+    return false;
+}
+
+// Can the project be built for `platform`? Entries prefixed with `!` exclude platforms; when at
+// least one positive entry exists a platform must match one of them. An empty filter allows all.
+inline bool project_supports_platform(const Project& project, const std::string& platform) {
+    if (project.platform_filter.empty()) return true;
+    bool has_positive = false;
+    bool matched = false;
+    for (const auto& raw : project.platform_filter) {
+        const std::string entry = trim(raw);
+        if (entry.empty()) continue;
+        if (entry[0] == '!') {
+            if (platform_filter_entry_matches(entry.substr(1), platform)) return false;
+        } else {
+            has_positive = true;
+            if (platform_filter_entry_matches(entry, platform)) matched = true;
+        }
+    }
+    return !has_positive || matched;
+}
+
+// A project with a platform filter and no remaining configuration for a Visual Studio platform is
+// not part of the generated Visual Studio graph (it only builds with the Make generator).
+inline bool project_excluded_from_visual_studio(const Project& project) {
+    if (project.platform_filter.empty() || project.is_package_project) return false;
+    for (const auto& [key, cfg] : project.configurations) {
+        (void)cfg;
+        size_t pos = key.find('|');
+        const std::string platform = pos == std::string::npos ? std::string() : key.substr(pos + 1);
+        if (!is_unix_platform(platform)) return false;
+    }
+    return true;
 }
 
 // Default output / intermediate directory layout when a buildscript does not

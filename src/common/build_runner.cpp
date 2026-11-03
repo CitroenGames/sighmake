@@ -2,6 +2,7 @@
 #include "build_runner.hpp"
 #include "project_types.hpp"
 #include "defaults.hpp"
+#include "android_sdk.hpp"
 
 namespace fs = std::filesystem;
 
@@ -40,27 +41,33 @@ std::optional<std::string> resolve_build_platform(
     return std::string("x64");
 }
 
+bool make_build_targets_android(const BuildCache& cache, const BuildOptions& options) {
+    const bool has_android = std::any_of(
+        cache.platforms.begin(), cache.platforms.end(), is_android_platform);
+    const bool has_desktop = std::any_of(
+        cache.platforms.begin(), cache.platforms.end(), [](const std::string& platform) {
+            return !is_windows_platform(platform) && !is_android_platform(platform);
+        });
+    if (!options.platform.empty()) {
+        // An explicit platform decides: Android builds use the .Android targets.
+        return is_android_platform(options.platform);
+    }
+    return has_android && !has_desktop;
+}
+
 std::string resolve_make_build_target(
     const BuildCache& cache,
     const BuildOptions& options,
     const std::string& config)
 {
+    const bool android = make_build_targets_android(cache, options);
     if (!options.project.empty()) {
-        const bool has_android = std::any_of(
-            cache.platforms.begin(), cache.platforms.end(), is_android_platform);
-        const bool has_desktop = std::any_of(
-            cache.platforms.begin(), cache.platforms.end(), [](const std::string& platform) {
-                return !is_windows_platform(platform) && !is_android_platform(platform);
-            });
-        return options.project + "." + config + (has_android && !has_desktop ? ".Android" : "");
+        return options.project + "." + config + (android ? ".Android" : "");
     }
     if (!options.target.empty()) {
         return options.target;
     }
-
-    const bool android_only = !cache.platforms.empty() && std::all_of(
-        cache.platforms.begin(), cache.platforms.end(), is_android_platform);
-    return config + (android_only ? ".Android" : "");
+    return config + (android ? ".Android" : "");
 }
 
 static bool contains_path_separator(const std::string& value) {
@@ -261,12 +268,91 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
     return std::system(cmd.c_str());
 }
 
+// Look for an executable on PATH (Windows also tries .exe/.cmd/.bat). Empty when absent.
+static std::string find_on_path(const std::string& name) {
+    const char* path_env = std::getenv("PATH");
+    if (!path_env) return "";
+#ifdef _WIN32
+    const char separator = ';';
+    const std::vector<std::string> suffixes = {".exe", ".cmd", ".bat", ""};
+#else
+    const char separator = ':';
+    const std::vector<std::string> suffixes = {""};
+#endif
+    std::stringstream entries(path_env);
+    std::string dir;
+    while (std::getline(entries, dir, separator)) {
+        if (dir.empty()) continue;
+        for (const auto& suffix : suffixes) {
+            std::error_code ec;
+            fs::path candidate = fs::path(dir) / (name + suffix);
+            if (fs::is_regular_file(candidate, ec)) return candidate.string();
+        }
+    }
+    return "";
+}
+
+// Choose the make program. SIGHMAKE_MAKE wins. Otherwise `make` from PATH; Android builds on a host
+// without one (typically Windows) fall back to the GNU make that ships with the NDK.
+std::string resolve_make_program(bool android, std::string* note) {
+    if (const char* override_make = std::getenv("SIGHMAKE_MAKE")) {
+        if (*override_make) return override_make;
+    }
+    if (!find_on_path("make").empty()) return "make";
+    if (android) {
+        if (auto ndk = android_sdk::find_ndk()) {
+            if (auto ndk_make = android_sdk::find_ndk_make(*ndk)) {
+                if (note) *note = "make not found on PATH; using the NDK's make: " + ndk_make->string();
+                return ndk_make->string();
+            }
+        }
+    }
+    return "make";
+}
+
+// The generated Makefiles use POSIX shell tools (mkdir -p, rm). On Windows, make needs `sh` on PATH
+// for that; add Git for Windows' usr/bin when nothing provides one. Affects this process only.
+static void ensure_posix_shell_on_path() {
+#ifdef _WIN32
+    if (!find_on_path("sh").empty()) return;
+    std::vector<fs::path> candidates;
+    for (const char* var : {"ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"}) {
+        if (const char* root = std::getenv(var)) {
+            candidates.push_back(fs::path(root) / "Git" / "usr" / "bin");
+        }
+    }
+    for (const auto& dir : candidates) {
+        std::error_code ec;
+        if (fs::is_regular_file(dir / "sh.exe", ec)) {
+            const char* current = std::getenv("PATH");
+            const std::string updated = dir.string() + ";" + (current ? current : "");
+            _putenv_s("PATH", updated.c_str());
+            return;
+        }
+    }
+#endif
+}
+
 int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
                            const std::string& cache_dir) {
     if (!options.platform.empty()) {
-        std::cerr << "Error: --platform is not supported by the makefile build backend.\n";
-        std::cerr << "  Select the target platform when generating the Makefile instead.\n";
-        return 1;
+        // Makefile caches have one build per OS family; --platform only picks between the
+        // desktop and Android builds that the cache contains.
+        bool known = cache.platforms.empty();
+        for (const auto& available : cache.platforms) {
+            if (to_lower(available) == to_lower(options.platform)) known = true;
+        }
+        if (!known && !is_android_platform(options.platform)) {
+            std::cerr << "Error: Platform '" << options.platform << "' is not part of this Makefile build.\n";
+            return 1;
+        }
+        if (is_android_platform(options.platform) &&
+            std::none_of(cache.platforms.begin(), cache.platforms.end(), is_android_platform) &&
+            !cache.platforms.empty()) {
+            std::cerr << "Error: This Makefile build has no Android platform.\n"
+                      << "  Add Android to the solution platforms and regenerate with --target-os android.\n";
+            return 1;
+        }
     }
 
     // Verify build directory exists
@@ -309,21 +395,45 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
     }
 
     const std::string requested_target = resolve_make_build_target(cache, options, config);
+    const bool android_build = make_build_targets_android(cache, options);
+
     // Build make command
-    std::string cmd = "make -C \"" + build_dir.string() + "\"";
+    std::string make_note;
+    const std::string make_program = resolve_make_program(android_build, &make_note);
+    if (!make_note.empty()) {
+        std::cout << make_note << "\n";
+    }
+    ensure_posix_shell_on_path();
+    std::string cmd = (make_program == "make" ? make_program : "\"" + make_program + "\"") +
+                      " -C \"" + build_dir.string() + "\"";
+    if (android_build) {
+        // Passed as make variables; the generated Makefiles default them with ?=.
+        if (!options.abi.empty()) cmd += " ANDROID_ABI=" + options.abi;
+        if (!options.api.empty()) cmd += " ANDROID_API=" + options.api;
+    }
+#ifdef _WIN32
+    // cmd.exe /c strips the outer quotes of a command that starts with a quote; keep the program
+    // path quoted by wrapping the whole command line once more.
+    auto run_command = [](const std::string& command) {
+        const std::string wrapped = command.rfind('"', 0) == 0 ? "\"" + command + "\"" : command;
+        return std::system(wrapped.c_str());
+    };
+#else
+    auto run_command = [](const std::string& command) { return std::system(command.c_str()); };
+#endif
 
     // Clean only if requested
     if (options.clean_only) {
         std::string clean_cmd = cmd + " clean";
         std::cout << "Cleaning: " << cache.solution_name << " [" << config << "]" << std::endl;
-        return std::system(clean_cmd.c_str());
+        return run_command(clean_cmd);
     }
 
     // Clean first if requested
     if (options.clean_first) {
         std::string clean_cmd = cmd + " clean";
         std::cout << "Cleaning...\n";
-        int clean_result = std::system(clean_cmd.c_str());
+        int clean_result = run_command(clean_cmd);
         if (clean_result != 0) {
             std::cerr << "Warning: clean step returned non-zero exit code ("
                       << clean_result << "), continuing with build.\n";
@@ -339,7 +449,7 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
 
     std::cout << "Building: " << cache.solution_name << " [" << config << "]" << std::endl;
 
-    return std::system(cmd.c_str());
+    return run_command(cmd);
 }
 
 int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,

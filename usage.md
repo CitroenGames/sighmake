@@ -133,7 +133,9 @@ references are replaced with an empty string. Values discovered later by
 | --- | --- |
 | `-b`, `--build <dir>` | Build from the cache in `<dir>`. This form must be the first command argument. |
 | `--config <name>` | Select a configuration such as `Debug` or `Release`. |
-| `--platform <name>` | Select a generated Visual Studio platform such as `x64` or `Win32`; `x86` is an alias for `Win32`. |
+| `--platform <name>` | Select a generated Visual Studio platform such as `x64` or `Win32`; `x86` is an alias for `Win32`. With a Makefile cache, `Android` selects the Android build (the `<Config>.Android` targets). |
+| `--abi <abi>` | Makefile builds for Android: set `ANDROID_ABI` (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`). |
+| `--api <level>` | Makefile builds for Android: set `ANDROID_API`. |
 | `--target <name>` | Pass a target to the active backend. |
 | `--project <name-or-file>` | Build one generated project instead of the complete solution/graph. |
 | `--no-project-references`, `--no-deps` | With an MSBuild project build, set `BuildProjectReferences=false`. |
@@ -156,9 +158,14 @@ case-insensitively, and `x86` selects Visual Studio's canonical `Win32`
 platform. If the option is omitted, sighmake prefers `x64` when present and
 otherwise uses the first cached platform.
 
-The Makefile and CMake generators do not retain the same build-time platform
-matrix, so their `--build` routes reject `--platform` with an explanation.
-Select the platform while generating a Makefile or configuring CMake instead.
+The CMake generator does not retain the build-time platform matrix, so its
+`--build` route rejects `--platform` with an explanation; select the platform
+while configuring CMake instead. A Makefile cache has one build per OS family:
+`--platform Android` builds the Android targets (`Release.Android`,
+`Game.Release.Android` with `--project`) and any desktop platform name builds
+the host targets. Without `--platform`, a cache that only contains Android
+builds Android and a mixed cache builds the host targets. See
+[Building Android from sighmake](#building-android-from-sighmake).
 
 ### Updates
 
@@ -177,6 +184,7 @@ even when its version matches the current executable.
 | --- | --- |
 | `SIGHMAKE_DEFAULT_TOOLSET` | Default MSVC toolset when neither `-t` nor the project sets one. |
 | `SIGHMAKE_TARGET_OS` | Target OS for conditions when `--target-os` is not given (same values). Unknown values are ignored with a warning. |
+| `SIGHMAKE_MAKE` | The `make` program `sighmake --build` runs for Makefile builds. Default: `make` from `PATH`, else the NDK's make for Android builds. |
 | `SIGHMAKE_UPDATE_MANIFEST_URL` | Override the updater manifest URL. |
 | `SIGHMAKE_DEBUG=1` | Enable verbose diagnostic output. |
 
@@ -335,6 +343,15 @@ optimization[Release|x64] = MaxSpeed
 defines[Debug|Linux] = DEBUG_LINUX
 ```
 
+Either side of a full selector may be `*`: `[*|Android]` is every current
+configuration on Android, `[Release|*]` is Release on every current platform and
+`[*]` is the whole matrix.
+
+```ini
+outdir[*|Android] = bin/android/$(ANDROID_ABI)
+treat_warning_as_error[Release|*] = true
+```
+
 A single token in brackets is a **platform selector**, applied to every current
 configuration for that platform:
 
@@ -391,8 +408,42 @@ optimization = MaxSpeed
 runtime_library = MultiThreadedDLL
 ```
 
-Always include the platform in a configuration section. The current parser does
-not expand `[config:Debug]` over all platforms.
+Always include the platform in a configuration section; `[config:Debug]` is not
+expanded over platforms. Use a wildcard section (below) for that.
+
+#### Wildcard configuration sections
+
+`*` stands for "every configuration" or "every platform" in the solution matrix
+declared so far, so one block replaces several near-identical ones:
+
+```ini
+[solution]
+configurations = Debug, Release
+platforms = x64, Android
+
+[project:Game]
+type = exe
+
+[config:Debug|x64]
+outdir = bin/x64/Debug
+
+[config:Release|x64]
+outdir = bin/x64/Release
+
+# One block for Debug|Android and Release|Android
+[config:*|Android]
+outdir = bin/android/$(ANDROID_ABI)/$(Configuration)
+defines = ON_DEVICE
+```
+
+Forms: `[config:*|Android]`, `[config:Release|*]`, `[config:*|*]` and `[config:*]`
+(the last two are the whole matrix). Every setting in the block is applied to each
+matching cell exactly as if the section were written once per cell, so the usual
+accumulate/replace rules apply. A literal platform that is not part of the matrix
+yet is added to it, and the platforms and configurations declared in `[solution]`
+stay in the matrix (explicit `[config:A|B]` sections alone replace it, see below).
+Declare the matrix before using wildcards; configurations introduced later are not
+covered.
 
 When configuration sections are present, the names and platforms appearing in
 those sections become the discovered matrix. If several names and platforms are
@@ -416,6 +467,25 @@ generate_debug_info = true
 
 For readability, define the base before the derived section. Use full
 `Config|Platform` section names for predictable inheritance.
+
+Name a full `Config|Platform` cell to inherit from another platform. This is the
+"same as Release|x64 with a different outdir" case:
+
+```ini
+[config:Release|x64]
+optimization = MaxSpeed
+warning_level = Level4
+outdir = bin/x64/Release
+
+[config:Release|Android] : Template:Release|x64
+outdir = bin/android/$(ANDROID_ABI)/Release
+```
+
+In a wildcard section `*` in the template stands for the derived cell's
+configuration, so `[config:*|Android] : Template:*|x64` makes every Android cell
+copy the x64 cell of the same configuration. As with every template, a setting
+is copied only when the derived cell has not set it (list settings are copied
+only when the derived list is empty).
 
 ### Defaults
 
@@ -456,6 +526,34 @@ Supported OS conditions are `windows`, `linux`, `osx`/`macos`/`darwin`, `ios`, a
 running sighmake unless `--target-os` or `SIGHMAKE_TARGET_OS` selects another
 one (see [Cross-generating for another OS](#cross-generating-for-another-os)).
 `[windows]`-style tags on file lists use the same evaluation.
+
+#### Host conditions
+
+`windows`, `linux`, `posix`, ... describe the **target** OS (see `--target-os`).
+Prebuild/postbuild commands, however, run on the machine that builds. Use the
+`host_` conditions to choose commands for that machine; they ignore
+`--target-os`:
+
+| Condition | True when the machine running sighmake/the build is |
+| --- | --- |
+| `host_windows` | Windows |
+| `host_linux` | Linux |
+| `host_macos` (`host_osx`, `host_darwin`) | macOS |
+| `host_posix` (`host_unix`) | Linux or macOS |
+
+Their `!` negations are supported. Conditions do not combine with `&&`; nest the
+blocks instead:
+
+```ini
+if(android) {
+    if(host_windows) {
+        prebuild = python tools/gen_assets.py
+    }
+    if(host_posix) {
+        prebuild = python3 tools/gen_assets.py
+    }
+}
+```
 
 `Win32` and `x64` are Windows-host platform filters. `Android` is a target
 platform filter that executes on every host:
@@ -511,6 +609,38 @@ Canonical type names above are preferred. Accepted compatibility aliases include
 `sys` and `sys_lib` primarily target Visual Studio. Other generators can emit a
 file with a corresponding type, but they do not provide a Windows driver
 toolchain.
+
+### Platform filter
+
+By default every project is built for every platform in the solution matrix.
+Declare `platforms` in a project to restrict it:
+
+```ini
+[project:D3D12RHI]
+type = lib
+platforms = Windows
+
+[project:MetalRHI]
+type = lib
+platforms = macOS, iOS
+
+[project:GameplayTools]
+type = lib
+platforms = !Android
+```
+
+Entries are comma-separated and case-insensitive. They are platform names
+(`x64`, `Linux`, `Android`, ...) or groups: `Windows` (`Win32`, `x64`, `ARM`,
+`ARM64`), `x86` (`Win32`), `macOS` (`osx`, `darwin`), and `posix` (Linux, macOS,
+Android, iOS). A leading `!` excludes. Without positive entries every platform
+except the excluded ones is kept.
+
+After parsing, the project's configurations for all other platforms are removed,
+so the Makefile generator writes no makefile or `make` target for them, and the
+Visual Studio generator leaves them out of the solution configurations; a project
+left with no Visual Studio platform is not generated at all. `target_link_libraries`
+edges to a project that does not exist on a platform are ignored for that
+platform. The CMake generator does not use the filter.
 
 ### Source inputs
 
@@ -1209,10 +1339,41 @@ if(Android) {
 }
 ```
 
-Set `ANDROID_NDK_HOME` or `ANDROID_NDK_ROOT` when building. The generated files
-require NDK r19 or newer (clang toolchain, `llvm-ar`, `llvm-strip`) and GNU make
-4.0 or newer on `PATH` (Windows hosts need a make such as the one in MSYS2 or
-Git for Windows' toolchain, plus `rm`/`mkdir` from a POSIX shell).
+The generated files require NDK r19 or newer (clang toolchain, `llvm-ar`,
+`llvm-strip`) and GNU make 4.0 or newer. The recipes use `mkdir -p` and `rm`, so a
+POSIX shell must be reachable by make.
+
+#### Finding the NDK
+
+Each Android makefile looks for the NDK in this order and stops at the first hit:
+
+1. `ANDROID_NDK_HOME`
+2. `ANDROID_NDK_ROOT`
+3. `ANDROID_NDK`
+4. the highest-sorting `<ANDROID_HOME>/ndk/<version>`, then `ANDROID_SDK_ROOT`
+5. the NDK sighmake itself found when it generated the makefile (it also checks
+   Android Studio's default SDK location: `%LOCALAPPDATA%\Android\Sdk`,
+   `~/Library/Android/sdk`, `~/Android/Sdk`, and picks the highest version).
+
+If nothing is found the build stops with a message (`make clean` still works).
+`find_package(Vulkan)` and `find_package(OpenGL)` use the same lookup at
+generation time.
+
+#### Using the NDK's make
+
+The NDK ships GNU make for each host: `<ndk>/prebuilt/windows-x86_64/bin/make.exe`
+(`linux-x86_64`, `darwin-x86_64`). A Windows machine without its own make can use
+it directly:
+
+```text
+set ANDROID_HOME=C:\Users\me\AppData\Local\Android\Sdk
+sighmake --target-os android -g makefile app.buildscript
+"%ANDROID_HOME%\ndk\27.0.12077973\prebuilt\windows-x86_64\bin\make.exe" -C build Release.Android
+```
+
+`sighmake --build` does this automatically (next section). The recipes also need
+`sh`, `mkdir` and `rm`; Git for Windows' `usr\bin` provides them and
+`sighmake --build` adds it to the child's `PATH` when no `sh` is found.
 
 #### Generating from a Windows host
 
@@ -1236,6 +1397,19 @@ make -C build Release.Android ANDROID_ABI=x86_64 ANDROID_API=26
 sighmake --build . --target Release.Android
 ```
 
+#### Building Android from sighmake
+
+```text
+sighmake --target-os android -g makefile app.buildscript
+sighmake --build . --config Release --platform android --abi arm64-v8a --api 26 -j 8
+sighmake --build . --config Release --project Game        # Game.Release.Android
+```
+
+The cache of an Android-only solution builds Android without `--platform`. With
+mixed desktop and Android platforms `--platform android` selects the Android
+targets. `--abi` and `--api` set `ANDROID_ABI` and `ANDROID_API`. The make
+program is `SIGHMAKE_MAKE` if set, else `make` from `PATH`, else the NDK's make.
+
 Defaults and accepted overrides:
 
 | Variable | Default | Accepted values |
@@ -1244,7 +1418,14 @@ Defaults and accepted overrides:
 | `ANDROID_API` | `24` | An NDK API level available in the installed toolchain |
 
 Objects and outputs are scoped under
-`build/<Config>/android/$(ANDROID_ABI)/`. Android shared libraries receive a
+`build/<Config>/android/$(ANDROID_ABI)/` by default. Custom `outdir`/`intdir`
+values may contain `$(ANDROID_ABI)` (make expands it), for example
+`outdir = bin/android/$(ANDROID_ABI)/$(Configuration)`; a relative spelling is
+anchored to the buildscript's directory. The first recipe line of every
+archive rule creates the output directory, so a clean tree builds without
+pre-created directories. Receipts use the first of `python3`, `python`, `py`
+that runs (or `PYTHON=...`), because `python3` on Windows is often only a
+Store stub. Android shared libraries receive a
 `lib` prefix and `.so` suffix. Release executables/shared libraries use the
 NDK's `llvm-strip`. Host `make install` intentionally skips Android outputs.
 
@@ -1392,7 +1573,8 @@ the primary names shown here in hand-written buildscripts.
 | `windows_sdk` | Windows target platform version. |
 | `charset` | Common values are `MultiByte` and `Unicode`. |
 | `target_name`, `target_ext` | Output basename and extension. |
-| `outdir`, `intdir` | Output and intermediate directories. |
+| `outdir`, `intdir` | Output and intermediate directories. Makefile builds expand `$(Configuration)`, `$(Platform)` and `$(ProjectName)`; other `$(...)` references (for example `$(ANDROID_ABI)`) are left for make. |
+| `platforms` | Project platform filter, see [Platform filter](#platform-filter). |
 | `ignore_warn_duplicated_filename` | Suppress the duplicate-filename warning when true. |
 
 ### Common compiler settings

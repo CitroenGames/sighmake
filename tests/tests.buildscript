@@ -26,6 +26,7 @@ sources = {
     test_generator_factory.cpp
     test_cmake_generator.cpp
     test_updater.cpp
+    test_android_features.cpp
 }
 
 # Source files under test (exclude main.cpp to avoid duplicate main)

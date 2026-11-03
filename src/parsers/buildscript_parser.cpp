@@ -2,6 +2,7 @@
 #include "buildscript_parser.hpp"
 #include "common/toolset_registry.hpp"
 #include "common/target_os.hpp"
+#include "common/android_sdk.hpp"
 #include "common/string_utils.hpp"
 #include "common/config_type_utils.hpp"
 #include "common/defaults.hpp"
@@ -652,7 +653,8 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 // Apply to each platform
                 for (const auto& platform : solution.platforms) {
                     std::string derived_key = config_name + "|" + platform;
-                    std::string template_key = template_name + "|" + platform;
+                    std::string template_key = template_name.find('|') != std::string::npos
+                        ? template_name : template_name + "|" + platform;
 
                     // Fallback: if platform-specific template isn't explicitly defined, try any platform
                     if (!state.explicitly_defined_config_keys.count(template_key)) {
@@ -681,7 +683,10 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
 
                 // Find matching template key - need to extract platform from pending_config
                 auto [config, platform] = parse_config_key(pending_config);
-                std::string template_key = template_name + "|" + platform;
+                // A template written as Config|Platform (Template:Release|x64) names the exact cell
+                // to copy, which allows a different platform than the derived configuration.
+                std::string template_key = template_name.find('|') != std::string::npos
+                    ? template_name : template_name + "|" + platform;
 
                 // Fallback: if platform-specific template isn't explicitly defined, try any platform
                 if (!state.explicitly_defined_config_keys.count(template_key)) {
@@ -996,6 +1001,20 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
     // Phase 3: Propagate public_includes, public_libs, and public_defines from dependencies
     // This must happen after all projects are parsed and defaults are applied
     propagate_target_link_libraries(solution);
+
+    // Phase 4: Apply per-project platform filters (the project-level `platforms` key). Done last
+    // because earlier phases create a configuration for every cell of the solution matrix.
+    for (auto& project : solution.projects) {
+        if (project.platform_filter.empty()) continue;
+        for (auto it = project.configurations.begin(); it != project.configurations.end();) {
+            const std::string platform = parse_config_key(it->first).second;
+            if (project_supports_platform(project, platform)) {
+                ++it;
+            } else {
+                it = project.configurations.erase(it);
+            }
+        }
+    }
 
     return solution;
 }
@@ -1347,6 +1366,48 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
     parse_key_value(key, value, state);
 }
 
+// Expand a configuration selector that may contain `*` wildcards ("*|Android", "Release|*", "*|*",
+// "*") into concrete "Config|Platform" keys over the solution matrix declared so far. A literal
+// platform that is not part of the matrix yet (for example Android after other platforms were
+// discovered from explicit [config:...] sections) is added to it, so `*|Android` always yields
+// one key per configuration.
+static std::vector<std::string> expand_config_selector(const std::string& spec,
+                                                       const Solution& solution) {
+    std::string config_part = spec;
+    std::string platform_part = "*";
+    const size_t pipe = spec.find('|');
+    if (pipe != std::string::npos) {
+        config_part = spec.substr(0, pipe);
+        platform_part = spec.substr(pipe + 1);
+    }
+    config_part = vcxproj::trim(config_part);
+    platform_part = vcxproj::trim(platform_part);
+
+    std::vector<std::string> configs;
+    if (config_part == "*") {
+        configs = solution.configurations;
+        if (configs.empty()) configs = defaults::configurations();
+    } else {
+        configs.push_back(config_part);
+    }
+
+    std::vector<std::string> platforms;
+    if (platform_part == "*") {
+        platforms = solution.platforms;
+        if (platforms.empty()) platforms = defaults::platforms();
+    } else {
+        platforms.push_back(normalize_platform(platform_part));
+    }
+
+    std::vector<std::string> keys;
+    for (const auto& config : configs) {
+        for (const auto& platform : platforms) {
+            keys.push_back(config + "|" + platform);
+        }
+    }
+    return keys;
+}
+
 bool BuildscriptParser::parse_section(const std::string& line, ParseState& state) {
     // Extract content between [ and ], handling template suffix outside brackets
     // e.g., "[config:Release|x64] : Template:BankRelease" -> "config:Release|x64 : Template:BankRelease"
@@ -1357,6 +1418,8 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
         section += " " + after_bracket;
     }
     
+    state.current_config_targets.clear();
+
     if (section == "solution") {
         state.current_project = nullptr;
         state.current_file = nullptr;
@@ -1407,6 +1470,43 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
 
         state.current_config = config_spec;
         state.current_section = ParseState::SectionContext::Config;
+        state.current_config_targets.clear();
+
+        // Wildcard sections ([config:*|Android], [config:Release|*], [config:*]) expand over the
+        // solution matrix declared so far; every setting in the block applies to each cell, as if
+        // the section had been written once per cell.
+        if (config_spec.find('*') != std::string::npos) {
+            std::vector<std::string> keys = expand_config_selector(config_spec, *state.solution);
+            // Keep the matrix declared in [solution] when no explicit section has replaced it yet.
+            if (state.discovered_configs.empty()) {
+                state.discovered_configs.insert(state.solution->configurations.begin(),
+                                                state.solution->configurations.end());
+            }
+            if (state.discovered_platforms.empty()) {
+                for (const auto& declared : state.solution->platforms) {
+                    state.discovered_platforms.insert(normalize_platform(declared));
+                }
+            }
+            for (const auto& key : keys) {
+                auto [cfg_name, cfg_platform] = parse_config_key(key);
+                state.discovered_configs.insert(cfg_name);
+                state.discovered_platforms.insert(normalize_platform(cfg_platform));
+                state.explicitly_defined_config_keys.insert(key);
+                if (!template_name.empty()) {
+                    std::string resolved_template = template_name;
+                    const size_t star = resolved_template.find('*');
+                    if (star != std::string::npos) resolved_template.replace(star, 1, cfg_name);
+                    state.config_templates[key] = resolved_template;
+                    state.pending_template_applications.insert(key);
+                }
+            }
+            state.solution->configurations = std::vector<std::string>(
+                state.discovered_configs.begin(), state.discovered_configs.end());
+            state.solution->platforms = std::vector<std::string>(
+                state.discovered_platforms.begin(), state.discovered_platforms.end());
+            state.current_config_targets = std::move(keys);
+            return true;
+        }
 
         // Parse config|platform and track them for solution-level configuration generation
         size_t pipe_pos = state.current_config.find('|');
@@ -1531,6 +1631,9 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
                 config_keys_to_apply.push_back("Debug|" + platform);
                 config_keys_to_apply.push_back("Release|" + platform);
             }
+        } else if (config_key.find('*') != std::string::npos && state.solution) {
+            // Partial wildcard (e.g., [*|Android], [Release|*])
+            config_keys_to_apply = expand_config_selector(config_key, *state.solution);
         } else {
             // Full config|platform syntax (e.g., [Debug|Win32])
             config_keys_to_apply.push_back(config_key);
@@ -1645,8 +1748,14 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
     } else if (state.current_file != nullptr) {
         parse_file_setting(state.current_file->path, key, ALL_CONFIGS, resolved_value, state);
     } else if (!state.current_config.empty()) {
-        // We're in a [config:...] section
-        parse_config_setting(key, resolved_value, state.current_config, state);
+        // We're in a [config:...] section (a wildcard section applies to every expanded cell)
+        if (state.current_config_targets.empty()) {
+            parse_config_setting(key, resolved_value, state.current_config, state);
+        } else {
+            for (const auto& target : state.current_config_targets) {
+                parse_config_setting(key, resolved_value, target, state);
+            }
+        }
     } else {
         // Check for active platform filter from if(Win32)/if(x64) blocks
         std::string pf = state.get_platform_filter();
@@ -1723,6 +1832,7 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
     Project* saved_current_project = state.current_project;
     SourceFile* saved_current_file = state.current_file;
     std::string saved_current_config = state.current_config;
+    auto saved_current_targets = state.current_config_targets;
     auto saved_current_section = state.current_section;
 
     while (std::getline(stream, line)) {
@@ -1736,6 +1846,7 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
     state.current_project = saved_current_project;
     state.current_file = saved_current_file;
     state.current_config = saved_current_config;
+    state.current_config_targets = saved_current_targets;
     state.current_section = saved_current_section;
 }
 
@@ -1790,6 +1901,13 @@ bool BuildscriptParser::parse_project_basic_setting(const std::string& key, cons
         proj.name = value;
     } else if (key == "project_name") {
         proj.project_name = value;
+    } else if (key == "platforms" || key == "supported_platforms") {
+        // Per-project platform filter: configurations for other platforms are dropped after parsing.
+        proj.platform_filter.clear();
+        for (const auto& entry : split(value, ',')) {
+            const std::string t = trim(entry);
+            if (!t.empty()) proj.platform_filter.push_back(t);
+        }
     } else if (key == "uuid" || key == "guid") {
         proj.uuid = value;
     } else if (key == "root_namespace") {
@@ -3924,6 +4042,17 @@ BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const s
     // OS-level conditions: settings apply to ALL configurations
     bool is_unix = !is_windows;
 
+    // Host conditions describe the machine running the build (where prebuild/postbuild commands
+    // execute), regardless of --target-os. They are what command blocks should branch on.
+    const TargetOS host = host_os();
+    const bool host_is_windows = host == TargetOS::Windows;
+    const bool host_is_linux = host == TargetOS::Linux;
+    const bool host_is_osx = host == TargetOS::MacOS;
+    if (cond == "host_windows") return {host_is_windows, ""};
+    if (cond == "host_linux") return {host_is_linux, ""};
+    if (cond == "host_osx" || cond == "host_macos" || cond == "host_darwin") return {host_is_osx, ""};
+    if (cond == "host_posix" || cond == "host_unix") return {!host_is_windows, ""};
+
     if (cond == "windows") return {is_windows, ""};
     if (cond == "linux") return {is_linux, ""};
     if (cond == "osx" || cond == "macos" || cond == "darwin") return {is_osx, ""};
@@ -3940,6 +4069,10 @@ BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const s
     // Check for negation
     if (cond.size() > 1 && cond[0] == '!') {
          std::string sub = cond.substr(1);
+         if (sub == "host_windows") return {!host_is_windows, ""};
+         if (sub == "host_linux") return {!host_is_linux, ""};
+         if (sub == "host_osx" || sub == "host_macos" || sub == "host_darwin") return {!host_is_osx, ""};
+         if (sub == "host_posix" || sub == "host_unix") return {host_is_windows, ""};
          if (sub == "windows") return {!is_windows, ""};
          if (sub == "linux") return {!is_linux, ""};
          if (sub == "osx" || sub == "macos" || sub == "darwin") return {!is_osx, ""};
@@ -4392,6 +4525,24 @@ PackageFindResult BuildscriptParser::try_pkg_config(const std::string& package_n
 PackageFindResult BuildscriptParser::find_vulkan() {
     PackageFindResult result;
 
+    // Android: Vulkan comes from the NDK sysroot (headers plus libvulkan.so stubs), never from the
+    // host's Vulkan SDK. No include directory is added: clang already searches the sysroot, and
+    // an explicit -I of the sysroot include directory would reorder C++ standard library headers.
+    if (target_os() == TargetOS::Android) {
+        auto ndk = android_sdk::find_ndk();
+        if (!ndk) {
+            result.error_message = "Android NDK not found. Set ANDROID_NDK_HOME or ANDROID_HOME.";
+            return result;
+        }
+        if (!fs::exists(android_sdk::ndk_sysroot(*ndk) / "usr" / "include" / "vulkan" / "vulkan.h")) {
+            result.error_message = "vulkan/vulkan.h not found in the NDK sysroot (" + ndk->string() + ")";
+            return result;
+        }
+        result.found = true;
+        result.libraries = "vulkan";
+        return result;
+    }
+
 #if defined(_WIN32)
     // Windows: Check VULKAN_SDK environment variable
     const char* vulkan_sdk = std::getenv("VULKAN_SDK");
@@ -4444,6 +4595,22 @@ PackageFindResult BuildscriptParser::find_vulkan() {
 // Package finder: OpenGL
 PackageFindResult BuildscriptParser::find_opengl() {
     PackageFindResult result;
+
+    // Android: OpenGL ES and EGL come from the NDK sysroot (see find_vulkan).
+    if (target_os() == TargetOS::Android) {
+        auto ndk = android_sdk::find_ndk();
+        if (!ndk) {
+            result.error_message = "Android NDK not found. Set ANDROID_NDK_HOME or ANDROID_HOME.";
+            return result;
+        }
+        if (!fs::exists(android_sdk::ndk_sysroot(*ndk) / "usr" / "include" / "GLES3" / "gl3.h")) {
+            result.error_message = "GLES3/gl3.h not found in the NDK sysroot (" + ndk->string() + ")";
+            return result;
+        }
+        result.found = true;
+        result.libraries = "GLESv3;EGL";
+        return result;
+    }
 
 #if defined(_WIN32)
     // Windows: OpenGL is always available via Windows SDK

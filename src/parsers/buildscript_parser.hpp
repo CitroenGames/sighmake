@@ -25,6 +25,7 @@ private:
         Project* current_project = nullptr;
         SourceFile* current_file = nullptr;
         std::string current_config;  // Track current [config:...] section
+        std::vector<std::string> current_config_targets;  // Expanded cells of a wildcard [config:*|...] section
         std::string base_path;
         int line_number = 0;
         std::vector<std::string> included_files;  // Track included files to prevent circular includes
