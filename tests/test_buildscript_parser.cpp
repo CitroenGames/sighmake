@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "catch_amalgamated.hpp"
 #include "parsers/buildscript_parser.hpp"
+#include "common/target_os.hpp"
 
 using namespace vcxproj;
 namespace fs = std::filesystem;
@@ -2998,4 +2999,155 @@ defines = ${PREFIX}_${SUFFIX}_DEFINE
     auto it = proj.configurations.find("Debug|x64");
     REQUIRE(it != proj.configurations.end());
     CHECK(contains(it->second.cl_compile.preprocessor_definitions, "MY_APP_DEFINE"));
+}
+
+// ============================================================================
+// Target OS (--target-os / SIGHMAKE_TARGET_OS)
+// ============================================================================
+
+namespace {
+struct TargetOsScope {
+    explicit TargetOsScope(TargetOS os) { set_target_os(os); }
+    ~TargetOsScope() { set_target_os(std::nullopt); }
+};
+
+struct EnvScope {
+    EnvScope(const char* name, const char* value) : name_(name) {
+#ifdef _WIN32
+        _putenv_s(name, value);
+#else
+        setenv(name, value, 1);
+#endif
+    }
+    ~EnvScope() {
+#ifdef _WIN32
+        _putenv_s(name_, "");
+#else
+        unsetenv(name_);
+#endif
+    }
+    const char* name_;
+};
+
+const char* kTargetOsScript = R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Linux, Android
+
+[project:App]
+type = exe
+if(windows) {
+    defines = IS_WINDOWS
+}
+if(linux) {
+    defines = IS_LINUX
+}
+if(posix) {
+    defines = IS_POSIX
+}
+if(!windows) {
+    defines = NOT_WINDOWS
+}
+)";
+
+bool project_has_define(const std::string& script, const std::string& define) {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(script);
+    if (sol.projects.empty()) return false;
+    return contains(sol.projects[0].project_level_preprocessor_definitions, define);
+}
+}
+
+TEST_CASE("parse_target_os accepts known names case-insensitively", "[target_os]") {
+    CHECK(parse_target_os("Android") == TargetOS::Android);
+    CHECK(parse_target_os("windows") == TargetOS::Windows);
+    CHECK(parse_target_os("LINUX") == TargetOS::Linux);
+    CHECK(parse_target_os("macos") == TargetOS::MacOS);
+    CHECK(parse_target_os("osx") == TargetOS::MacOS);
+    CHECK(parse_target_os("ios") == TargetOS::IOS);
+    CHECK_FALSE(parse_target_os("plan9").has_value());
+}
+
+TEST_CASE("Default target OS matches the host", "[target_os]") {
+    set_target_os(std::nullopt);
+    CHECK(target_os() == host_os());
+#ifdef _WIN32
+    CHECK(project_has_define(kTargetOsScript, "IS_WINDOWS"));
+    CHECK_FALSE(project_has_define(kTargetOsScript, "IS_POSIX"));
+    CHECK_FALSE(project_has_define(kTargetOsScript, "NOT_WINDOWS"));
+#endif
+}
+
+TEST_CASE("Target OS android evaluates conditions for Android on any host", "[target_os][android]") {
+    TargetOsScope scope(TargetOS::Android);
+    CHECK_FALSE(project_has_define(kTargetOsScript, "IS_WINDOWS"));
+    CHECK_FALSE(project_has_define(kTargetOsScript, "IS_LINUX"));
+    CHECK(project_has_define(kTargetOsScript, "IS_POSIX"));
+    CHECK(project_has_define(kTargetOsScript, "NOT_WINDOWS"));
+}
+
+TEST_CASE("Target OS windows and linux select their own conditions", "[target_os]") {
+    {
+        TargetOsScope scope(TargetOS::Windows);
+        CHECK(project_has_define(kTargetOsScript, "IS_WINDOWS"));
+        CHECK_FALSE(project_has_define(kTargetOsScript, "IS_POSIX"));
+    }
+    {
+        TargetOsScope scope(TargetOS::Linux);
+        CHECK(project_has_define(kTargetOsScript, "IS_LINUX"));
+        CHECK(project_has_define(kTargetOsScript, "IS_POSIX"));
+        CHECK_FALSE(project_has_define(kTargetOsScript, "IS_WINDOWS"));
+    }
+}
+
+TEST_CASE("Target OS applies to bracket condition tags on file lists", "[target_os][android]") {
+    const char* script = R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Android
+
+[project:App]
+type = exe
+sources = {
+    common.cpp
+    win_only.cpp [windows]
+    posix_only.cpp [posix]
+}
+)";
+    auto source_names = [&](TargetOS os) {
+        TargetOsScope scope(os);
+        BuildscriptParser parser;
+        auto sol = parser.parse_string(script);
+        std::string all;
+        for (const auto& src : sol.projects[0].sources) all += src.path + ";";
+        return all;
+    };
+    const std::string android = source_names(TargetOS::Android);
+    CHECK(android.find("common.cpp") != std::string::npos);
+    CHECK(android.find("posix_only.cpp") != std::string::npos);
+    CHECK(android.find("win_only.cpp") == std::string::npos);
+    const std::string windows = source_names(TargetOS::Windows);
+    CHECK(windows.find("win_only.cpp") != std::string::npos);
+    CHECK(windows.find("posix_only.cpp") == std::string::npos);
+}
+
+TEST_CASE("SIGHMAKE_TARGET_OS selects the target and --target-os overrides it", "[target_os][android]") {
+    set_target_os(std::nullopt);
+    EnvScope env("SIGHMAKE_TARGET_OS", "android");
+    CHECK(target_os() == TargetOS::Android);
+    CHECK(project_has_define(kTargetOsScript, "IS_POSIX"));
+    CHECK_FALSE(project_has_define(kTargetOsScript, "IS_WINDOWS"));
+    {
+        TargetOsScope scope(TargetOS::Windows);
+        CHECK(target_os() == TargetOS::Windows);
+        CHECK(project_has_define(kTargetOsScript, "IS_WINDOWS"));
+    }
+}
+
+TEST_CASE("Invalid SIGHMAKE_TARGET_OS falls back to the host", "[target_os]") {
+    set_target_os(std::nullopt);
+    EnvScope env("SIGHMAKE_TARGET_OS", "plan9");
+    CHECK(target_os() == host_os());
 }

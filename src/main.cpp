@@ -14,6 +14,7 @@
 #include "common/build_runner.hpp"
 #include "common/updater.hpp"
 #include "common/string_utils.hpp"
+#include "common/target_os.hpp"
 #include "common/defaults.hpp"
 
 namespace fs = std::filesystem;
@@ -34,6 +35,9 @@ void print_usage(const char* program_name) {
     std::cout << "                             (vcxproj generator only; default: build)\n";
     std::cout << "  -D <NAME>=<VALUE>          Define a variable for ${NAME} substitution\n";
     std::cout << "  -t, --toolset <name>       Default toolset (msvc2022, msvc2019, etc)\n";
+    std::cout << "      --target-os <os>       OS that if(windows)/if(linux)/... conditions evaluate\n";
+    std::cout << "                             against: windows, linux, macos, ios, android\n";
+    std::cout << "                             (default: the machine running sighmake)\n";
     std::cout << "      --export-deps          Export dependency report as HTML\n\n";
     std::cout << "Build options:\n";
     std::cout << "  -b, --build <dir>          Build using previously generated project files\n";
@@ -71,6 +75,7 @@ void print_usage(const char* program_name) {
     std::cout << "Environment variables:\n";
     std::cout << "  SIGHMAKE_DEFAULT_TOOLSET   Default toolset when -t is not specified\n";
     std::cout << "  SIGHMAKE_UPDATE_MANIFEST_URL Override updater manifest URL\n";
+    std::cout << "  SIGHMAKE_TARGET_OS         Target OS for conditions when --target-os is not specified\n";
     std::cout << "  SIGHMAKE_DEBUG             Set to 1 for verbose [DEBUG] diagnostics\n";
 }
 
@@ -94,6 +99,11 @@ int main(int argc, char* argv[]) {
         auto resolved = registry.resolve(env_toolset);
         if (resolved) {
             registry.set_default(*resolved);
+        }
+    }
+    if (const char* env_target_os = std::getenv("SIGHMAKE_TARGET_OS")) {
+        if (*env_target_os && !vcxproj::parse_target_os(env_target_os)) {
+            std::cerr << "Warning: Ignoring unknown SIGHMAKE_TARGET_OS '" << env_target_os << "'\n";
         }
     }
     if (argc < 2) {
@@ -293,6 +303,18 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Error: -B requires an argument\n";
                 return 1;
             }
+        } else if (strcmp(argv[i], "--target-os") == 0) {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --target-os requires an argument\n";
+                return 1;
+            }
+            auto parsed = vcxproj::parse_target_os(argv[++i]);
+            if (!parsed) {
+                std::cerr << "Error: Unknown target OS '" << argv[i]
+                          << "' (expected windows, linux, macos, ios, or android)\n";
+                return 1;
+            }
+            vcxproj::set_target_os(parsed);
         } else if (strcmp(argv[i], "--export-deps") == 0) {
             export_deps = true;
         } else if (strcmp(argv[i], "-D") == 0) {

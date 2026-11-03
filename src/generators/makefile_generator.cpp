@@ -1209,13 +1209,13 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             out << " $(PCH_OUTPUT)";
         }
         out << ": | prebuild\n\n";
-        out << "$(TARGET): $(OBJS) " << project.name << "." << config_name;
+        out << "$(TARGET): $(OBJS)";
         if (!dep_archives.empty()) {
             out << " $(PROJECT_DEPS)";
         }
         out << " | prebuild\n";
     } else {
-        out << "$(TARGET): $(OBJS) " << project.name << "." << config_name;
+        out << "$(TARGET): $(OBJS)";
         if (!dep_archives.empty()) {
             out << " $(PROJECT_DEPS)";
         }
@@ -1248,7 +1248,15 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         // Create static library (Android uses the NDK's llvm-ar via $(AR))
         // ar replaces listed members but retains removed source objects unless recreated.
         out << "\trm -f $@\n";
-        out << "\t" << (android ? "$(AR)" : "ar") << " rcs $@ $(OBJS)\n";
+        if (android) {
+            // Long object lists overflow the Windows command-line limit when cross-compiling from a
+            // Windows host; pass them through a response file written by GNU make.
+            out << "\t$(file >$@.rsp,$(OBJS))\n";
+            out << "\t$(AR) rcs $@ @$@.rsp\n";
+            out << "\t@rm -f $@.rsp\n";
+        } else {
+            out << "\tar rcs $@ $(OBJS)\n";
+        }
     }
 
     // Post-build event

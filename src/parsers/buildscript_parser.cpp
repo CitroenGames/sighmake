@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "buildscript_parser.hpp"
 #include "common/toolset_registry.hpp"
+#include "common/target_os.hpp"
 #include "common/string_utils.hpp"
 #include "common/config_type_utils.hpp"
 #include "common/defaults.hpp"
@@ -3910,20 +3911,18 @@ BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const s
     // Convert to lowercase for case-insensitive matching
     std::string cond = to_lower(trim(condition));
 
-    bool is_windows = false;
-    bool is_linux = false;
-    bool is_osx = false;
-
-#if defined(_WIN32)
-    is_windows = true;
-#elif defined(__linux__)
-    is_linux = true;
-#elif defined(__APPLE__)
-    is_osx = true;
-#endif
+    // Conditions evaluate against the target OS (--target-os / SIGHMAKE_TARGET_OS), which defaults to
+    // the machine running sighmake. Android and iOS are POSIX targets that are not a desktop Linux
+    // or macOS, so unix/posix are true while windows/linux/osx are false for them.
+    const TargetOS os = target_os();
+    const bool is_windows = os == TargetOS::Windows;
+    const bool is_linux = os == TargetOS::Linux;
+    const bool is_osx = os == TargetOS::MacOS;
+    const bool is_ios = os == TargetOS::IOS;
+    const bool is_android = os == TargetOS::Android;
 
     // OS-level conditions: settings apply to ALL configurations
-    bool is_unix = is_linux || is_osx;
+    bool is_unix = !is_windows;
 
     if (cond == "windows") return {is_windows, ""};
     if (cond == "linux") return {is_linux, ""};
@@ -3936,6 +3935,7 @@ BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const s
     // Android is a cross-compile target, so the block executes on every host OS;
     // the platform filter restricts the settings to Android configurations.
     if (cond == "android") return {true, "Android"};
+    if (cond == "ios") return {is_ios, ""};
 
     // Check for negation
     if (cond.size() > 1 && cond[0] == '!') {
@@ -3944,6 +3944,8 @@ BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const s
          if (sub == "linux") return {!is_linux, ""};
          if (sub == "osx" || sub == "macos" || sub == "darwin") return {!is_osx, ""};
          if (sub == "unix" || sub == "posix") return {!is_unix, ""};
+         if (sub == "ios") return {!is_ios, ""};
+         if (sub == "android") return {!is_android, ""};
          if (sub == "win32") return {is_windows, "x64"};
          if (sub == "x64") return {is_windows, "Win32"};
     }

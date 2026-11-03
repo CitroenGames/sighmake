@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "catch_amalgamated.hpp"
 #include "parsers/buildscript_parser.hpp"
+#include "common/target_os.hpp"
 #include "generators/makefile_generator.hpp"
 #include "generators/vcxproj_generator.hpp"
 
@@ -462,7 +463,7 @@ target_link_libraries(
     REQUIRE(result.files.count("App.Release"));
     const std::string& app_makefile = result.files["App.Release"];
     CHECK(app_makefile.find("PROJECT_DEPS =") != std::string::npos);
-    CHECK(app_makefile.find("$(TARGET): $(OBJS) App.Release $(PROJECT_DEPS)") != std::string::npos);
+    CHECK(app_makefile.find("$(TARGET): $(OBJS) $(PROJECT_DEPS)") != std::string::npos);
 
 #ifndef _WIN32
     std::ofstream(result.temp_dir / "core.cpp") << "int core() { return 1; }\n";
@@ -914,7 +915,7 @@ postbuild = echo postbuild_step
         CHECK(result.content.find("prebuild") != std::string::npos);
         CHECK(result.content.find(".DEFAULT_GOAL := all") != std::string::npos);
         CHECK(result.content.find("$(OBJS): | prebuild") != std::string::npos);
-        CHECK(result.content.find("$(TARGET): $(OBJS) App.Release | prebuild") != std::string::npos);
+        CHECK(result.content.find("$(TARGET): $(OBJS) | prebuild") != std::string::npos);
         CHECK(result.content.find("$(TARGET): prebuild $(OBJS)") == std::string::npos);
 
         const auto default_goal = result.content.find(".DEFAULT_GOAL := all");
@@ -936,7 +937,7 @@ sources = main.cpp
 prebuild = echo prebuild_step
 )");
     REQUIRE(!result.content.empty());
-    CHECK(result.content.find("$(TARGET): $(OBJS) App.Release | prebuild") != std::string::npos);
+    CHECK(result.content.find("$(TARGET): $(OBJS) | prebuild") != std::string::npos);
     CHECK(result.content.find("$(TARGET): prebuild $(OBJS)") == std::string::npos);
 #ifdef __APPLE__
     CHECK(result.content.find("-o $@ $(OBJS) $(LDLIBS)") != std::string::npos);
@@ -1096,7 +1097,10 @@ sources = main.cpp
 )");
     REQUIRE(result.files.count("Core.Debug.Android"));
     const std::string& mk = result.files["Core.Debug.Android"];
-    CHECK(mk.find("$(AR) rcs $@ $(OBJS)") != std::string::npos);
+    // Objects go through a response file so long lists fit the Windows command-line limit.
+    CHECK(mk.find("$(file >$@.rsp,$(OBJS))") != std::string::npos);
+    CHECK(mk.find("$(AR) rcs $@ @$@.rsp") != std::string::npos);
+    CHECK(mk.find("$(AR) rcs $@ $(OBJS)") == std::string::npos);
     CHECK(mk.find("llvm-ar") != std::string::npos);
 }
 
@@ -1411,3 +1415,57 @@ target_link_libraries(PRIVATE RuntimeBase)
     CHECK_FALSE(fs::exists(receipt));
 }
 #endif
+
+// ============================================================================
+// Target OS (--target-os / SIGHMAKE_TARGET_OS)
+// ============================================================================
+
+namespace {
+struct MakefileTargetOsScope {
+    explicit MakefileTargetOsScope(TargetOS os) { set_target_os(os); }
+    ~MakefileTargetOsScope() { set_target_os(std::nullopt); }
+};
+}
+
+TEST_CASE("MakefileGenerator link rule has no self-referencing prerequisite", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = exe
+sources = main.cpp
+)");
+    REQUIRE(result.files.count("App.Release"));
+    const std::string& mk = result.files["App.Release"];
+    CHECK(mk.find("$(TARGET): $(OBJS)\n") != std::string::npos);
+    CHECK(mk.find("$(OBJS) App.Release") == std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator generates Android from conditions evaluated for the target OS", "[makefile_generator][android][target_os]") {
+    MakefileTargetOsScope scope(TargetOS::Android);
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = Android
+
+[project:Core]
+type = lib
+sources = main.cpp
+if(windows) {
+    defines = HOST_WINDOWS_ONLY
+}
+if(posix) {
+    defines = TARGET_POSIX
+}
+)");
+    REQUIRE(result.files.count("Core.Debug.Android"));
+    const std::string& mk = result.files["Core.Debug.Android"];
+    CHECK(mk.find("TARGET_POSIX") != std::string::npos);
+    CHECK(mk.find("HOST_WINDOWS_ONLY") == std::string::npos);
+    CHECK(mk.find("$(AR) rcs $@ @$@.rsp") != std::string::npos);
+    CHECK(mk.find("$(OBJS) Core.Debug") == std::string::npos);
+}

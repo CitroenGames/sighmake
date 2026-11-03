@@ -20,7 +20,8 @@ version control.
 - Per-config, per-platform, and per-file settings
 - Project dependencies with `PUBLIC`, `PRIVATE`, and `INTERFACE` visibility
 - Wildcard source matching and platform-specific file filters
-- Android cross-compilation with the NDK (`platforms = Android`)
+- Android cross-compilation with the NDK (`platforms = Android`), including generating from a Windows host with `--target-os android`
+- Cross-generation: `--target-os` evaluates `if(windows)`, `if(posix)` and `[windows]` tags for the target OS instead of the host
 - Visual Studio solution folders and project filters
 - `find_package()` support for common SDKs such as Vulkan, SDL, DirectX, and OpenGL
 - Visual Studio solution conversion back to buildscripts
@@ -159,6 +160,9 @@ Common generation options:
 -B, --build-dir <dir>      Visual Studio output subdirectory, default: build
 -D <NAME>=<VALUE>          Define a variable for ${NAME} substitution
 -t, --toolset <name>       Default toolset, for example msvc2022 or msvc2019
+    --target-os <os>       OS used by if(...) and [tag] conditions: windows, linux,
+                           macos, ios, android (default: the host OS;
+                           env SIGHMAKE_TARGET_OS)
     --export-deps          Export a dependency report as HTML
 ```
 
@@ -192,6 +196,15 @@ set SIGHMAKE_DEFAULT_TOOLSET=msvc2022
 
 ```bash
 export SIGHMAKE_DEFAULT_TOOLSET=msvc2022
+```
+
+Generate Android Makefiles from a Windows host (requires the Android NDK, see
+[usage.md](usage.md#android)):
+
+```batch
+set ANDROID_NDK_HOME=C:\Android\ndk\27.0.12077973
+sighmake --target-os android -g makefile app.buildscript
+make -C build Release.Android ANDROID_ABI=arm64-v8a
 ```
 
 ## Buildscript Example

@@ -101,6 +101,7 @@ an input file produces an "Unexpected argument" error.
 | `-B`, `--build-dir <dir>` | Set the Visual Studio output subdirectory. The default is `build`. Other generators ignore this option with a warning. |
 | `-D <NAME>=<VALUE>` | Define a value used by `${NAME}` substitutions while parsing a buildscript. Repeat for multiple variables. |
 | `-t`, `--toolset <name>` | Set the default MSVC toolset for projects that do not specify one. |
+| `--target-os <os>` | Evaluate `if(...)` blocks and `[tag]` conditions for this OS instead of the machine running sighmake: `windows`, `linux`, `macos` (`osx`, `darwin`), `ios`, or `android`. See [Cross-generating for another OS](#cross-generating-for-another-os). |
 | `--export-deps` | Write `<Solution>_dependencies.html` in the output root. |
 | `-l`, `--list` | List registered generators. |
 | `--list-toolsets` | List recognized `msvcYYYY` toolset aliases. |
@@ -175,6 +176,7 @@ even when its version matches the current executable.
 | Variable | Purpose |
 | --- | --- |
 | `SIGHMAKE_DEFAULT_TOOLSET` | Default MSVC toolset when neither `-t` nor the project sets one. |
+| `SIGHMAKE_TARGET_OS` | Target OS for conditions when `--target-os` is not given (same values). Unknown values are ignored with a warning. |
 | `SIGHMAKE_UPDATE_MANIFEST_URL` | Override the updater manifest URL. |
 | `SIGHMAKE_DEBUG=1` | Enable verbose diagnostic output. |
 
@@ -449,8 +451,11 @@ if(linux) {
 }
 ```
 
-Supported host conditions are `windows`, `linux`, `osx`/`macos`/`darwin`, and
-`unix`/`posix`. Their `!` negations are also supported.
+Supported OS conditions are `windows`, `linux`, `osx`/`macos`/`darwin`, `ios`, and
+`unix`/`posix`. Their `!` negations are also supported. The OS is the machine
+running sighmake unless `--target-os` or `SIGHMAKE_TARGET_OS` selects another
+one (see [Cross-generating for another OS](#cross-generating-for-another-os)).
+`[windows]`-style tags on file lists use the same evaluation.
 
 `Win32` and `x64` are Windows-host platform filters. `Android` is a target
 platform filter that executes on every host:
@@ -465,8 +470,9 @@ if(Android) {
 }
 ```
 
-`!Win32` selects `x64` on Windows and `!x64` selects `Win32`. `!Android` is not
-implemented. Conditions may be nested, and the opening brace may appear on the
+`!Win32` selects `x64` on Windows and `!x64` selects `Win32`. `!android` is true
+unless the target OS is `android`; it applies to every configuration, including
+Android ones, when generating for the host OS. Conditions may be nested, and the opening brace may appear on the
 same line or the next line.
 
 File entries may also have generation-time conditions:
@@ -1165,6 +1171,24 @@ and backend paths. Only the Visual Studio cache records project entries, which
 is why `--project` resolves project names only for MSBuild builds; the Make and
 CMake backends pass the value through as a raw target name.
 
+### Cross-generating for another OS
+
+By default conditions describe the machine running sighmake, so a Windows host
+cannot take the `if(posix)` or `[linux]` branches. `--target-os <os>` (or the
+`SIGHMAKE_TARGET_OS` environment variable; the option wins) evaluates them for
+another OS. Without either, behavior is unchanged.
+
+| Target | `windows` | `linux` | `osx` | `unix`/`posix` |
+| --- | --- | --- | --- | --- |
+| `windows` | true | false | false | false |
+| `linux` | false | true | false | true |
+| `macos` | false | false | true | true |
+| `ios`, `android` | false | false | false | true |
+
+Android and iOS are POSIX targets that are neither desktop Linux nor macOS, so
+put their settings in `if(Android)` blocks (platform filter) or `if(ios)`.
+Package discovery (`find_package`) still inspects the host machine.
+
 ## Android
 
 Add `Android` to the solution platforms and use the Makefile generator for
@@ -1186,7 +1210,25 @@ if(Android) {
 ```
 
 Set `ANDROID_NDK_HOME` or `ANDROID_NDK_ROOT` when building. The generated files
-require NDK r19 or newer.
+require NDK r19 or newer (clang toolchain, `llvm-ar`, `llvm-strip`) and GNU make
+4.0 or newer on `PATH` (Windows hosts need a make such as the one in MSYS2 or
+Git for Windows' toolchain, plus `rm`/`mkdir` from a POSIX shell).
+
+#### Generating from a Windows host
+
+Buildscripts that guard POSIX-only settings with `if(posix)` or `[linux]` tags
+need the target OS set to `android` so those blocks are evaluated for the device
+rather than for Windows:
+
+```text
+set ANDROID_NDK_HOME=C:\Android\ndk\27.0.12077973
+sighmake --target-os android -g makefile app.buildscript
+make -C build Release.Android ANDROID_ABI=arm64-v8a ANDROID_API=24
+```
+
+The same works with `set SIGHMAKE_TARGET_OS=android`. Static libraries pass
+their object list to `llvm-ar` through a response file, so very large libraries
+do not overflow the Windows command-line limit.
 
 ```text
 make -C build Debug.Android
