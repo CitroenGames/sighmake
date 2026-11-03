@@ -915,6 +915,19 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                 additional_opts = "/utf-8";
             }
         }
+        // Shared-PDB compilation (/Zi or /ZI) can hit C1041 when two cl.exe processes write
+        // the same compiler PDB (static libraries default /Fd to $(OutDir)$(TargetName).pdb,
+        // and the same project can be built by several MSBuild nodes or with /MP1). /FS routes
+        // PDB writes through mspdbsrv. Skip it if the user already passed /FS.
+        {
+            const std::string& dif = cfg.cl_compile.debug_information_format;
+            const bool shared_pdb = dif == "ProgramDatabase" || dif == "EditAndContinue";
+            if (shared_pdb && (additional_opts + " ").find("/FS ") == std::string::npos
+                           && (" " + additional_opts).find(" /FS") == std::string::npos) {
+                if (!additional_opts.empty()) additional_opts += " ";
+                additional_opts += "/FS";
+            }
+        }
         if (!additional_opts.empty())
             cl.append_child("AdditionalOptions").text() = additional_opts.c_str();
 

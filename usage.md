@@ -1483,6 +1483,11 @@ descriptive `version = 1.0` line in a project silently becomes the linker
 PDB, and only inside a `[config:...]` section does it mean the linker PDB; use
 `link_pdb_file` for the linker one at either level.
 
+For `ProgramDatabase` / `EditAndContinue` debug information the generated
+`ClCompile` `AdditionalOptions` include `/FS`, so concurrent `cl.exe` processes
+(parallel MSBuild nodes, `/MP1`, shared static-library PDBs) serialize PDB writes
+instead of failing with C1041. An explicit `/FS` in `cflags` is not duplicated.
+
 `entry_point`, `link_version`, `large_address_aware`, `disable_warnings`, and
 `lib_additional_dependencies` are project-level keys only; they are not
 recognized with a selector or inside a `[config:...]` section.

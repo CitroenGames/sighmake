@@ -2366,3 +2366,34 @@ runtime_dependencies = Optional|data/optional.json|optional.json|false
         CHECK(read_file(output).find("$(Configuration)/replay.json") != std::string::npos);
     }
 }
+
+TEST_CASE("VcxprojGenerator emits /FS for shared-PDB debug info", "[vcxproj_generator][pdb]") {
+    auto gen = generate_from_buildscript(
+        "[solution]\nname = Fs\nconfigurations = Debug, Release\nplatforms = x64\n"
+        "[project:Lib]\ntype = staticlib\n");
+    pugi::xml_document doc;
+    REQUIRE(doc.load_file(gen.vcxproj_path.string().c_str()));
+    size_t checked = 0;
+    for (auto group : doc.child("Project").children("ItemDefinitionGroup")) {
+        const auto cl = group.child("ClCompile");
+        const std::string dif = cl.child("DebugInformationFormat").text().get();
+        if (dif == "ProgramDatabase" || dif == "EditAndContinue") {
+            CHECK(std::string(cl.child("AdditionalOptions").text().get()).find("/FS") != std::string::npos);
+            ++checked;
+        }
+    }
+    CHECK(checked >= 1);
+}
+
+TEST_CASE("VcxprojGenerator does not duplicate user /FS", "[vcxproj_generator][pdb]") {
+    auto gen = generate_from_buildscript(
+        "[solution]\nname = Fs2\nconfigurations = Release\nplatforms = x64\n"
+        "[project:Lib]\ntype = staticlib\ncflags = /FS /W3\n");
+    pugi::xml_document doc;
+    REQUIRE(doc.load_file(gen.vcxproj_path.string().c_str()));
+    const std::string opts = doc.select_node("//ClCompile/AdditionalOptions").node().text().get();
+    size_t count = 0;
+    for (size_t p = opts.find("/FS"); p != std::string::npos; p = opts.find("/FS", p + 1)) ++count;
+    CHECK(count == 1);
+    CHECK(opts.find("/W3") != std::string::npos);
+}
