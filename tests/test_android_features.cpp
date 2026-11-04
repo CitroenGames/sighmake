@@ -1106,6 +1106,7 @@ if(Android) {
 }
 
 TEST_CASE("A repeated dependency widens its platform scope", "[android][scope]") {
+    AndroidOsScope windows_target(TargetOS::Windows);  // if(x64) only executes for a Windows target
     BuildscriptParser parser;
     auto sol = parser.parse_string(R"(
 [solution]
