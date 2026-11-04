@@ -1374,6 +1374,8 @@ bool CMakeGenerator::generate_root_cmakelists(const Solution& solution, const st
 // ============================================================================
 
 bool CMakeGenerator::generate(Solution& solution, const std::string& output_dir) {
+    // The CMake generator does not describe Android: declarations scoped to it do not exist here.
+    prune_platform_scoped_declarations(solution, [](const std::string& platform) { return !is_android_platform(platform); });
     for (const auto& project : solution.projects) {
         if (detect_project_language(project) == "C#") {
             std::cerr << "Error: C# projects require the vcxproj generator.\n";

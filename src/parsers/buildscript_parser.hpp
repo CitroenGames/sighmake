@@ -18,6 +18,10 @@ public:
     // Parse from string content
     Solution parse_string(const std::string& content, const std::string& base_path = ".");
     
+public:
+    // Helper to resolve a path relative to base_path and return absolute path
+    static std::string resolve_path(const std::string& path, const std::string& base_path);
+
 private:
     // Current parsing state
     struct ParseState {
@@ -144,8 +148,17 @@ private:
             }
             return "";
         }
+
+        // The platform scope of the innermost platform-conditional block as a list (empty outside one).
+        std::vector<std::string> get_platform_scope() const {
+            const std::string filter = get_platform_filter();
+            if (filter.empty()) return {};
+            return {filter};
+        }
     };
     
+    void add_scoped_source(const std::string& path, const std::vector<std::string>& scope, ParseState& state);
+
     // Parse a single line
     void parse_line(const std::string& line, ParseState& state);
     
@@ -240,9 +253,6 @@ private:
     // Extended helper that also returns the condition string (for override tracking)
     // Returns tuple of {clean_path, condition_string, should_include}
     std::tuple<std::string, std::string, bool> parse_filename_with_condition_extended(const std::string& entry);
-
-    // Helper to resolve a path relative to base_path and return absolute path
-    static std::string resolve_path(const std::string& path, const std::string& base_path);
 
     // Variables provided via set_variables() before parsing
     std::map<std::string, std::string> initial_variables_;

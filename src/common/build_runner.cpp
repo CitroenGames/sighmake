@@ -477,7 +477,11 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
 
     // Parallel build
     if (options.parallel > 0) {
-        cmd += " -j " + std::to_string(options.parallel);
+        cmd += " -j " + std::to_string(options.parallel) + " SIGHMAKE_JOBS=" + std::to_string(options.parallel);
+    }
+
+    if (options.aab) {
+        cmd += " ANDROID_AAB=1";
     }
 
     std::cout << "Building: " << cache.solution_name << " [" << config << "]" << std::endl;
@@ -592,6 +596,21 @@ int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,
     return std::system(cmd.c_str());
 }
 
+std::string missing_cache_message(const std::string& directory, const std::filesystem::path& cwd) {
+    std::error_code ec;
+    const fs::path searched = fs::absolute(directory, ec);
+    std::string message = "Error: No sighmake cache found in " + (ec ? directory : searched.lexically_normal().string()) + "\n";
+    message += "  Run sighmake to generate project files first.\n";
+    message += "  The cache is written to the directory sighmake was run from (the output root), not to the\n"
+               "  'build' subdirectory that holds the generated project files.\n";
+    std::error_code cwd_ec;
+    if (fs::exists(cwd / BuildCache::CACHE_FILENAME, cwd_ec) &&
+        fs::weakly_canonical(searched, ec) != fs::weakly_canonical(cwd, cwd_ec)) {
+        message += "  Found a cache in the current directory: try 'sighmake --build .'\n";
+    }
+    return message;
+}
+
 int BuildRunner::run(const BuildOptions& options) {
     // Verify directory exists
     if (!fs::exists(options.directory)) {
@@ -607,8 +626,7 @@ int BuildRunner::run(const BuildOptions& options) {
     // Read cache
     auto cache = BuildCache::read(options.directory);
     if (!cache) {
-        std::cerr << "Error: No sighmake cache found in " << options.directory << "\n";
-        std::cerr << "  Run sighmake to generate project files first.\n";
+        std::cerr << missing_cache_message(options.directory, std::filesystem::current_path());
         return 1;
     }
 

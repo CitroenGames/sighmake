@@ -1,6 +1,7 @@
 #pragma once
 
 #include "build_cache.hpp"
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
@@ -18,6 +19,7 @@ struct BuildOptions {
     bool build_project_references = true; // false with --no-project-references
     int parallel = 0;               // --parallel <N> (optional, 0 = default)
     std::string abi;                // --abi <abi> (optional, Android makefile builds: ANDROID_ABI)
+    bool aab = false;               // --aab (Android makefile builds: also build the .aab, ANDROID_AAB=1)
     std::string api;                // --api <level> (optional, Android makefile builds: ANDROID_API)
 };
 
@@ -41,6 +43,10 @@ std::string resolve_make_build_target(
     const BuildCache& cache,
     const BuildOptions& options,
     const std::string& config);
+
+// Message printed when --build finds no cache in `directory`. Names the directory that was searched and,
+// when the cache is in `cwd` instead, hints at `--build .`.
+std::string missing_cache_message(const std::string& directory, const std::filesystem::path& cwd);
 
 class BuildRunner {
 public:

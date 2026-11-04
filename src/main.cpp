@@ -46,6 +46,7 @@ void print_usage(const char* program_name) {
     std::cout << "                             with Makefiles, Android selects the Android build\n";
     std::cout << "      --abi <abi>            Android ABI for Makefile builds (default: arm64-v8a)\n";
     std::cout << "      --api <level>          Android API level for Makefile builds (default: 24)\n";
+    std::cout << "      --aab                  Android apk projects: also build the .aab app bundle\n";
     std::cout << "      --target <tgt>         Build specific target\n";
     std::cout << "      --project <name|file>  Build a generated project instead of the whole graph\n";
     std::cout << "      --no-project-references Do not build referenced projects with --project\n";
@@ -218,6 +219,8 @@ int main(int argc, char* argv[]) {
                 options.abi = argv[++i];
             } else if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
                 options.api = argv[++i];
+            } else if (strcmp(argv[i], "--aab") == 0) {
+                options.aab = true;
             } else if (strcmp(argv[i], "--target") == 0 && i + 1 < argc) {
                 options.target = argv[++i];
             } else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) {

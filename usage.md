@@ -124,7 +124,8 @@ the current working directory, not beside the input file; there is no separate
 output-directory option.
 
 `-D` is two arguments: the option and `NAME=VALUE`. Undefined `${NAME}`
-references are replaced with an empty string. Values discovered later by
+references are replaced with an empty string; `${NAME:-default}` supplies an
+explicit fallback (see [Variables](#variables)). Values discovered later by
 `find_package()` replace a command-line variable with the same name.
 
 ### Build options
@@ -136,6 +137,7 @@ references are replaced with an empty string. Values discovered later by
 | `--platform <name>` | Select a generated Visual Studio platform such as `x64` or `Win32`; `x86` is an alias for `Win32`. With a Makefile cache, `Android` selects the Android build (the `<Config>.Android` targets). |
 | `--abi <abi>` | Makefile builds for Android: set `ANDROID_ABI` (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`). |
 | `--api <level>` | Makefile builds for Android: set `ANDROID_API`. |
+| `--aab` | Makefile builds for Android: also build the `.aab` app bundle of `apk` projects (`ANDROID_AAB=1`), see [Android packages](#android-packages-apk). |
 | `--target <name>` | Pass a target to the active backend. |
 | `--project <name-or-file>` | Build one generated project instead of the complete solution/graph. |
 | `--no-project-references`, `--no-deps` | With an MSBuild project build, set `BuildProjectReferences=false`. |
@@ -308,6 +310,21 @@ libdirs = ${SDK_ROOT}/lib
 
 Variables come from `-D` and `find_package()`. Buildscripts do not currently
 provide a general variable-assignment statement.
+
+An undefined variable expands to an empty string. `${NAME:-default}` gives the
+substitution an explicit fallback that is used when `NAME` is undefined or empty,
+so data owned by a game (an orientation, a store label, an extra permission) can
+fill a generated manifest while the buildscript still works without it:
+
+```ini
+android_label = ${APP_TITLE:-My Game}
+android_activity_attrs = android:screenOrientation="${ORIENTATION:-landscape}"
+android_permissions = INTERNET, ${EXTRA_PERMISSION:-VIBRATE}
+```
+
+```text
+sighmake -g makefile --target-os android game.buildscript -D ORIENTATION=portrait -D APP_TITLE="Chess Night"
+```
 
 ## Configurations and platforms
 
@@ -584,9 +601,54 @@ sources = {
 }
 ```
 
-These conditions select files using the host running sighmake; they are not a
-general per-target source filter. Use separate generation runs or explicit
-per-file exclusion settings when one run must describe several target OSes.
+These conditions select files using the host running sighmake. The Android tags
+are different, they scope a file to a platform instead of evaluating the host:
+`[android]` keeps a file for the Android configurations only and `[!android]` for
+every platform but Android. A file scoped away from a platform does not appear in
+that platform's build (and not in the Visual Studio project when no Windows
+platform keeps it):
+
+```ini
+sources = {
+    src/common.cpp
+    src/android_main.cpp [android]
+    src/desktop_main.cpp [!android]
+}
+```
+
+For other per-target splits use separate generation runs or explicit per-file
+exclusion settings.
+
+#### Platform-scoped declarations
+
+A platform block (`if(Android) { ... }`, `if(x64) { ... }`) scopes more than
+configuration settings:
+
+| Inside `if(Android) { ... }` | Effect |
+| --- | --- |
+| `target_link_libraries(...)`, `dependencies`, `depends`, `project_references` | The edge exists for Android configurations only. The other platforms neither link the project, nor receive its `public_*` settings, nor order the build after it. The Visual Studio, CMake and `--export-deps` outputs omit the edge, so a desktop project file is byte-identical to one whose Android-only blocks were never written. |
+| `sources`, `src`, `files` | The files are compiled for Android only (same as an `[android]` tag per file). |
+| `type = dll` | Sets the project type for that platform's cells only; other platforms keep the type declared outside the block. |
+| `libs`, `libdirs`, `defines`, `includes`, `outdir`, ... | Configuration settings of the Android cells (as before). |
+
+```ini
+[project:Game]
+type = exe
+sources = src/*.cpp
+target_link_libraries(
+    Engine PUBLIC
+)
+if(Android) {
+    type = dll                    # libgame.so loaded by the NativeActivity
+    sources = src/android/*.cpp
+    target_link_libraries(
+        SDL3 PUBLIC               # an Android-only external_cmake project
+    )
+}
+```
+
+Declaring the same dependency in several blocks widens its scope to the union of
+the platforms; declaring it outside any block makes it unconditional.
 
 ## Projects and files
 
@@ -655,6 +717,15 @@ target_link_libraries(
 | `cmake_outputs` | Comma-separated files the build produces, relative to the cmake build directory. Each is copied (only when it changed) into the project's `outdir`. |
 | `cmake_generator` | The `cmake -G` generator. Default: Ninja when `ninja` is installed, else `Unix Makefiles` (with the running make as `CMAKE_MAKE_PROGRAM`). `make CMAKE_GENERATOR=...` overrides it. |
 | `cmake_build_type` | `CMAKE_BUILD_TYPE` for every configuration. Default: the configuration name (`Debug`, `Release`, ...). |
+| `cmake_build` | `false` skips the `cmake --build` step: the tree is fetched and configured only (header-only trees, or configure-time generated headers). Default `true`. |
+
+Header-only trees are supported: leave out `cmake_outputs` (nothing is copied or
+checked), expose the headers with `public_includes`/`public_defines` and list the project in
+`target_link_libraries` of the projects that use it.
+
+The make job limit reaches cmake: `cmake --build ... --parallel N` uses the `N` of
+`sighmake --build ... -j N`, of a plain `make -jN`, or of `make SIGHMAKE_JOBS=N`
+(a bare `--parallel` without any limit).
 
 Every configuration (and every Android ABI) configures into its own build directory,
 `<intdir>` of the project (default `build/<Config>/android/$(ANDROID_ABI)/obj/<Project>`),
@@ -712,8 +783,9 @@ target_link_libraries(
 | `android_manifest` | Use your own AndroidManifest.xml instead of the generated one. |
 | `android_res`, `android_assets` | Resource directory; asset directories merged into `assets/`. |
 | `android_java`, `android_jars` | Java source directories (compiled with `javac`, dexed with `d8`) and extra jars. |
-| `android_native_libs` | Extra prebuilt `.so` files (may contain `$(ANDROID_ABI)`). |
-| `android_permissions`, `android_features` | `uses-permission` names (`android.permission.` optional); `uses-feature` entries (`name`, `name:false`, `glEsVersion=0x00030000`). |
+| `android_native_libs` | Extra prebuilt `.so` files. The path may contain `$(ANDROID_ABI)` and `$(Configuration)` / `$(Platform)`, so Debug and Release share one spelling (`prebuilt/$(Configuration)/$(ANDROID_ABI)/libfoo.so`). Tag an entry `[optional]` to skip it, with a notice, when the file does not exist. |
+| `android_aab` | `true` also builds `<target_name>.aab` (Android App Bundle) next to the `.apk`, see below. Default `false`; `--aab` / `ANDROID_AAB=1` enable it for one build. |
+| `android_permissions`, `android_features` | `uses-permission` names (`android.permission.` optional); `uses-feature` entries: `name`, `name:false`, `glEsVersion=0x00030000`, and `name key=value ...` for features with more attributes, for example `android.hardware.vulkan.version version=0x00401000` or `android.hardware.vulkan.level level=1 required=false`. |
 | `android_cpp_shared` | Bundle `libc++_shared.so`: `auto` (when a library references it), `true`, `false`. |
 | `android_activity_attrs`, `android_application_attrs` | Raw extra attributes. |
 
@@ -724,8 +796,23 @@ use `~/.android/debug.keystore`, created with `keytool` when missing. `ANDROID_S
 overrides this. The result is verified with `apksigner verify` and `zipalign -c`.
 
 Several ABIs: `sighmake --build ... --platform Android --abi arm64-v8a,x86_64` builds each ABI and packages
-all of them into one APK (make variables `ANDROID_APK_ABIS`, `SIGHMAKE_SKIP_PACKAGING`). `.aab` bundles
-are not generated yet.
+all of them into one APK (make variables `ANDROID_APK_ABIS`, `SIGHMAKE_SKIP_PACKAGING`). The package path
+is well defined: with one ABI it is `<outdir>/<target_name>.apk` (`$(ANDROID_ABI)` in `outdir` expands to that
+ABI), with several ABIs it is a single combined package at `<outdir>/<target_name>.apk` where
+`$(ANDROID_ABI)` in `outdir` is replaced by `universal` (`bin/android/$(ANDROID_ABI)` becomes
+`bin/android/universal`). An `outdir` without `$(ANDROID_ABI)` is used unchanged. The same rule applies to the `.aab`.
+
+**Android App Bundle (`.aab`).** With `android_aab = true` (or `sighmake --build ... --aab`, or
+`make ANDROID_AAB=1`, or `make aab`) the package project also writes `<target_name>.aab`. It runs
+`aapt2 link --proto-format` on the manifest and resources, lays the base module out as a bundle module
+(`manifest/AndroidManifest.xml`, `resources.pb`, `res/`, `dex/`, `lib/<abi>/`, `assets/`), builds it with
+`bundletool build-bundle` (native libraries stored uncompressed) and signs it with `jarsigner`
+(SHA256withRSA): Release uses `ANDROID_KEYSTORE`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and the
+optional `ANDROID_KEY_PASSWORD`; other configurations use the debug keystore (same `ANDROID_SIGN` override as
+the APK). `jarsigner` comes from `JAVA_HOME`. bundletool is not part of the Android SDK: set `BUNDLETOOL` to
+`bundletool-all-<version>.jar` (or to a bundletool launcher), or put `bundletool`, `bundletool.jar` or
+`bundletool-all.jar` on `PATH`. When none is found the bundle step stops with a message saying so; the
+APK is built first and is not affected. Download it from <https://github.com/google/bundletool/releases>.
 
 ### Platform filter
 
@@ -1055,7 +1142,13 @@ libdirs = third_party/lib
 ldflags[Release|x64] = /INCREMENTAL:NO
 ```
 
-Bare library names are backend-translated where possible. Raw `cflags` and
+Bare library names are backend-translated where possible. A `libs` or `link_libs`
+entry that names a file by path (it contains a slash or backslash, for example
+`deps/lib/libfoo.a`) is relative to the declaring buildscript, exactly like
+`libdirs` and `outdir`, in project level and in `[config:...]` sections alike; the
+Makefile generator writes it relative to the makefile. Plain names (`log`), linker
+flags (`-framework Metal`) and entries that contain a macro (`$(NDK)/libfoo.a`)
+are left as written. Raw `cflags` and
 `ldflags` are passed through; keep them inside host/config-specific settings when
 one buildscript feeds different toolchains.
 
@@ -1881,12 +1974,17 @@ then regenerate.
 ### `sighmake --build` cannot find a cache
 
 Run generation first and pass the directory containing `.sighmake_cache`, not
-the nested `build/` directory:
+the nested `build/` directory. The cache is written to the directory you ran
+sighmake from, so `sighmake --build build` fails even though the project files are
+in `build/`:
 
 ```text
 sighmake app.buildscript
 sighmake --build .
 ```
+
+The error names the absolute directory it searched and, when the current
+directory holds a cache, suggests `sighmake --build .`.
 
 ### A setting has no effect at all
 
@@ -1976,7 +2074,15 @@ are supported. `outdir` and `intdir` paths are relative to the declaring buildsc
 the SDK appends the target framework to output paths, unless
 `append_target_framework_to_output_path = false`. Default intermediate paths
 are unique to each project. SDK source globbing is disabled, so only the listed
-source files compile. Source-directory `Directory.Build.props` files are not
+source files compile; because the generated project lists the files found by the
+`sources` globs when sighmake ran, **re-run sighmake after adding or removing a
+`.cs` file** (sighmake prints a reminder every time it writes a C# project).
+Per-configuration settings (defines such as `FERRITE_AOT`, `outdir`, `intdir`)
+are conditioned on `'$(Configuration)|$(Platform)'`; the generated project
+therefore defaults `Platform` to the project's platform (`x64` when present)
+before the SDK props are imported, so plain `dotnet build` applies them and
+`-p:Platform=x64` is not needed. An explicit `-p:Platform=` still wins.
+Source-directory `Directory.Build.props` files are not
 automatically imported when the generated projects reside elsewhere; express the
 needed settings in the buildscript.
 

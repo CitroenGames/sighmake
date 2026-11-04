@@ -104,7 +104,23 @@ static bool parens_balanced(const std::string& str) {
 // record the dependencies on `project`. Tokens may be whitespace- or
 // comma-separated; PUBLIC/PRIVATE/INTERFACE set the visibility of the
 // following dependencies and WHOLE_ARCHIVE applies to the next one.
-static void apply_target_link_libraries(const std::string& call_text, Project& project) {
+// Merge the platform scope of a repeated declaration: an unscoped declaration applies everywhere,
+// two scoped ones apply to the union of their platforms.
+static void merge_dependency_scope(ProjectDependency& dep, const std::vector<std::string>& scope) {
+    if (dep.platforms.empty()) return;
+    if (scope.empty()) {
+        dep.platforms.clear();
+        return;
+    }
+    for (const auto& platform : scope) {
+        if (std::find(dep.platforms.begin(), dep.platforms.end(), platform) == dep.platforms.end()) {
+            dep.platforms.push_back(platform);
+        }
+    }
+}
+
+static void apply_target_link_libraries(const std::string& call_text, Project& project,
+                                        const std::vector<std::string>& scope = {}) {
     size_t start_paren = call_text.find('(');
     size_t end_paren = call_text.rfind(')');
     if (start_paren == std::string::npos || end_paren == std::string::npos || end_paren <= start_paren) {
@@ -143,6 +159,7 @@ static void apply_target_link_libraries(const std::string& call_text, Project& p
         } else {
             // It's a dependency name - add with current visibility
             ProjectDependency dep(trimmed_token, current_visibility, next_is_whole_archive);
+            dep.platforms = scope;
             next_is_whole_archive = false;  // Reset after consuming
 
             // Check for duplicates (last one wins)
@@ -155,12 +172,68 @@ static void apply_target_link_libraries(const std::string& call_text, Project& p
             if (it == project.project_references.end()) {
                 project.project_references.push_back(dep);
             } else {
-                it->visibility = current_visibility;  // Update visibility
-                it->whole_archive = dep.whole_archive;  // Update whole_archive
+                if (scope.empty() || !it->platforms.empty()) {
+                    it->visibility = current_visibility;  // Update visibility
+                    it->whole_archive = dep.whole_archive;  // Update whole_archive
+                }
+                merge_dependency_scope(*it, scope);
                 it->link_library_dependencies = true;   // An earlier build-order-only entry now links
             }
         }
     }
+}
+
+// Platform scope of a source file tag: `[android]` keeps the file for Android cells only, `[!android]`
+// for every platform but Android. Other tags are host-OS conditions evaluated while parsing.
+static std::vector<std::string> source_tag_scope(const std::string& condition) {
+    const std::string tag = to_lower(trim(condition));
+    if (tag == "android") return {"Android"};
+    if (tag == "!android") return {"!Android"};
+    return {};
+}
+
+// Library entries that name a file by path (`../prebuilt/libfoo.a`, `libs\foo.lib`) are relative to the
+// buildscript, like outdir and libdirs. Names (`m`, `foo.lib`), linker flags (`-framework Metal`) and
+// entries holding macros (`$(Foo)/bar.a`) are left alone. `;`-separated lists are handled per entry.
+static std::vector<std::string> split_on(const std::string& text, char delimiter) {
+    std::vector<std::string> parts;
+    std::string current;
+    for (char c : text) {
+        if (c == delimiter) {
+            parts.push_back(current);
+            current.clear();
+        } else {
+            current += c;
+        }
+    }
+    parts.push_back(current);
+    return parts;
+}
+
+static std::string rebase_library_entry(const std::string& raw, const std::string& base_path) {
+    std::string result;
+    for (const auto& part : split_on(raw, ';')) {
+        std::string entry = trim(part);
+        if (entry.empty()) continue;
+        const bool is_path = entry[0] != '-' && (entry.find('/') != std::string::npos || entry.find('\\') != std::string::npos);
+        if (is_path && entry.find("$(") == std::string::npos && entry.find("%(") == std::string::npos) {
+            entry = BuildscriptParser::resolve_path(entry, base_path);
+        }
+        if (!result.empty()) result += ';';
+        result += entry;
+    }
+    return result;
+}
+
+static std::string rebase_library_entries(const std::string& value, const std::string& base_path) {
+    std::string result;
+    for (const auto& part : split_on(value, ',')) {
+        const std::string entry = rebase_library_entry(part, base_path);
+        if (entry.empty()) continue;
+        if (!result.empty()) result += ',';
+        result += entry;
+    }
+    return result;
 }
 
 std::string preprocess_multiline(const std::string& content) {
@@ -1055,7 +1128,8 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
         state.target_link_libraries_accumulator += " " + trimmed;
         if (parens_balanced(state.target_link_libraries_accumulator)) {
             // Function call complete, parse it
-            apply_target_link_libraries(state.target_link_libraries_accumulator, *state.current_project);
+            apply_target_link_libraries(state.target_link_libraries_accumulator, *state.current_project,
+                                        state.get_platform_scope());
             state.target_link_libraries_accumulator.clear();
             state.in_target_link_libraries = false;
         }
@@ -1341,7 +1415,7 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
 
         if (parens_balanced(trimmed)) {
             // Single-line function call (all parens matched)
-            apply_target_link_libraries(trimmed, *state.current_project);
+            apply_target_link_libraries(trimmed, *state.current_project, state.get_platform_scope());
         } else {
             // Multi-line function call, start accumulating
             state.in_target_link_libraries = true;
@@ -1932,6 +2006,10 @@ bool BuildscriptParser::parse_project_basic_setting(const std::string& key, cons
         proj.external_cmake.generator = value;
     } else if (key == "cmake_build_type") {
         proj.external_cmake.build_type = value;
+    } else if (key == "cmake_build") {
+        // false: configure (and fetch) only, for header-only trees or generated-header projects
+        const std::string v = to_lower(trim(value));
+        proj.external_cmake.build = !(v == "false" || v == "no" || v == "0" || v == "off");
     } else if (key == "cmake_options" || key == "cmake_targets" || key == "cmake_outputs") {
         auto& list = key == "cmake_options" ? proj.external_cmake.options
                    : key == "cmake_targets" ? proj.external_cmake.targets
@@ -2045,6 +2123,31 @@ bool BuildscriptParser::parse_project_basic_setting(const std::string& key, cons
     return true;
 }
 
+// Add a source file to the project with a platform scope. A file listed several times keeps the
+// widest scope: unscoped wins, two scopes are merged.
+void BuildscriptParser::add_scoped_source(const std::string& path, const std::vector<std::string>& scope,
+                                          ParseState& state) {
+    if (!state.current_project) return;
+    const std::string abs_path = resolve_path(path, state.base_path);
+    const bool existed = std::any_of(state.current_project->sources.begin(), state.current_project->sources.end(),
+                                     [&](const SourceFile& src) { return src.path == abs_path; });
+    SourceFile* file = find_or_create_source(path, state);
+    if (!file) return;
+    if (!existed) {
+        file->platforms = scope;
+    } else if (!file->platforms.empty()) {
+        if (scope.empty()) {
+            file->platforms.clear();
+        } else {
+            for (const auto& entry : scope) {
+                if (std::find(file->platforms.begin(), file->platforms.end(), entry) == file->platforms.end()) {
+                    file->platforms.push_back(entry);
+                }
+            }
+        }
+    }
+}
+
 bool BuildscriptParser::parse_project_source_setting(const std::string& key, const std::string& value,
                                                       ParseState& state) {
     Project& proj = *state.current_project;
@@ -2052,6 +2155,11 @@ bool BuildscriptParser::parse_project_source_setting(const std::string& key, con
     // Source files - with platform-conditional override support
     if (key == "sources" || key == "src" || key == "files") {
         auto entries = split(value, ',');
+        // `[android]` / `[!android]` tags and `if(Android) { sources = ... }` blocks scope a file to a platform.
+        const auto scope_for = [&](const std::string& condition) {
+            auto tag = source_tag_scope(condition);
+            return tag.empty() ? state.get_platform_scope() : tag;
+        };
 
         // Pass 1: Collect explicit files with conditions (non-wildcards with conditions)
         // Map: absolute_path -> condition_matched (true if should include)
@@ -2068,7 +2176,7 @@ bool BuildscriptParser::parse_project_source_setting(const std::string& key, con
 
                 // If condition matches, add the file now
                 if (include) {
-                    find_or_create_source(path, state);
+                    add_scoped_source(path, scope_for(condition), state);
                 }
             }
         }
@@ -2085,7 +2193,7 @@ bool BuildscriptParser::parse_project_source_setting(const std::string& key, con
 
             // Non-wildcard without condition: add unconditionally
             if (!is_wildcard_path(path)) {
-                find_or_create_source(path, state);
+                add_scoped_source(path, scope_for(condition), state);
                 continue;
             }
 
@@ -2105,7 +2213,7 @@ bool BuildscriptParser::parse_project_source_setting(const std::string& key, con
                 }
 
                 // No override, add from wildcard
-                find_or_create_source(expanded_path, state);
+                add_scoped_source(expanded_path, scope_for(condition), state);
             }
         }
     } else if (key == "headers" || key == "includes_files") {
@@ -2836,7 +2944,7 @@ bool BuildscriptParser::parse_project_linker_setting(const std::string& key, con
             proj.libraries.push_back(lf);
         }
     } else if (key == "link_libs" || key == "additional_dependencies") {
-        auto libs = split(value, ',');
+        auto libs = split(rebase_library_entries(value, state.base_path), ',');
         for (const auto& config_key : state.solution->get_config_keys()) {
             auto& deps = proj.configurations[config_key].link.additional_dependencies;
             deps.insert(deps.end(), libs.begin(), libs.end());
@@ -3236,10 +3344,12 @@ bool BuildscriptParser::parse_project_misc_setting(const std::string& key, const
                 [&](const ProjectDependency& d) { return d.name == trimmed_name; });
             if (existing != proj.project_references.end()) {
                 existing->link_library_dependencies = existing->link_library_dependencies || link_dependency;
+                merge_dependency_scope(*existing, state.get_platform_scope());
                 continue;
             }
-            proj.project_references.push_back(
-                ProjectDependency(trimmed_name, DependencyVisibility::PUBLIC, false, link_dependency));
+            ProjectDependency added(trimmed_name, DependencyVisibility::PUBLIC, false, link_dependency);
+            added.platforms = state.get_platform_scope();
+            proj.project_references.push_back(added);
         }
     } else {
         return false;
@@ -3359,7 +3469,7 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
             cfg.cl_compile.preprocessor_definitions.end(), defs.begin(), defs.end());
     } else if (key == "libs" || key == "additional_dependencies") {
         // Config-level libs should go into AdditionalDependencies
-        auto libs = split(value, ',');
+        auto libs = split(rebase_library_entries(value, state.base_path), ',');
         // For static libraries, use lib.additional_dependencies (Librarian)
         // For applications/DLLs, use link.additional_dependencies (Linker)
         if (cfg.config_type == "StaticLibrary") {
@@ -4102,7 +4212,24 @@ bool BuildscriptParser::parse_android_apk_setting(const std::string& key, const 
     else if (key == "android_assets") add_list(apk.assets, true);
     else if (key == "android_java") add_list(apk.java, true);
     else if (key == "android_jars") add_list(apk.jars, true);
-    else if (key == "android_native_libs") add_list(apk.native_libs, true);
+    else if (key == "android_native_libs") {
+        // `path/libfoo.so [optional]` marks a library that is skipped when the file does not exist.
+        for (const auto& entry : split(value, ',')) {
+            std::string t = trim(entry);
+            bool optional = false;
+            const size_t tag = t.rfind('[');
+            if (tag != std::string::npos && t.back() == ']' && to_lower(trim(t.substr(tag + 1, t.size() - tag - 2))) == "optional") {
+                optional = true;
+                t = trim(t.substr(0, tag));
+            }
+            if (t.empty()) continue;
+            (optional ? apk.optional_native_libs : apk.native_libs).push_back(resolve_path(t, state.base_path));
+        }
+    }
+    else if (key == "android_aab") {
+        const std::string v = to_lower(trim(value));
+        apk.aab = v == "true" || v == "yes" || v == "1" || v == "on";
+    }
     else if (key == "android_permissions") add_list(apk.permissions, false);
     else if (key == "android_features") add_list(apk.features, false);
     else return false;
@@ -4213,13 +4340,19 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
             }
         }
 
+        // Edges declared inside a platform-conditional block (`if(Android) { ... }`) only apply to
+        // that platform, so the usage requirements are propagated once per platform.
+        for (const auto& platform : solution.platforms) {
+        std::vector<std::string> platform_config_keys;
+        for (const auto& config : solution.configurations) platform_config_keys.push_back(config + "|" + platform);
+
         // Work queue: (dependency_name, effective_visibility)
         std::vector<std::pair<std::string, DependencyVisibility>> to_process;
         std::set<std::string> processed;
 
         // Initialize with direct dependencies
         for (const auto& dep : proj.project_references) {
-            if (!dep.link_library_dependencies) {
+            if (!dep.link_library_dependencies || !dependency_applies_to_platform(dep, platform)) {
                 continue;
             }
             to_process.push_back({dep.name, dep.visibility});
@@ -4255,7 +4388,7 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
                  visibility == DependencyVisibility::INTERFACE);
 
             // Propagate to all configurations
-            for (const auto& config_key : solution.get_config_keys()) {
+            for (const auto& config_key : platform_config_keys) {
                 // Add locally if visibility permits (PUBLIC or PRIVATE)
                 if (should_add_locally) {
                     // Propagate public_includes (all-config)
@@ -4342,7 +4475,7 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
 
             // Handle transitive dependencies (dependencies of dependencies)
             for (const auto& trans_dep : dep->project_references) {
-                if (!trans_dep.link_library_dependencies) {
+                if (!trans_dep.link_library_dependencies || !dependency_applies_to_platform(trans_dep, platform)) {
                     continue;
                 }
                 if (!processed.count(trans_dep.name)) {
@@ -4372,6 +4505,7 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
                 }
             }
         }
+        }
     }
 }
 
@@ -4386,10 +4520,23 @@ std::string BuildscriptParser::resolve_variables(const std::string& str, const P
 
         std::string var_name = result.substr(pos + 2, end - (pos + 2));
 
+        // ${NAME:-default} supplies an explicit fallback for a variable that is undefined or empty
+        // (for example a value a game's data normally fills in through -D NAME=VALUE).
+        std::string fallback;
+        bool has_fallback = false;
+        if (const size_t sep = var_name.find(":-"); sep != std::string::npos) {
+            fallback = var_name.substr(sep + 2);
+            var_name.resize(sep);
+            has_fallback = true;
+        }
+
         std::string var_value;
         auto it = state.variables.find(var_name);
         if (it != state.variables.end()) {
             var_value = it->second;
+        }
+        if (has_fallback && var_value.empty()) {
+            var_value = fallback;
         }
         // If variable not found, replace with empty string
 

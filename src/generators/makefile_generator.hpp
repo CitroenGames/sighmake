@@ -49,7 +49,7 @@ private:
                                    const std::filesystem::path& makefile_dir, bool c_flags);
     std::string get_linker_flags(const Configuration& config, const std::filesystem::path& makefile_dir,
                                  bool android);
-    std::string get_linker_libs(const Configuration& config);
+    std::string get_linker_libs(const Configuration& config, const std::filesystem::path& makefile_dir = {});
 
     // Helper to convert Windows paths to Unix paths
     std::string to_unix_path(const std::string& path);

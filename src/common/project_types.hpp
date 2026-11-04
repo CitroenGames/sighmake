@@ -69,6 +69,9 @@ struct SourceFile {
     std::map<std::string, std::string> custom_message;  // Per-config
     std::map<std::string, std::string> custom_outputs;  // Per-config
     std::map<std::string, std::string> custom_inputs;   // Per-config
+    // Platforms the file belongs to, from a platform-conditional block (`if(Android) { sources = ... }`)
+    // or an `[android]` tag. Empty means every platform. A `!` prefix excludes a platform.
+    std::vector<std::string> platforms;
 };
 
 // Library file reference
@@ -285,6 +288,9 @@ struct ProjectDependency {
     DependencyVisibility visibility = DependencyVisibility::PUBLIC;  // Default for backward compat
     bool whole_archive = false;                // Link with whole-archive semantics (include all .obj files)
     bool link_library_dependencies = true;     // false for build-order-only references
+    // Platforms the edge applies to, set by a platform-conditional block such as `if(Android) { ... }`.
+    // Empty means every platform. Entries are platform names (see platform_filter_entry_matches()).
+    std::vector<std::string> platforms;
 
     // Constructors for convenience
     ProjectDependency() = default;
@@ -323,6 +329,7 @@ struct ExternalCMakeSettings {
     std::vector<std::string> outputs;       // Produced files, relative to the cmake build directory
     std::string generator;                  // cmake -G value (empty = Ninja when available, else Unix Makefiles)
     std::string build_type;                 // CMAKE_BUILD_TYPE override (empty = the configuration name)
+    bool build = true;                      // false: fetch and configure only (header-only trees)
     bool empty() const { return source_dir.empty() && git_url.empty(); }
 };
 
@@ -347,7 +354,9 @@ struct AndroidApkSettings {
     std::vector<std::string> assets;        // Directories merged into assets/ (stored uncompressed)
     std::vector<std::string> java;          // Directories scanned for .java sources
     std::vector<std::string> jars;          // Extra jars compiled against and dexed
-    std::vector<std::string> native_libs;   // Extra prebuilt .so files (may contain $(ANDROID_ABI))
+    std::vector<std::string> native_libs;   // Extra prebuilt .so files (may contain $(ANDROID_ABI) and $(Configuration))
+    std::vector<std::string> optional_native_libs; // Same, but a missing file is skipped (entry tagged [optional])
+    bool aab = false;                       // Also produce an Android App Bundle (.aab) next to the .apk
     std::vector<std::string> permissions;   // uses-permission names (android.permission. prefix optional)
     std::vector<std::string> features;      // uses-feature entries: name, name:false, glEsVersion=0x00030000
 };
@@ -622,13 +631,13 @@ inline bool platform_filter_entry_matches(const std::string& entry, const std::s
     return false;
 }
 
-// Can the project be built for `platform`? Entries prefixed with `!` exclude platforms; when at
-// least one positive entry exists a platform must match one of them. An empty filter allows all.
-inline bool project_supports_platform(const Project& project, const std::string& platform) {
-    if (project.platform_filter.empty()) return true;
+// Does a platform list select `platform`? Entries prefixed with `!` exclude platforms; when at
+// least one positive entry exists a platform must match one of them. An empty list allows all.
+inline bool platform_list_selects(const std::vector<std::string>& list, const std::string& platform) {
+    if (list.empty()) return true;
     bool has_positive = false;
     bool matched = false;
-    for (const auto& raw : project.platform_filter) {
+    for (const auto& raw : list) {
         const std::string entry = trim(raw);
         if (entry.empty()) continue;
         if (entry[0] == '!') {
@@ -639,6 +648,58 @@ inline bool project_supports_platform(const Project& project, const std::string&
         }
     }
     return !has_positive || matched;
+}
+
+// Can the project be built for `platform`? See platform_list_selects().
+inline bool project_supports_platform(const Project& project, const std::string& platform) {
+    return platform_list_selects(project.platform_filter, platform);
+}
+
+// Does a dependency edge apply to `platform`? Edges declared outside a platform-conditional block
+// (empty `platforms`) apply everywhere.
+inline bool dependency_applies_to_platform(const ProjectDependency& dep, const std::string& platform) {
+    return platform_list_selects(dep.platforms, platform);
+}
+
+// Does a source file belong to `platform`? Files outside a platform scope belong to every platform.
+inline bool source_applies_to_platform(const SourceFile& file, const std::string& platform) {
+    return platform_list_selects(file.platforms, platform);
+}
+
+// Does the edge apply to the platform of a "Config|Platform" key?
+inline bool dependency_applies_to_config(const ProjectDependency& dep, const std::string& config_key) {
+    return dependency_applies_to_platform(dep, parse_config_key(config_key).second);
+}
+
+// Remove dependency edges and sources whose platform scope (`if(Android) { ... }`, `[android]`) selects
+// none of the project's platforms that `keep_platform` accepts. Generators that only describe a subset
+// of the platforms (Visual Studio: no Unix platforms, CMake: no Android) call this so the output is
+// the same as if the scoped declarations had never been written.
+inline void prune_platform_scoped_declarations(Solution& solution, bool (*keep_platform)(const std::string&)) {
+    for (auto& project : solution.projects) {
+        std::vector<std::string> platforms;
+        for (const auto& [key, cfg] : project.configurations) {
+            (void)cfg;
+            const std::string platform = parse_config_key(key).second;
+            if (keep_platform(platform)) platforms.push_back(platform);
+        }
+        if (platforms.empty()) continue;
+        const auto selected = [&](const std::vector<std::string>& scope) {
+            if (scope.empty()) return true;
+            for (const auto& platform : platforms) {
+                if (platform_list_selects(scope, platform)) return true;
+            }
+            return false;
+        };
+        auto& refs = project.project_references;
+        refs.erase(std::remove_if(refs.begin(), refs.end(),
+                                  [&](const ProjectDependency& dep) { return !selected(dep.platforms); }),
+                   refs.end());
+        auto& sources = project.sources;
+        sources.erase(std::remove_if(sources.begin(), sources.end(),
+                                     [&](const SourceFile& file) { return !selected(file.platforms); }),
+                      sources.end());
+    }
 }
 
 // A project with a platform filter and no remaining configuration for a Visual Studio platform is

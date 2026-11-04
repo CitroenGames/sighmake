@@ -5,6 +5,8 @@
 #include "common/android_sdk.hpp"
 #include "common/build_runner.hpp"
 #include "common/target_os.hpp"
+#include "generators/vcxproj_generator.hpp"
+#include "pugixml.hpp"
 
 using namespace vcxproj;
 namespace fs = std::filesystem;
@@ -834,7 +836,7 @@ cmake_outputs = lib/libnative.so, native.json
     CHECK(mk.find("EXT_OPTIONS = -DNATIVE_TESTS=OFF -DNATIVE_SHARED=ON") != std::string::npos);
     CHECK(mk.find("EXT_TARGETS = --target native") != std::string::npos);
     CHECK(mk.find("$(CMAKE) -S \"$(EXT_SOURCE)\" -B \"$(EXT_BUILD_DIR)\"") != std::string::npos);
-    CHECK(mk.find("$(CMAKE) --build \"$(EXT_BUILD_DIR)\" --config $(EXT_CONFIG) $(EXT_TARGETS) --parallel") != std::string::npos);
+    CHECK(mk.find("$(CMAKE) --build \"$(EXT_BUILD_DIR)\" --config $(EXT_CONFIG) $(EXT_TARGETS) $(EXT_PARALLEL)") != std::string::npos);
     CHECK(mk.find("$(EXT_BUILD_DIR)/lib/libnative.so") != std::string::npos);
     CHECK(mk.find("$(EXT_OUT_DIR)/libnative.so") != std::string::npos);
     CHECK(mk.find("$(EXT_OUT_DIR)/native.json") != std::string::npos);
@@ -1034,4 +1036,562 @@ TEST_CASE("split_abi_list accepts commas, spaces and semicolons", "[android][bui
     CHECK(split_abi_list("arm64-v8a,x86_64") == std::vector<std::string>{"arm64-v8a", "x86_64"});
     CHECK(split_abi_list("arm64-v8a x86_64;x86") == std::vector<std::string>{"arm64-v8a", "x86_64", "x86"});
     CHECK(split_abi_list("").empty());
+}
+
+// ============================================================================
+// Platform-scoped dependencies, sources and types
+// ============================================================================
+
+TEST_CASE("target_link_libraries and dependencies inside if(Android) are scoped to Android", "[android][scope]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64, Android
+
+[project:Sdl]
+type = external_cmake
+cmake_source = vendor/sdl
+cmake_outputs = libSDL3.so
+public_includes = vendor/sdl/include
+
+[project:Common]
+type = lib
+sources = common.cpp
+
+[project:Headers]
+type = lib
+sources = headers.cpp
+
+[project:Launcher]
+type = exe
+sources = main.cpp
+target_link_libraries(
+    Common PUBLIC
+)
+if(Android) {
+    target_link_libraries(
+        Sdl PUBLIC
+    )
+    dependencies = Headers
+}
+)", "/work/proj");
+    const Project* launcher = nullptr;
+    for (const auto& p : sol.projects) if (p.name == "Launcher") launcher = &p;
+    REQUIRE(launcher);
+    REQUIRE(launcher->project_references.size() == 3);
+    for (const auto& dep : launcher->project_references) {
+        if (dep.name == "Common") {
+            CHECK(dep.platforms.empty());
+            CHECK(dependency_applies_to_platform(dep, "x64"));
+        } else {
+            CHECK(dep.platforms == std::vector<std::string>{"Android"});
+            CHECK(dependency_applies_to_platform(dep, "Android"));
+            CHECK_FALSE(dependency_applies_to_platform(dep, "x64"));
+            CHECK_FALSE(dependency_applies_to_platform(dep, "Linux"));
+        }
+    }
+    // Usage requirements of the Android-only project only reach the Android cell.
+    const auto& android_includes = launcher->configurations.at("Release|Android").cl_compile.additional_include_directories;
+    const auto& desktop_includes = launcher->configurations.at("Release|x64").cl_compile.additional_include_directories;
+    auto contains_sdl = [](const std::vector<std::string>& dirs) {
+        return std::any_of(dirs.begin(), dirs.end(), [](std::string d) {
+            std::replace(d.begin(), d.end(), '\\', '/');
+            return d.find("vendor/sdl/include") != std::string::npos;
+        });
+    };
+    CHECK(contains_sdl(android_includes));
+    CHECK_FALSE(contains_sdl(desktop_includes));
+}
+
+TEST_CASE("A repeated dependency widens its platform scope", "[android][scope]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64, Android
+
+[project:Lib]
+type = lib
+[project:App]
+type = exe
+if(Android) {
+    dependencies = Lib
+}
+if(x64) {
+    dependencies = Lib
+}
+)", "/work/proj");
+    const auto& refs = sol.projects[1].project_references;
+    REQUIRE(refs.size() == 1);
+    CHECK(refs[0].platforms.size() == 2);
+    CHECK(dependency_applies_to_platform(refs[0], "x64"));
+    CHECK(dependency_applies_to_platform(refs[0], "Android"));
+}
+
+TEST_CASE("Platform-scoped declarations are pruned for generators without that platform", "[android][scope]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64, Android
+
+[project:Sdl]
+type = lib
+[project:Launcher]
+type = exe
+sources = {
+    main.cpp
+    droid.cpp [android]
+    desktop.cpp [!android]
+}
+if(Android) {
+    dependencies = Sdl
+    sources = block.cpp
+}
+)", "/work/proj");
+    REQUIRE(sol.projects[1].sources.size() == 4);
+    prune_platform_scoped_declarations(sol, [](const std::string& platform) { return !is_unix_platform(platform); });
+    CHECK(sol.projects[1].project_references.empty());
+    std::vector<std::string> names;
+    for (const auto& src : sol.projects[1].sources) names.push_back(fs::path(src.path).filename().string());
+    std::sort(names.begin(), names.end());
+    CHECK(names == std::vector<std::string>{"desktop.cpp", "main.cpp"});
+}
+
+TEST_CASE("Sources scoped by [android] tags and if(Android) blocks reach Android makefiles", "[android][scope][makefile_generator]") {
+    AndroidOsScope scope;
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android, Linux
+
+[project:Native]
+type = dll
+sources = {
+    main.cpp
+    droid.cpp [android]
+    desktop.cpp [!android]
+}
+if(Android) {
+    sources = block.cpp
+}
+)");
+    // --target-os android: [!android] files are not part of the build at all
+    const std::string& mk = g.files["Native.Release.Android"];
+    REQUIRE_FALSE(mk.empty());
+    CHECK(mk.find("main.cpp") != std::string::npos);
+    CHECK(mk.find("droid.cpp") != std::string::npos);
+    CHECK(mk.find("block.cpp") != std::string::npos);
+    CHECK(mk.find("desktop.cpp") == std::string::npos);
+}
+
+TEST_CASE("Sources scoped to Android are skipped in the host makefile of a mixed solution", "[android][scope][makefile_generator]") {
+    TempDir dir("sighmake_test_scoped_sources");
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android, Linux
+
+[project:Native]
+type = dll
+sources = {
+    main.cpp
+    droid.cpp [android]
+}
+)", dir.path.string());
+    MakefileGenerator generator;
+    generator.generate(sol, dir.path.string());
+    const std::string host = slurp(dir.path / "build" / "Native.Release");
+    const std::string android = slurp(dir.path / "build" / "Native.Release.Android");
+    REQUIRE_FALSE(host.empty());
+    REQUIRE_FALSE(android.empty());
+    CHECK(host.find("main.cpp") != std::string::npos);
+    CHECK(host.find("droid.cpp") == std::string::npos);
+    CHECK(android.find("droid.cpp") != std::string::npos);
+}
+
+TEST_CASE("type can be set per platform inside if(Android)", "[android][scope]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = x64, Android
+
+[project:Game]
+type = exe
+sources = main.cpp
+if(Android) {
+    type = dll
+}
+)", "/work/proj");
+    const auto& project = sol.projects[0];
+    CHECK(project.configurations.at("Release|x64").config_type == "Application");
+    CHECK(project.configurations.at("Debug|x64").config_type == "Application");
+    CHECK(project.configurations.at("Release|Android").config_type == "DynamicLibrary");
+    CHECK(project.configurations.at("Debug|Android").config_type == "DynamicLibrary");
+}
+
+#ifdef _WIN32
+TEST_CASE("Android-only blocks do not change the desktop Visual Studio output", "[android][scope][vcxproj_generator]") {
+    auto generate_launcher = [](const std::string& android_block, const std::string& name) {
+        TempDir dir(name);
+        std::ofstream(dir.path / "main.cpp") << "int main() { return 0; }";
+        const std::string script = std::string(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = x64, Android
+
+[project:Sdl]
+type = external_cmake
+cmake_source = vendor/sdl
+cmake_outputs = libSDL3.so
+
+[project:Headers]
+type = lib
+platforms = Android
+sources = main.cpp
+
+[project:Launcher]
+type = exe
+sources = main.cpp
+)") + android_block;
+        BuildscriptParser parser;
+        Solution sol = parser.parse_string(script, dir.path.string());
+        VcxprojGenerator generator;
+        generator.generate(sol, dir.path.string());
+        std::string text;
+        for (const auto& entry : fs::recursive_directory_iterator(dir.path)) {
+            if (entry.path().filename() == "Launcher_.vcxproj" || entry.path().filename() == "Launcher.vcxproj")
+                text = slurp(entry.path());
+        }
+        // The generated files embed the temporary directory name in some paths; normalise it.
+        for (size_t pos = 0; (pos = text.find(name, pos)) != std::string::npos;) text.replace(pos, name.size(), "DIR");
+        return text;
+    };
+    const std::string with_block = generate_launcher(R"(
+if(Android) {
+    target_link_libraries(
+        Sdl PUBLIC
+    )
+    dependencies = Headers
+    sources = droid.cpp
+}
+)", "sighmake_scope_a");
+    const std::string without_block = generate_launcher("", "sighmake_scope_b");
+    REQUIRE_FALSE(with_block.empty());
+    CHECK(with_block == without_block);
+    CHECK(with_block.find("Headers") == std::string::npos);
+    CHECK(with_block.find("Sdl") == std::string::npos);
+    CHECK(with_block.find("droid.cpp") == std::string::npos);
+}
+#endif
+
+// ============================================================================
+// external_cmake: job limit and header-only projects
+// ============================================================================
+
+TEST_CASE("external_cmake honors the make job limit", "[android][external_cmake][makefile_generator]") {
+    AndroidOsScope scope;
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:Native]
+type = external_cmake
+cmake_source = vendor/native
+cmake_outputs = libnative.so
+)");
+    const std::string& mk = g.files["Native.Release.Android"];
+    CHECK(mk.find("EXT_JOBS = $(strip $(or $(SIGHMAKE_JOBS),") != std::string::npos);
+    CHECK(mk.find("$(filter -j%,$(MAKEFLAGS))") != std::string::npos);
+    CHECK(mk.find("EXT_PARALLEL = --parallel $(shell n='$(EXT_JOBS)'; expr") != std::string::npos);
+    CHECK(mk.find("$(EXT_TARGETS) $(EXT_PARALLEL)") != std::string::npos);
+}
+
+TEST_CASE("external_cmake without outputs is a header-only project", "[android][external_cmake][makefile_generator]") {
+    AndroidOsScope scope;
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:Headers]
+type = external_cmake
+cmake_source = vendor/headers
+cmake_build = false
+public_includes = vendor/headers/include
+
+[project:Game]
+type = dll
+sources = main.cpp
+target_link_libraries(
+    Headers PUBLIC
+)
+)");
+    const std::string& headers = g.files["Headers.Release.Android"];
+    REQUIRE_FALSE(headers.empty());
+    CHECK(headers.find("$(CMAKE) -S") != std::string::npos);
+    CHECK(headers.find("--build") == std::string::npos);
+    CHECK(headers.find("test -f") == std::string::npos);
+    const std::string& game = g.files["Game.Release.Android"];
+    CHECK(game.find("vendor/headers/include") != std::string::npos);
+    CHECK(g.master.find("Game.Release.Android: Headers.Release.Android") != std::string::npos);
+}
+
+// ============================================================================
+// apk: features, variables, optional libraries, ABI path, bundle
+// ============================================================================
+
+TEST_CASE("android_features carry extra attributes", "[android][apk][makefile_generator]") {
+    AndroidOsScope scope;
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:GameApk]
+type = apk
+android_package = com.example.game
+android_features = glEsVersion=0x00030000, android.hardware.vulkan.version version=0x00401000, android.hardware.touchscreen:false, android.hardware.vulkan.level level=1 required=false
+)");
+    const std::string manifest = g.files["GameApk.Release.AndroidManifest.xml"];
+    CHECK(manifest.find("<uses-feature android:glEsVersion=\"0x00030000\" android:required=\"true\" />") != std::string::npos);
+    CHECK(manifest.find("<uses-feature android:name=\"android.hardware.vulkan.version\" android:version=\"0x00401000\" android:required=\"true\" />") != std::string::npos);
+    CHECK(manifest.find("<uses-feature android:name=\"android.hardware.touchscreen\" android:required=\"false\" />") != std::string::npos);
+    CHECK(manifest.find("<uses-feature android:name=\"android.hardware.vulkan.level\" android:level=\"1\" android:required=\"false\" />") != std::string::npos);
+}
+
+TEST_CASE("${NAME:-default} fills a buildscript value from -D data with an explicit fallback", "[android][apk][variables]") {
+    auto settings_for = [](bool define) {
+        BuildscriptParser parser;
+        if (define) parser.set_variables({{"ORIENTATION", "portrait"}, {"EXTRA_PERMISSION", "CAMERA"}});
+        auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:GameApk]
+type = apk
+android_package = com.example.game
+android_label = ${TITLE:-My Game}
+android_activity_attrs = android:screenOrientation="${ORIENTATION:-landscape}"
+android_permissions = INTERNET, ${EXTRA_PERMISSION:-VIBRATE}
+)", "/work/proj");
+        return sol.projects[0].android_apk;
+    };
+    auto defaults = settings_for(false);
+    CHECK(defaults.label == "My Game");
+    CHECK(defaults.activity_attrs == "android:screenOrientation=\"landscape\"");
+    CHECK(defaults.permissions == std::vector<std::string>{"INTERNET", "VIBRATE"});
+    auto filled = settings_for(true);
+    CHECK(filled.label == "My Game");
+    CHECK(filled.activity_attrs == "android:screenOrientation=\"portrait\"");
+    CHECK(filled.permissions == std::vector<std::string>{"INTERNET", "CAMERA"});
+}
+
+TEST_CASE("An undefined variable without a default still expands to nothing", "[android][variables]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+[project:App]
+type = exe
+defines = A${NOPE}B, C${NOPE:-fallback}D
+)", "/work/proj");
+    const auto& defines = sol.projects[0].configurations.begin()->second.cl_compile.preprocessor_definitions;
+    CHECK(has_define(defines, "AB"));
+    CHECK(has_define(defines, "CfallbackD"));
+}
+
+TEST_CASE("android_native_libs accepts optional entries and $(Configuration) paths", "[android][apk][makefile_generator]") {
+    AndroidOsScope scope;
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = Android
+
+[project:GameApk]
+type = apk
+android_package = com.example.game
+android_native_libs = prebuilt/$(Configuration)/$(ANDROID_ABI)/libcore.so, prebuilt/$(Configuration)/$(ANDROID_ABI)/libextra.so [optional]
+)");
+    const std::string& release = g.files["GameApk.Release.Android"];
+    const std::string& debug = g.files["GameApk.Debug.Android"];
+    CHECK(release.find("prebuilt/Release/$(ANDROID_ABI)/libcore.so") != std::string::npos);
+    CHECK(debug.find("prebuilt/Debug/$(ANDROID_ABI)/libcore.so") != std::string::npos);
+    CHECK(release.find("APK_OPTIONAL_LIBS = ") != std::string::npos);
+    CHECK(release.find("prebuilt/Release/$(ANDROID_ABI)/libextra.so") != std::string::npos);
+    // The required library is checked; the optional one is skipped when missing.
+    CHECK(release.find("optional library $(lib) not found, skipped") != std::string::npos);
+    CHECK(release.find("$(foreach ANDROID_ABI,$(ANDROID_APK_ABIS),$(wildcard $(APK_OPTIONAL_LIBS)))") != std::string::npos);
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+[project:A]
+type = apk
+android_package = a.b
+android_native_libs = x/libreq.so, x/libopt.so [optional]
+)", "/work/proj");
+    CHECK(sol.projects[0].android_apk.native_libs.size() == 1);
+    CHECK(sol.projects[0].android_apk.optional_native_libs.size() == 1);
+}
+
+TEST_CASE("A multi-ABI package has one well-defined path", "[android][apk][makefile_generator]") {
+    AndroidOsScope scope;
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:GameApk]
+type = apk
+android_package = com.example.game
+target_name = Game
+outdir = bin/android/$(ANDROID_ABI)
+)");
+    const std::string& mk = g.files["GameApk.Release.Android"];
+    CHECK(mk.find("APK_MULTI_ABI := $(if $(word 2,$(ANDROID_APK_ABIS)),yes)") != std::string::npos);
+    CHECK(mk.find("APK_OUT_DIR := $(if $(APK_MULTI_ABI),") != std::string::npos);
+    CHECK(mk.find("bin/android/universal,") != std::string::npos);
+    CHECK(mk.find("bin/android/$(ANDROID_ABI))") != std::string::npos);
+    CHECK(mk.find("APK := $(APK_OUT_DIR)/Game.apk") != std::string::npos);
+}
+
+TEST_CASE("android_aab adds a bundle target built with aapt2 proto, bundletool and jarsigner", "[android][apk][aab][makefile_generator]") {
+    AndroidOsScope scope;
+    auto g = generate(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = Android
+
+[project:GameApk]
+type = apk
+android_package = com.example.game
+android_aab = true
+target_name = Game
+android_assets = content
+)");
+    const std::string& mk = g.files["GameApk.Release.Android"];
+    CHECK(mk.find("ANDROID_AAB ?= 1") != std::string::npos);
+    CHECK(mk.find("all: $(APK)$(if $(filter 1 yes true,$(ANDROID_AAB)), $(AAB))") != std::string::npos);
+    CHECK(mk.find("AAB_NAME = Game.aab") != std::string::npos);
+    CHECK(mk.find("$(AAB): $(APK)") != std::string::npos);
+    CHECK(mk.find("--proto-format") != std::string::npos);
+    CHECK(mk.find("/aab/base/manifest\"") != std::string::npos);
+    CHECK(mk.find("build-bundle --modules=") != std::string::npos);
+    CHECK(mk.find("BUNDLETOOL_PATH =") != std::string::npos);
+    CHECK(mk.find("bundletool not found. Set BUNDLETOOL") != std::string::npos);
+    CHECK(mk.find("$(JARSIGNER)") != std::string::npos);
+    CHECK(mk.find("-storepass:env ANDROID_KEYSTORE_PASSWORD") != std::string::npos);
+    // Without the setting the bundle is opt-in.
+    auto g2 = generate(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+[project:GameApk]
+type = apk
+android_package = com.example.game
+)");
+    CHECK(g2.files["GameApk.Release.Android"].find("ANDROID_AAB ?= 0") != std::string::npos);
+}
+
+// ============================================================================
+// Library paths, --build hint, C# defaults
+// ============================================================================
+
+TEST_CASE("libs in a configuration block are rebased to the buildscript like libdirs and outdir", "[android][libs]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:App]
+type = exe
+
+[config:*|Android]
+outdir = out/android
+libdirs = deps/lib
+libs = deps/lib/libfoo.a, log, -llog2, $(NDK)/libbar.a
+)", "/work/proj");
+    const auto& cfg = sol.projects[0].configurations.at("Release|Android");
+    REQUIRE(cfg.link.additional_dependencies.size() == 4);
+    const auto norm = [](std::string p) { std::replace(p.begin(), p.end(), '\\', '/'); return p; };
+    CHECK(norm(cfg.link.additional_dependencies[0]).find("/work/proj/deps/lib/libfoo.a") != std::string::npos);
+    CHECK(fs::path(cfg.link.additional_dependencies[0]).is_absolute());
+    CHECK(cfg.link.additional_dependencies[1] == "log");
+    CHECK(cfg.link.additional_dependencies[2] == "-llog2");
+    CHECK(cfg.link.additional_dependencies[3] == "$(NDK)/libbar.a");
+    CHECK(norm(cfg.link.additional_library_directories[0]).find("/work/proj/deps/lib") != std::string::npos);
+}
+
+TEST_CASE("--build explains where it looked for the cache", "[build_runner]") {
+    TempDir cwd("sighmake_test_cache_hint_cwd");
+    TempDir sub("sighmake_test_cache_hint_sub");
+    // no cache anywhere: names the directory it searched
+    std::string message = missing_cache_message(sub.path.string(), cwd.path);
+    CHECK(message.find("No sighmake cache found in") != std::string::npos);
+    CHECK(message.find("sighmake_test_cache_hint_sub") != std::string::npos);
+    CHECK(message.find("--build .") == std::string::npos);
+    // the cache lives in the current directory: suggests `--build .`
+    std::ofstream(cwd.path / BuildCache::CACHE_FILENAME) << "generator=makefile\n";
+    message = missing_cache_message(sub.path.string(), cwd.path);
+    CHECK(message.find("try 'sighmake --build .'") != std::string::npos);
+    // already looking at the current directory: no misleading hint
+    message = missing_cache_message(cwd.path.string(), cwd.path);
+    CHECK(message.find("--build .") == std::string::npos);
+}
+
+TEST_CASE("C# projects default Platform so dotnet build applies per-project defines", "[csproj]") {
+    TempDir dir("sighmake_test_csproj_platform");
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = x64
+
+[project:Managed]
+type = dll
+language = C#
+target_framework = net10.0
+sources = Lib.cs
+defines = FERRITE_AOT
+)", dir.path.string());
+    std::ofstream(dir.path / "Lib.cs") << "class Lib {}";
+    VcxprojGenerator generator;
+    const fs::path csproj = dir.path / "Managed.csproj";
+    REQUIRE(generator.generate_csproj(sol.projects[0], sol, csproj.string()));
+    pugi::xml_document doc;
+    REQUIRE(doc.load_file(csproj.string().c_str()));
+    auto platform = doc.select_node("/Project/PropertyGroup/Platform").node();
+    REQUIRE(platform);
+    CHECK(std::string(platform.attribute("Condition").value()) == "'$(Platform)' == ''");
+    CHECK(std::string(platform.child_value()) == "x64");
+    // set before the SDK props are imported so the SDK does not default it to AnyCPU first
+    auto first_group = doc.select_node("/Project/PropertyGroup[1]").node();
+    CHECK(first_group.child("Platform"));
+    CHECK(slurp(csproj).find("FERRITE_AOT") != std::string::npos);
 }

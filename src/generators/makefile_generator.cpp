@@ -793,7 +793,7 @@ std::string MakefileGenerator::get_linker_flags(const Configuration& config, con
 }
 
 // Get linker libraries
-std::string MakefileGenerator::get_linker_libs(const Configuration& config) {
+std::string MakefileGenerator::get_linker_libs(const Configuration& config, const std::filesystem::path& makefile_dir) {
     std::stringstream ss;
 
     // Additional dependencies (libraries)
@@ -813,8 +813,10 @@ std::string MakefileGenerator::get_linker_libs(const Configuration& config) {
 
             // Check if it's a full path to a .lib or .a file
             if (part.find('/') != std::string::npos || part.find('\\') != std::string::npos) {
-                // It's a path, use it directly
-                ss << to_unix_path(part) << " ";
+                // A path: the parser rebases buildscript-relative entries to absolute paths, which are
+                // written relative to the makefile like library directories are.
+                const bool absolute = std::filesystem::path(part).is_absolute() && part.find("$(") == std::string::npos;
+                ss << to_unix_path(absolute && !makefile_dir.empty() ? compute_relative_path(part, makefile_dir) : part) << " ";
             } else {
                 // It's a library name, use -l flag
                 ss << "-l" << libname << " ";
@@ -939,6 +941,10 @@ bool MakefileGenerator::generate_external_cmake_makefile(const Project& project,
         out << "  endif\n";
         out << "endif\n";
     }
+    // Honor the make job limit: `sighmake --build --parallel N` passes SIGHMAKE_JOBS=N (and -j N), a plain
+    // `make -jN` is read from MAKEFLAGS. Without a limit cmake gets a bare --parallel.
+    out << "EXT_JOBS = $(strip $(or $(SIGHMAKE_JOBS),$(patsubst -j%,%,$(filter -j%,$(MAKEFLAGS))),$(patsubst j%,%,$(filter j%,$(firstword $(MAKEFLAGS))))))\n";
+    out << "EXT_PARALLEL = --parallel $(shell n='$(EXT_JOBS)'; expr \"$$n\" : '[0-9][0-9]*$$' >/dev/null && echo $$n)\n";
     out << "EXT_OPTIONS =";
     for (const auto& option : ext.options) out << " " << option;
     out << "\n";
@@ -996,7 +1002,9 @@ bool MakefileGenerator::generate_external_cmake_makefile(const Project& project,
     out << "\t@mkdir -p \"$(EXT_BUILD_DIR)\" \"$(EXT_OUT_DIR)\"\n";
     out << "\t$(CMAKE) -S \"" << cmake_source << "\" -B \"$(EXT_BUILD_DIR)\" -G \"$(CMAKE_GENERATOR)\""
            " -DCMAKE_BUILD_TYPE=$(EXT_BUILD_TYPE) $(EXT_GENERATOR_ARGS) $(EXT_PLATFORM_ARGS) $(EXT_OPTIONS)\n";
-    out << "\t$(CMAKE) --build \"$(EXT_BUILD_DIR)\" --config $(EXT_CONFIG) $(EXT_TARGETS) --parallel\n";
+    if (ext.build) {
+        out << "\t$(CMAKE) --build \"$(EXT_BUILD_DIR)\" --config $(EXT_CONFIG) $(EXT_TARGETS) $(EXT_PARALLEL)\n";
+    }
     for (const auto& output : ext.outputs) {
         const std::string base = fs::path(output).filename().string();
         out << "\t@test -f \"$(EXT_BUILD_DIR)/" << output << "\" || { echo \"sighmake: the CMake build of "
@@ -1043,21 +1051,42 @@ static std::string generate_android_manifest(const Project& project, bool has_co
         << ". Change the buildscript (android_* settings) or use android_manifest. -->\n";
     xml << "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"\n";
     xml << "    package=\"" << xml_attr_escape(apk.package) << "\">\n";
+    // uses-feature entries: `glEsVersion=0x00030000` (an attribute only), `name`, `name:false`, and
+    // `name key=value ...` for features that carry more attributes (for example
+    // `android.hardware.vulkan.version version=0x00401000`). `required=false` is accepted as a token.
     for (const auto& feature : apk.features) {
-        const size_t eq = feature.find('=');
+        std::istringstream tokens(feature);
+        std::string first;
+        tokens >> first;
+        if (first.empty()) continue;
+        std::vector<std::pair<std::string, std::string>> attributes;
+        bool required = true;
+        const size_t eq = first.find('=');
         if (eq != std::string::npos) {
-            xml << "    <uses-feature android:" << xml_attr_escape(feature.substr(0, eq)) << "=\""
-                << xml_attr_escape(feature.substr(eq + 1)) << "\" android:required=\"true\" />\n";
+            attributes.emplace_back(first.substr(0, eq), first.substr(eq + 1));
         } else {
-            std::string name = feature;
-            bool required = true;
-            if (name.size() > 6 && name.compare(name.size() - 6, 6, ":false") == 0) {
-                name.resize(name.size() - 6);
+            if (first.size() > 6 && first.compare(first.size() - 6, 6, ":false") == 0) {
+                first.resize(first.size() - 6);
                 required = false;
             }
-            xml << "    <uses-feature android:name=\"" << xml_attr_escape(name) << "\" android:required=\""
-                << (required ? "true" : "false") << "\" />\n";
+            attributes.emplace_back("name", first);
         }
+        for (std::string token; tokens >> token;) {
+            const size_t token_eq = token.find('=');
+            if (token_eq == std::string::npos) continue;
+            const std::string key = token.substr(0, token_eq);
+            const std::string value = token.substr(token_eq + 1);
+            if (key == "required") {
+                required = !(value == "false" || value == "0" || value == "no");
+            } else {
+                attributes.emplace_back(key, value);
+            }
+        }
+        xml << "    <uses-feature";
+        for (const auto& [key, value] : attributes) {
+            xml << " android:" << xml_attr_escape(key) << "=\"" << xml_attr_escape(value) << "\"";
+        }
+        xml << " android:required=\"" << (required ? "true" : "false") << "\" />\n";
     }
     for (const auto& permission : apk.permissions) {
         const std::string name = permission.find('.') == std::string::npos
@@ -1138,6 +1167,7 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
     std::set<std::string> visited;
     std::function<void(const Project&)> collect = [&](const Project& from) {
         for (const auto& dep : from.project_references) {
+            if (!dependency_applies_to_config(dep, config_key)) continue;
             if (!visited.insert(dep.name).second) continue;
             const Project* dep_project = find_project(project_lookup, dep.name);
             if (!dep_project) continue;
@@ -1169,7 +1199,11 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
     for (const auto& extra : apk.native_libs) {
         libs.push_back(compute_relative_path(anchor_variable_dir(extra, project, config_key), makefile_dir));
     }
-    if (libs.empty()) {
+    std::vector<std::string> optional_libs;
+    for (const auto& extra : apk.optional_native_libs) {
+        optional_libs.push_back(compute_relative_path(anchor_variable_dir(extra, project, config_key), makefile_dir));
+    }
+    if (libs.empty() && optional_libs.empty()) {
         std::cerr << "Warning: android_apk project '" << project.name
                   << "' has no native libraries (add shared-library projects to target_link_libraries).\n";
     }
@@ -1266,7 +1300,21 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
     out << "ANDROID_DEBUG_KEYSTORE ?= $(or $(HOME),$(USERPROFILE))/.android/debug.keystore\n\n";
 
     out << "APK_NAME = " << apk_name << "\n";
-    out << "APK := " << out_dir << "/" << apk_name << "\n";
+    // Output path of the package. With one ABI it is <outdir>/<name>.apk. A package holding several ABIs
+    // (--abi a,b) is written once, to <outdir>/<name>.apk with $(ANDROID_ABI) replaced by "universal",
+    // so it never lands in the directory of whichever ABI happened to be built last.
+    std::string multi_abi_out_dir = out_dir;
+    for (size_t pos = 0; (pos = multi_abi_out_dir.find("$(ANDROID_ABI)", pos)) != std::string::npos;) {
+        multi_abi_out_dir.replace(pos, 14, "universal");
+        pos += 9;
+    }
+    out << "APK_MULTI_ABI := $(if $(word 2,$(ANDROID_APK_ABIS)),yes)\n";
+    out << "APK_OUT_DIR := $(if $(APK_MULTI_ABI)," << multi_abi_out_dir << "," << out_dir << ")\n";
+    out << "APK := $(APK_OUT_DIR)/" << apk_name << "\n";
+    out << "AAB_NAME = " << (config.target_name.empty() ? project.name : config.target_name) << ".aab\n";
+    out << "AAB := $(APK_OUT_DIR)/$(AAB_NAME)\n";
+    out << "# Set ANDROID_AAB=1 (or android_aab = true) to also build the Android App Bundle.\n";
+    out << "ANDROID_AAB ?= " << (apk.aab ? "1" : "0") << "\n";
     out << "TARGET = $(APK)\n";
     out << "APK_STAGE := " << int_dir << "/apk\n";
     out << "APK_MANIFEST = " << manifest_path << "\n";
@@ -1280,6 +1328,10 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
     out << "# Native libraries per ABI ($(ANDROID_ABI) is rebound for every packaged ABI)\n";
     out << "APK_LIBS =";
     for (const auto& lib : libs) out << " " << lib;
+    out << "\n";
+    out << "# Optional libraries are packaged when the file exists and skipped otherwise\n";
+    out << "APK_OPTIONAL_LIBS =";
+    for (const auto& lib : optional_libs) out << " " << lib;
     out << "\n";
     if (!apk.res_dir.empty()) out << "APK_RES = " << compute_relative_path(apk.res_dir, makefile_dir) << "\n";
     out << "APK_ASSET_DIRS =";
@@ -1303,8 +1355,10 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
     out << "all:\n";
     out << "\t@echo \"Skipping packaging of $(APK_NAME) (SIGHMAKE_SKIP_PACKAGING is set)\"\n";
     out << "else\n";
-    out << "all: $(APK)\n";
+    out << "all: $(APK)$(if $(filter 1 yes true,$(ANDROID_AAB)), $(AAB))\n";
     out << "endif\n\n";
+    out << "aab: $(AAB)\n";
+    out << ".PHONY: aab\n\n";
 
     // Files that change without being named as prerequisites: package again when any is newer.
     out << "APK_TREES = $(APK_ASSET_DIRS) $(APK_JAVA_DIRS)" << (apk.res_dir.empty() ? "" : " $(APK_RES)") << "\n";
@@ -1315,7 +1369,8 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
     out << "endif\n\n";
 
     const std::string stage = "$(APK_STAGE)";
-    out << "$(APK): $(APK_SELF) $(APK_MANIFEST) $(foreach lib,$(APK_LIBS),$(lib))\n";
+    out << "$(APK): $(APK_SELF) $(APK_MANIFEST) $(foreach lib,$(APK_LIBS),$(lib)) "
+           "$(foreach ANDROID_ABI,$(ANDROID_APK_ABIS),$(wildcard $(APK_OPTIONAL_LIBS)))\n";
     out << "\t@echo \"Packaging $(APK_NAME)\"\n";
     out << "\t@rm -rf \"" << stage << "\" && mkdir -p \"" << stage << "/content\" \"$(dir $@)\"\n";
     if (!apk.res_dir.empty()) {
@@ -1346,6 +1401,8 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
     out << "\t@$(foreach ANDROID_ABI,$(ANDROID_APK_ABIS),mkdir -p \"" << stage << "/content/lib/$(ANDROID_ABI)\"; "
            "$(foreach lib,$(APK_LIBS),test -f \"$(lib)\" || { echo \"sighmake: $(lib) not found - build ABI "
            "$(ANDROID_ABI) first\"; exit 1; }; cp -f \"$(lib)\" \"" << stage << "/content/lib/$(ANDROID_ABI)/\"; ) "
+           "$(foreach lib,$(APK_OPTIONAL_LIBS),if [ -f \"$(lib)\" ]; then cp -f \"$(lib)\" \"" << stage
+        << "/content/lib/$(ANDROID_ABI)/\"; else echo \"sighmake: optional library $(lib) not found, skipped\"; fi; ) "
            "if [ \"$(APK_CPP_SHARED)\" = \"true\" ] || { [ \"$(APK_CPP_SHARED)\" = \"auto\" ] && "
            "grep -qa \"libc++_shared.so\" \"" << stage << "/content/lib/$(ANDROID_ABI)\"/*.so 2>/dev/null; }; then "
            "cp -f \"$(APK_STL)\" \"" << stage << "/content/lib/$(ANDROID_ABI)/\"; fi; )\n";
@@ -1379,8 +1436,58 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
     out << "\t$(ZIPALIGN) -c $(ZIPALIGN_FLAGS) 4 \"$@\"\n";
     out << "\t@echo \"Built $@\"\n\n";
 
+    // Android App Bundle: the base module is the staged APK content in bundle layout (resources in protobuf
+    // form from `aapt2 link --proto-format`, manifest/, dex/, lib/, assets/), assembled by bundletool and
+    // signed with jarsigner. Built with ANDROID_AAB=1 / android_aab = true, or `make aab`.
+    {
+        std::string aab_rules = R"MK(
+# bundletool: BUNDLETOOL (a bundletool-all-<version>.jar or a launcher script), else bundletool /
+# bundletool.jar / bundletool-all.jar found on PATH.
+JARSIGNER ?= $(JAVA_BIN)jarsigner
+BUNDLETOOL_PATH = $(strip $(if $(strip $(BUNDLETOOL)),$(BUNDLETOOL),$(shell IFS=:; for d in $$PATH; do for n in bundletool bundletool.jar bundletool-all.jar; do if [ -f "$$d/$$n" ]; then echo "$$d/$$n"; exit 0; fi; done; done)))
+BUNDLETOOL_RUN = $(if $(filter %.jar,$(BUNDLETOOL_PATH)),"$(JAVA)" -jar "$(BUNDLETOOL_PATH)","$(BUNDLETOOL_PATH)")
+
+$(AAB): $(APK)
+@TAB@@test -n "$(BUNDLETOOL_PATH)" || { echo "sighmake: bundletool not found. Set BUNDLETOOL to bundletool-all-<version>.jar (or a bundletool launcher) or put bundletool on PATH. Download: https://github.com/google/bundletool/releases"; exit 1; }
+@TAB@@test -d "@STAGE@/content" || { echo "sighmake: @STAGE@/content is missing - run the APK build first (make clean, then make)"; exit 1; }
+@TAB@@echo "Bundling $(AAB_NAME)"
+@TAB@@rm -rf "@STAGE@/aab" && mkdir -p "@STAGE@/aab/base/manifest" "@STAGE@/aab/base/dex"
+@TAB@$(AAPT2) link --proto-format -o "@STAGE@/aab/base-proto.apk" -I "$(ANDROID_JAR)" --manifest "$(APK_MANIFEST)" --min-sdk-version $(APK_MIN_SDK) --target-sdk-version $(APK_TARGET_SDK) --version-code $(APK_VERSION_CODE) --version-name "$(APK_VERSION_NAME)" $(APK_DEBUG_FLAG)@RESLINK@
+@TAB@cd "@STAGE@/aab/base" && "$(JAR)" xf "$(abspath @STAGE@/aab/base-proto.apk)"
+@TAB@@mv "@STAGE@/aab/base/AndroidManifest.xml" "@STAGE@/aab/base/manifest/AndroidManifest.xml"
+@TAB@@for f in "@STAGE@/content/"*.dex; do if [ -f "$$f" ]; then cp -f "$$f" "@STAGE@/aab/base/dex/"; fi; done
+@TAB@@if [ -d "@STAGE@/content/lib" ]; then cp -R "@STAGE@/content/lib" "@STAGE@/aab/base/lib"; fi
+@TAB@@if [ -d "@STAGE@/content/assets" ]; then cp -R "@STAGE@/content/assets" "@STAGE@/aab/base/assets"; fi
+@TAB@@printf '%s' '{"optimizations":{"uncompressNativeLibraries":{"enabled":true}}}' > "@STAGE@/aab/BundleConfig.json"
+@TAB@"$(JAR)" --create --file "@STAGE@/aab/base.zip" --no-manifest -C "@STAGE@/aab/base" .
+@TAB@@rm -f "$@" && mkdir -p "$(dir $@)"
+@TAB@$(BUNDLETOOL_RUN) build-bundle --modules="@STAGE@/aab/base.zip" --config="@STAGE@/aab/BundleConfig.json" --output="$@"
+@TAB@@if [ "$(APK_SIGN_MODE)" = "release" ]; then \
+@TAB@  test -n "$$ANDROID_KEYSTORE" && test -n "$(ANDROID_KEY_ALIAS)" || { echo "sighmake: release signing of the bundle needs ANDROID_KEYSTORE, ANDROID_KEYSTORE_PASSWORD and ANDROID_KEY_ALIAS (optional: ANDROID_KEY_PASSWORD); use ANDROID_SIGN=debug for a debug-signed bundle"; exit 1; }; \
+@TAB@  echo "Signing $(AAB_NAME) with $$ANDROID_KEYSTORE"; \
+@TAB@  "$(JARSIGNER)" -keystore "$$ANDROID_KEYSTORE" -storepass:env ANDROID_KEYSTORE_PASSWORD$(if $(ANDROID_KEY_PASSWORD), -keypass:env ANDROID_KEY_PASSWORD) -sigalg SHA256withRSA -digestalg SHA-256 "$@" "$(ANDROID_KEY_ALIAS)" >/dev/null; \
+@TAB@else \
+@TAB@  test -f "$(ANDROID_DEBUG_KEYSTORE)" || { echo "sighmake: debug keystore $(ANDROID_DEBUG_KEYSTORE) not found - build the APK first"; exit 1; }; \
+@TAB@  echo "Signing $(AAB_NAME) with the debug keystore"; \
+@TAB@  "$(JARSIGNER)" -keystore "$(ANDROID_DEBUG_KEYSTORE)" -storepass android -keypass android -sigalg SHA256withRSA -digestalg SHA-256 "$@" androiddebugkey >/dev/null; \
+@TAB@fi
+@TAB@"$(JARSIGNER)" -verify "$@" >/dev/null
+@TAB@@echo "Built $@"
+
+)MK";
+        const auto replace_all = [&](const std::string& token, const std::string& value) {
+            for (size_t pos = 0; (pos = aab_rules.find(token, pos)) != std::string::npos; pos += value.size()) {
+                aab_rules.replace(pos, token.size(), value);
+            }
+        };
+        replace_all("@TAB@", "\t");
+        replace_all("@STAGE@", stage);
+        replace_all("@RESLINK@", apk.res_dir.empty() ? "" : " -R \"" + stage + "/res.zip\" --auto-add-overlay");
+        out << aab_rules;
+    }
+
     out << "clean:\n";
-    out << "\trm -rf \"" << stage << "\" \"$(APK)\"\n";
+    out << "\trm -rf \"" << stage << "\" \"$(APK)\" \"$(AAB)\"\n";
     out.close();
 
     std::cout << "Generated: " << output_path << "\n";
@@ -1506,6 +1613,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     bool has_objcxx_files = false;
     bool has_nasm_files = false;
     for (const auto& src : project.sources) {
+        if (!source_applies_to_platform(src, parse_config_key(config_key).second)) continue;
         if (src.type == FileType::ClCompile) {
             std::string ext = file_types::lowercase_extension(src.path);
             if (file_types::is_cpp_source(ext)) {
@@ -1576,7 +1684,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     std::string cxxflags = get_compiler_flags(config, project, makefile_dir, false);
     std::string cflags = get_compiler_flags(config, project, makefile_dir, true);
     std::string ldflags = get_linker_flags(config, makefile_dir, android);
-    std::string ldlibs = get_linker_libs(config);
+    std::string ldlibs = get_linker_libs(config, makefile_dir);
 
     struct ArchiveEntry {
         std::string project_name;
@@ -1682,6 +1790,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             // libraries remain required when a final binary consumes it.
             // Shared-library PRIVATE dependencies stay encapsulated.
             for (const auto& sub_dep : dep_proj->project_references) {
+                if (!dependency_applies_to_config(sub_dep, config_key)) continue;
                 if (sub_dep.visibility == DependencyVisibility::PRIVATE && !is_static_library) continue;
                 if (!sub_dep.link_library_dependencies) continue;
                 collect_deps(sub_dep.name, true, false);
@@ -1690,6 +1799,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
         // Start from the project's direct dependencies
         for (const auto& dep : project.project_references) {
+            if (!dependency_applies_to_config(dep, config_key)) continue;
             if (dep.visibility == DependencyVisibility::INTERFACE) continue;
             if (!dep.link_library_dependencies) continue;
             collect_deps(dep.name, true, dep.whole_archive);
@@ -1802,6 +1912,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     std::vector<bool> source_uses_pch; // Track which files use PCH
 
     for (const auto& src : project.sources) {
+        if (!source_applies_to_platform(src, parse_config_key(config_key).second)) continue;
         if (src.type == FileType::ClCompile || src.type == FileType::ObjCxx || src.type == FileType::NASM) {
             // Check if excluded for this config
             const bool* excluded = find_config_setting(src.settings.excluded, config_key);
@@ -2326,6 +2437,10 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
                 const std::string target = make_project_config_target(*proj, cfg, android);
                 std::set<std::string> dependencies;
                 for (const auto& dep : proj->project_references) {
+                    if (const auto proj_key = find_makefile_config_key(*proj, cfg, android);
+                        proj_key && !dependency_applies_to_config(dep, *proj_key)) {
+                        continue;
+                    }
                     const Project* dep_project = find_project(project_lookup, dep.name);
                     if (!dep_project || !find_makefile_config_key(*dep_project, cfg, android)) {
                         continue;

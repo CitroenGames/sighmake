@@ -377,6 +377,23 @@ bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& s
     // Explicit imports allow per-project intermediate paths to be set before SDK.props.
     auto early = root.append_child("PropertyGroup");
     early.append_child("BaseIntermediateOutputPath").text() = ("obj/" + project.name + "/").c_str();
+    // The per-configuration groups below are conditioned on '$(Configuration)|$(Platform)'. A plain
+    // `dotnet build` leaves Platform empty (the SDK then defaults to AnyCPU) and none of them, including
+    // the per-project defines, would apply. Default it to the project's preferred platform instead.
+    {
+        std::string default_platform;
+        for (const auto& [key, cfg] : project.configurations) {
+            (void)cfg;
+            const std::string platform = parse_config_key(key).second;
+            if (is_unix_platform(platform)) continue;
+            if (default_platform.empty() || platform == "x64") default_platform = platform;
+        }
+        if (!default_platform.empty()) {
+            auto platform_default = early.append_child("Platform");
+            platform_default.append_attribute("Condition") = "'$(Platform)' == ''";
+            platform_default.text() = default_platform.c_str();
+        }
+    }
     auto sdk_props = root.append_child("Import");
     sdk_props.append_attribute("Project") = "Sdk.props";
     sdk_props.append_attribute("Sdk") = "Microsoft.NET.Sdk";
@@ -590,7 +607,14 @@ bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& s
     auto sdk_targets = root.append_child("Import");
     sdk_targets.append_attribute("Project") = "Sdk.targets";
     sdk_targets.append_attribute("Sdk") = "Microsoft.NET.Sdk";
-    return doc.save_file(output_path.c_str(), "  ");
+    const bool saved = doc.save_file(output_path.c_str(), "  ");
+    if (saved) {
+        std::cout << "Note: " << fs::path(output_path).filename().string()
+                  << " lists its source files as of this run; re-run sighmake after adding or removing files "
+                     "under the `sources` globs. `dotnet build` applies the per-configuration settings (defines, "
+                     "output paths) with Platform defaulting to the project's platform, no -p:Platform needed.\n";
+    }
+    return saved;
 }
 
 bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& solution,
@@ -2152,17 +2176,20 @@ static void prune_projects_excluded_from_visual_studio(Solution& solution) {
     for (const auto& project : solution.projects) {
         if (project_excluded_from_visual_studio(project)) removed.insert(project.name);
     }
-    if (removed.empty()) return;
-    solution.projects.erase(
-        std::remove_if(solution.projects.begin(), solution.projects.end(),
-                       [&](const Project& project) { return removed.count(project.name) > 0; }),
-        solution.projects.end());
+    if (!removed.empty()) {
+        solution.projects.erase(
+            std::remove_if(solution.projects.begin(), solution.projects.end(),
+                           [&](const Project& project) { return removed.count(project.name) > 0; }),
+            solution.projects.end());
+    }
     for (auto& project : solution.projects) {
         auto& refs = project.project_references;
         refs.erase(std::remove_if(refs.begin(), refs.end(),
                                   [&](const ProjectDependency& dep) { return removed.count(dep.name) > 0; }),
                    refs.end());
     }
+    // Declarations scoped to Unix platforms only (`if(Android) { ... }`) are not part of the Visual Studio graph.
+    prune_platform_scoped_declarations(solution, [](const std::string& platform) { return !is_unix_platform(platform); });
 }
 
 bool VcxprojGenerator::generate(Solution& solution, const std::string& output_dir) {
