@@ -1438,8 +1438,8 @@ android_native_libs = prebuilt/$(Configuration)/$(ANDROID_ABI)/libcore.so, prebu
     CHECK(release.find("APK_OPTIONAL_LIBS = ") != std::string::npos);
     CHECK(release.find("prebuilt/Release/$(ANDROID_ABI)/libextra.so") != std::string::npos);
     // The required library is checked; the optional one is skipped when missing.
-    CHECK(release.find("optional library $(lib) not found, skipped") != std::string::npos);
-    CHECK(release.find("$(foreach ANDROID_ABI,$(ANDROID_APK_ABIS),$(wildcard $(APK_OPTIONAL_LIBS)))") != std::string::npos);
+    CHECK(release.find("optional library $(call sp,$(lib)) not found, skipped") != std::string::npos);
+    CHECK(release.find("$(foreach ANDROID_ABI,$(ANDROID_APK_ABIS),$(foreach lib,$(APK_OPTIONAL_LIBS),$(wildcard $(call spesc,$(lib)))))") != std::string::npos);
     BuildscriptParser parser;
     auto sol = parser.parse_string(R"(
 [solution]
@@ -1595,4 +1595,247 @@ defines = FERRITE_AOT
     auto first_group = doc.select_node("/Project/PropertyGroup[1]").node();
     CHECK(first_group.child("Platform"));
     CHECK(slurp(csproj).find("FERRITE_AOT") != std::string::npos);
+}
+
+// ============================================================================
+// Manifest variables, extractNativeLibs, list values, jars, C# makefiles, compilers, env()
+// ============================================================================
+
+TEST_CASE("A custom android_manifest has ${NAME} variables expanded", "[android][apk][variables]") {
+    TempDir dir("sighmake_test_manifest_vars");
+    std::ofstream(dir.path / "AndroidManifest.xml") <<
+        "<manifest package=\"${PACKAGE:-com.default.app}\">\n"
+        "  <activity android:screenOrientation=\"${ORIENTATION}\" android:label=\"${LABEL:-Game}\"/>\n"
+        "</manifest>\n";
+    BuildscriptParser parser;
+    parser.set_variables({{"ORIENTATION", "portrait"}});
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:GameApk]
+type = apk
+android_manifest = AndroidManifest.xml
+)", dir.path.string());
+    REQUIRE(sol.variables.count("ORIENTATION"));
+    MakefileGenerator generator;
+    REQUIRE(generator.generate(sol, dir.path.string()));
+    const std::string manifest = slurp(dir.path / "build" / "GameApk.Release.AndroidManifest.xml");
+    CHECK(manifest.find("package=\"com.default.app\"") != std::string::npos);
+    CHECK(manifest.find("android:screenOrientation=\"portrait\"") != std::string::npos);
+    CHECK(manifest.find("android:label=\"Game\"") != std::string::npos);
+    CHECK(manifest.find("${") == std::string::npos);
+    const std::string mk = slurp(dir.path / "build" / "GameApk.Release.Android");
+    CHECK(mk.find("APK_MANIFEST = GameApk.Release.AndroidManifest.xml") != std::string::npos);
+}
+
+TEST_CASE("A custom android_manifest without variables is used in place", "[android][apk]") {
+    TempDir dir("sighmake_test_manifest_plain");
+    std::ofstream(dir.path / "AndroidManifest.xml") << "<manifest package=\"a.b\"/>\n";
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+[project:GameApk]
+type = apk
+android_manifest = AndroidManifest.xml
+)", dir.path.string());
+    MakefileGenerator generator;
+    REQUIRE(generator.generate(sol, dir.path.string()));
+    CHECK_FALSE(fs::exists(dir.path / "build" / "GameApk.Release.AndroidManifest.xml"));
+    CHECK(slurp(dir.path / "build" / "GameApk.Release.Android").find("APK_MANIFEST = ../AndroidManifest.xml") != std::string::npos);
+}
+
+TEST_CASE("android_extract_native_libs controls extractNativeLibs of the generated manifest", "[android][apk][makefile_generator]") {
+    AndroidOsScope scope;
+    auto manifest_for = [](const std::string& setting) {
+        auto g = generate("[solution]\nname = Test\nconfigurations = Release\nplatforms = Android\n\n"
+                          "[project:GameApk]\ntype = apk\nandroid_package = com.example.game\n" + setting + "\n");
+        return g.files["GameApk.Release.AndroidManifest.xml"];
+    };
+    CHECK(manifest_for("").find("android:extractNativeLibs=\"false\"") != std::string::npos);
+    CHECK(manifest_for("android_extract_native_libs = true").find("android:extractNativeLibs=\"true\"") != std::string::npos);
+    CHECK(manifest_for("android_extract_native_libs = false").find("android:extractNativeLibs=\"false\"") != std::string::npos);
+}
+
+TEST_CASE("-D list values with commas and spaces reach android_native_libs and android_java", "[android][apk][makefile_generator]") {
+    AndroidOsScope scope;
+    TempDir dir("sighmake_test_list_values");
+    BuildscriptParser parser;
+    parser.set_variables({{"LIBS", "pre/libx.so, pre two/liby.so [optional]"}, {"JAVA", "java a, java b"}});
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:GameApk]
+type = apk
+android_package = a.b
+android_native_libs = ${LIBS}
+android_java = ${JAVA}
+)", dir.path.string());
+    const auto& apk = sol.projects[0].android_apk;
+    CHECK(apk.native_libs.size() == 1);
+    CHECK(apk.optional_native_libs.size() == 1);
+    CHECK(apk.java.size() == 2);
+    MakefileGenerator generator;
+    REQUIRE(generator.generate(sol, dir.path.string()));
+    const std::string mk = slurp(dir.path / "build" / "GameApk.Release.Android");
+    // spaces are carried through make word lists and restored where the paths are used
+    CHECK(mk.find("pre@SP@two/liby.so") != std::string::npos);
+    CHECK(mk.find("APK_JAVA_DIRS = ../java@SP@a ../java@SP@b") != std::string::npos);
+    CHECK(mk.find("sp = $(subst @SP@, ,$(1))") != std::string::npos);
+    CHECK(mk.find("$(call spesc,$(lib))") != std::string::npos);
+}
+
+TEST_CASE("Prebuilt Java jars are accepted as wildcards and as android_java entries", "[android][apk]") {
+    TempDir dir("sighmake_test_jars");
+    fs::create_directories(dir.path / "sdk" / "java");
+    std::ofstream(dir.path / "sdk" / "java" / "b.jar") << "x";
+    std::ofstream(dir.path / "sdk" / "java" / "a.jar") << "x";
+    std::ofstream(dir.path / "sdk" / "java" / "note.txt") << "x";
+    std::ofstream(dir.path / "single.jar") << "x";
+    fs::create_directories(dir.path / "src");
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Android
+
+[project:GameApk]
+type = apk
+android_package = a.b
+android_jars = sdk/java/*.jar
+android_java = src, single.jar
+)", dir.path.string());
+    const auto& apk = sol.projects[0].android_apk;
+    REQUIRE(apk.jars.size() == 3);
+    CHECK(fs::path(apk.jars[0]).filename() == "a.jar");
+    CHECK(fs::path(apk.jars[1]).filename() == "b.jar");
+    CHECK(fs::path(apk.jars[2]).filename() == "single.jar");
+    REQUIRE(apk.java.size() == 1);
+    CHECK(fs::path(apk.java[0]).filename() == "src");
+}
+
+TEST_CASE("The Makefile generator builds C# projects with dotnet", "[makefile_generator][csproj]") {
+    TempDir dir("sighmake_test_csharp_makefile");
+    std::ofstream(dir.path / "Lib.cs") << "class Lib {}";
+    std::ofstream(dir.path / "main.cpp") << "int main() { return 0; }";
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = x64
+
+[project:Managed]
+type = dll
+language = C#
+target_framework = net10.0
+sources = Lib.cs
+defines = FERRITE_AOT
+
+[project:Native]
+type = exe
+sources = main.cpp
+)", dir.path.string());
+    MakefileGenerator generator;
+    REQUIRE(generator.generate(sol, dir.path.string()));
+    const std::string host = target_os() == TargetOS::MacOS ? "macOS" : "Linux";
+    (void)host;
+    const std::string mk = slurp(dir.path / "build" / "Managed.Release");
+    REQUIRE_FALSE(mk.empty());
+    CHECK(mk.find("$(DOTNET) build \"") != std::string::npos);
+    CHECK(mk.find("-c Release -p:Platform=x64") != std::string::npos);
+    CHECK(slurp(dir.path / "build" / "Managed.Debug").find("-c Debug -p:Platform=x64") != std::string::npos);
+    const std::string master = slurp(dir.path / "Makefile").empty() ? slurp(dir.path / "build" / "Makefile")
+                                                                   : slurp(dir.path / "Makefile");
+    CHECK(master.find("Managed.Release") != std::string::npos);
+    bool csproj_found = false;
+    for (const auto& entry : fs::directory_iterator(dir.path / "build")) {
+        if (entry.path().extension() == ".csproj") csproj_found = true;
+    }
+    CHECK(csproj_found);
+}
+
+TEST_CASE("cxx and cc select the compiler drivers written into Makefiles", "[makefile_generator]") {
+    TempDir dir("sighmake_test_compilers");
+    std::ofstream(dir.path / "a.cpp") << "int main() { return 0; }";
+    std::ofstream(dir.path / "b.c") << "int f() { return 0; }";
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+cxx = clang++-18
+cc = clang-18
+
+[project:App]
+type = exe
+sources = a.cpp, b.c
+)", dir.path.string());
+    CHECK(sol.cxx_compiler == "clang++-18");
+    CHECK(sol.c_compiler == "clang-18");
+    MakefileGenerator generator;
+    REQUIRE(generator.generate(sol, dir.path.string()));
+    const std::string mk = slurp(dir.path / "build" / "App.Release");
+    CHECK(mk.find("CXX = clang++-18\n") != std::string::npos);
+    CHECK(mk.find("CC = clang-18\n") != std::string::npos);
+    CHECK(mk.find("CXX = g++") == std::string::npos);
+    // a command-line override replaces the buildscript value
+    sol.cxx_compiler = "icpx";
+    TempDir dir2("sighmake_test_compilers2");
+    std::ofstream(dir2.path / "a.cpp") << "int main() { return 0; }";
+    std::ofstream(dir2.path / "b.c") << "int f() { return 0; }";
+    auto sol2 = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+[project:App]
+type = exe
+sources = a.cpp
+)", dir2.path.string());
+    sol2.cxx_compiler = "icpx";
+    REQUIRE(generator.generate(sol2, dir2.path.string()));
+    CHECK(slurp(dir2.path / "build" / "App.Release").find("CXX = icpx\n") != std::string::npos);
+}
+
+TEST_CASE("env(NAME) conditions switch blocks from the environment", "[conditions]") {
+    const char* script = R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64
+
+[project:App]
+type = exe
+if(env(SIGHMAKE_TEST_SWITCH)) {
+    defines = SWITCH_ON
+}
+if(!env(SIGHMAKE_TEST_SWITCH)) {
+    defines = SWITCH_OFF
+}
+)";
+    auto defines_with = [&](const char* value) {
+        ScopedEnv env("SIGHMAKE_TEST_SWITCH", value);
+        BuildscriptParser parser;
+        auto sol = parser.parse_string(script, "/work/proj");
+        return sol.projects[0].configurations.begin()->second.cl_compile.preprocessor_definitions;
+    };
+    auto unset = defines_with("");
+    CHECK(has_define(unset, "SWITCH_OFF"));
+    CHECK_FALSE(has_define(unset, "SWITCH_ON"));
+    auto on = defines_with("1");
+    CHECK(has_define(on, "SWITCH_ON"));
+    CHECK_FALSE(has_define(on, "SWITCH_OFF"));
+    auto zero = defines_with("0");
+    CHECK(has_define(zero, "SWITCH_OFF"));
 }

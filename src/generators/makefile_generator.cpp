@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "target_receipt_support.hpp"
 #include "makefile_generator.hpp"
+#include "common/target_os.hpp"
+#include "vcxproj_generator.hpp"
 #include "common/android_sdk.hpp"
 #include "common/build_cache.hpp"
 #include "common/string_utils.hpp"
@@ -1101,7 +1103,7 @@ static std::string generate_android_manifest(const Project& project, bool has_co
     if (apk.application_attrs.find("extractNativeLibs") == std::string::npos) {
         // Libraries are stored uncompressed and 16 KB aligned, so the loader maps them straight
         // out of the APK instead of extracting copies at install time.
-        xml << " android:extractNativeLibs=\"false\"";
+        xml << " android:extractNativeLibs=\"" << (apk.extract_native_libs ? "true" : "false") << "\"";
     }
     if (!apk.icon.empty()) xml << " android:icon=\"" << xml_attr_escape(apk.icon) << "\"";
     if (!apk.application_attrs.empty()) xml << " " << apk.application_attrs;
@@ -1132,7 +1134,8 @@ static std::string generate_android_manifest(const Project& project, bool has_co
 bool MakefileGenerator::generate_android_apk_makefile(const Project& project, const Configuration& config,
                                                       const std::string& config_key,
                                                       const std::string& output_path,
-                                                      const ProjectLookup& project_lookup) {
+                                                      const ProjectLookup& project_lookup,
+                                                      const Solution& solution) {
     namespace fs = std::filesystem;
     const auto& apk = project.android_apk;
     const std::string config_name = parse_config_key(config_key).first;
@@ -1214,7 +1217,27 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
     // Manifest: user-provided or generated next to the makefiles.
     std::string manifest_path;
     if (!apk.manifest.empty()) {
-        manifest_path = compute_relative_path(apk.manifest, makefile_dir);
+        // A custom manifest may use ${NAME} / ${NAME:-default}; those are expanded here (from -D and
+        // find_package variables) into a copy next to the makefiles. A manifest without them is used in place.
+        std::ifstream source(apk.manifest, std::ios::binary);
+        if (!source) {
+            std::cerr << "Error: Cannot read android_manifest " << apk.manifest << "\n";
+            return false;
+        }
+        const std::string text((std::istreambuf_iterator<char>(source)), std::istreambuf_iterator<char>());
+        if (text.find("${") == std::string::npos) {
+            manifest_path = compute_relative_path(apk.manifest, makefile_dir);
+        } else {
+            const std::string manifest_name = project.name + "." + config_name + ".AndroidManifest.xml";
+            std::ofstream manifest(makefile_dir / manifest_name, std::ios::binary);
+            if (!manifest) {
+                std::cerr << "Error: Failed to write " << (makefile_dir / manifest_name).string() << "\n";
+                return false;
+            }
+            manifest << expand_variables(text, solution.variables);
+            manifest.close();
+            manifest_path = manifest_name;
+        }
     } else {
         const std::string manifest_name = project.name + "." + config_name + ".AndroidManifest.xml";
         std::ofstream manifest(makefile_dir / manifest_name);
@@ -1326,22 +1349,29 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
     out << "APK_CPP_SHARED = " << apk.cpp_shared << "\n";
     out << "APK_DEBUG_FLAG = " << (config_name == "Release" ? "" : "--debug-mode") << "\n";
     out << "# Native libraries per ABI ($(ANDROID_ABI) is rebound for every packaged ABI)\n";
+    // Paths may contain spaces; make word lists cannot, so spaces are carried as @SP@ and restored by $(call sp,...)
+    const auto encode_space = [](std::string value) {
+        for (size_t pos = 0; (pos = value.find(' ', pos)) != std::string::npos; pos += 4) value.replace(pos, 1, "@SP@");
+        return value;
+    };
+    out << "sp = $(subst @SP@, ,$(1))\n";
+    out << "spesc = $(subst @SP@,\\ ,$(1))\n";
     out << "APK_LIBS =";
-    for (const auto& lib : libs) out << " " << lib;
+    for (const auto& lib : libs) out << " " << encode_space(lib);
     out << "\n";
     out << "# Optional libraries are packaged when the file exists and skipped otherwise\n";
     out << "APK_OPTIONAL_LIBS =";
-    for (const auto& lib : optional_libs) out << " " << lib;
+    for (const auto& lib : optional_libs) out << " " << encode_space(lib);
     out << "\n";
     if (!apk.res_dir.empty()) out << "APK_RES = " << compute_relative_path(apk.res_dir, makefile_dir) << "\n";
     out << "APK_ASSET_DIRS =";
-    for (const auto& dir : apk.assets) out << " " << compute_relative_path(dir, makefile_dir);
+    for (const auto& dir : apk.assets) out << " " << encode_space(compute_relative_path(dir, makefile_dir));
     out << "\n";
     out << "APK_JAVA_DIRS =";
-    for (const auto& dir : apk.java) out << " " << compute_relative_path(dir, makefile_dir);
+    for (const auto& dir : apk.java) out << " " << encode_space(compute_relative_path(dir, makefile_dir));
     out << "\n";
     out << "APK_JARS =";
-    for (const auto& jar : apk.jars) out << " " << compute_relative_path(jar, makefile_dir);
+    for (const auto& jar : apk.jars) out << " " << encode_space(compute_relative_path(jar, makefile_dir));
     out << "\n\n";
 
     out << "# $(ANDROID_NDK_HOME) layout: <triple> directory names of the C++ runtime\n";
@@ -1363,14 +1393,14 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
     // Files that change without being named as prerequisites: package again when any is newer.
     out << "APK_TREES = $(APK_ASSET_DIRS) $(APK_JAVA_DIRS)" << (apk.res_dir.empty() ? "" : " $(APK_RES)") << "\n";
     out << "ifneq ($(strip $(APK_TREES)),)\n";
-    out << "  ifneq ($(strip $(shell find $(APK_TREES) -type f -newer \"$(APK)\" 2>/dev/null | head -n 1)),)\n";
+    out << "  ifneq ($(strip $(shell find $(foreach t,$(APK_TREES),\"$(call sp,$(t))\") -type f -newer \"$(APK)\" 2>/dev/null | head -n 1)),)\n";
     out << "    .PHONY: $(APK)\n";
     out << "  endif\n";
     out << "endif\n\n";
 
     const std::string stage = "$(APK_STAGE)";
-    out << "$(APK): $(APK_SELF) $(APK_MANIFEST) $(foreach lib,$(APK_LIBS),$(lib)) "
-           "$(foreach ANDROID_ABI,$(ANDROID_APK_ABIS),$(wildcard $(APK_OPTIONAL_LIBS)))\n";
+    out << "$(APK): $(APK_SELF) $(APK_MANIFEST) $(foreach lib,$(APK_LIBS),$(call spesc,$(lib))) "
+           "$(foreach ANDROID_ABI,$(ANDROID_APK_ABIS),$(foreach lib,$(APK_OPTIONAL_LIBS),$(wildcard $(call spesc,$(lib)))))\n";
     out << "\t@echo \"Packaging $(APK_NAME)\"\n";
     out << "\t@rm -rf \"" << stage << "\" && mkdir -p \"" << stage << "/content\" \"$(dir $@)\"\n";
     if (!apk.res_dir.empty()) {
@@ -1384,31 +1414,31 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
     if (has_code) {
         out << "\t@mkdir -p \"" << stage << "/classes\" \"" << stage << "/dex\"\n";
         if (!apk.java.empty()) {
-            out << "\t@find $(APK_JAVA_DIRS) -name \"*.java\" 2>/dev/null | sed 's/.*/\"&\"/' > \"" << stage << "/java.rsp\"\n";
+            out << "\t@find $(foreach d,$(APK_JAVA_DIRS),\"$(call sp,$(d))\") -name \"*.java\" 2>/dev/null | sed 's/.*/\"&\"/' > \"" << stage << "/java.rsp\"\n";
             out << "\t@if [ -s \"" << stage << "/java.rsp\" ]; then echo \"Compiling Java sources\" && "
                    "\"$(JAVAC)\" -encoding UTF-8 --release 8 -Xlint:-options -classpath "
-                   "\"$(ANDROID_JAR)$(foreach jar,$(APK_JARS),$(PATHSEP)$(jar))\" -d \"" << stage << "/classes\" @\""
+                   "\"$(ANDROID_JAR)$(foreach jar,$(APK_JARS),$(PATHSEP)$(call sp,$(jar)))\" -d \"" << stage << "/classes\" @\""
                 << stage << "/java.rsp\" && \"$(JAR)\" --create --file \"" << stage
                 << "/classes.jar\" --no-manifest -C \"" << stage << "/classes\" .; fi\n";
         }
-        out << "\t@inputs=\"$(APK_JARS)\"; if [ -f \"" << stage << "/classes.jar\" ]; then inputs=\"" << stage
-            << "/classes.jar $$inputs\"; fi; test -n \"$$inputs\" || { echo \"sighmake: " << project.name
+        out << "\t@set -- $(foreach j,$(APK_JARS),\"$(call sp,$(j))\"); if [ -f \"" << stage << "/classes.jar\" ]; then set -- \""
+            << stage << "/classes.jar\" \"$$@\"; fi; test $$# -gt 0 || { echo \"sighmake: " << project.name
             << " needs Java code (android_java or android_jars) for its activity\"; exit 1; }; "
                "$(D8) --lib \"$(ANDROID_JAR)\" --min-api $(APK_MIN_SDK) $(if $(APK_DEBUG_FLAG),--debug,--release)"
-               " --output \"" << stage << "/dex\" $$inputs\n";
+               " --output \"" << stage << "/dex\" \"$$@\"\n";
         out << "\t@cp -f \"" << stage << "/dex/\"*.dex \"" << stage << "/content/\"\n";
     }
     out << "\t@$(foreach ANDROID_ABI,$(ANDROID_APK_ABIS),mkdir -p \"" << stage << "/content/lib/$(ANDROID_ABI)\"; "
-           "$(foreach lib,$(APK_LIBS),test -f \"$(lib)\" || { echo \"sighmake: $(lib) not found - build ABI "
-           "$(ANDROID_ABI) first\"; exit 1; }; cp -f \"$(lib)\" \"" << stage << "/content/lib/$(ANDROID_ABI)/\"; ) "
-           "$(foreach lib,$(APK_OPTIONAL_LIBS),if [ -f \"$(lib)\" ]; then cp -f \"$(lib)\" \"" << stage
-        << "/content/lib/$(ANDROID_ABI)/\"; else echo \"sighmake: optional library $(lib) not found, skipped\"; fi; ) "
+           "$(foreach lib,$(APK_LIBS),test -f \"$(call sp,$(lib))\" || { echo \"sighmake: $(call sp,$(lib)) not found - build ABI "
+           "$(ANDROID_ABI) first\"; exit 1; }; cp -f \"$(call sp,$(lib))\" \"" << stage << "/content/lib/$(ANDROID_ABI)/\"; ) "
+           "$(foreach lib,$(APK_OPTIONAL_LIBS),if [ -f \"$(call sp,$(lib))\" ]; then cp -f \"$(call sp,$(lib))\" \"" << stage
+        << "/content/lib/$(ANDROID_ABI)/\"; else echo \"sighmake: optional library $(call sp,$(lib)) not found, skipped\"; fi; ) "
            "if [ \"$(APK_CPP_SHARED)\" = \"true\" ] || { [ \"$(APK_CPP_SHARED)\" = \"auto\" ] && "
            "grep -qa \"libc++_shared.so\" \"" << stage << "/content/lib/$(ANDROID_ABI)\"/*.so 2>/dev/null; }; then "
            "cp -f \"$(APK_STL)\" \"" << stage << "/content/lib/$(ANDROID_ABI)/\"; fi; )\n";
     if (!apk.assets.empty()) {
         out << "\t@mkdir -p \"" << stage << "/content/assets\"\n";
-        out << "\t@$(foreach asset_dir,$(APK_ASSET_DIRS),cp -R \"$(asset_dir)/.\" \"" << stage << "/content/assets/\"; )\n";
+        out << "\t@$(foreach asset_dir,$(APK_ASSET_DIRS),cp -R \"$(call sp,$(asset_dir))/.\" \"" << stage << "/content/assets/\"; )\n";
     }
     out << "\t@echo \"Adding libraries, dex and assets uncompressed\"\n";
     out << "\t\"$(JAR)\" --update --file \"" << stage << "/base.apk\" --no-manifest --no-compress -C \"" << stage
@@ -1505,7 +1535,6 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                                                       const std::string& config_key, const std::string& output_path,
                                                       const MakefileGenerator::ProjectLookup& project_lookup) {
     namespace fs = std::filesystem;
-    (void)solution;
 
     // Get configuration
     auto it = project.configurations.find(config_key);
@@ -1515,11 +1544,42 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     }
     const Configuration& config = it->second;
 
+    if (detect_project_language(project) == "C#") {
+        // dotnet builds the generated .csproj; the platform is the one the project file was written for.
+        const auto [csharp_config, csharp_platform] = parse_config_key(config_key);
+        std::string dotnet_platform = csharp_platform;
+        for (const auto& [key, cell] : project.configurations) {
+            (void)cell;
+            const auto [name, platform] = parse_config_key(key);
+            if (name == csharp_config && !is_unix_platform(platform) && (dotnet_platform == csharp_platform || platform == "x64")) {
+                dotnet_platform = platform;
+            }
+        }
+        std::ofstream csharp_out(output_path);
+        if (!csharp_out) {
+            std::cerr << "Error: Failed to create Makefile: " << output_path << "\n";
+            return false;
+        }
+        const std::string csproj = VcxprojGenerator::csproj_filename(project);
+        csharp_out << "# Auto-generated Makefile for " << project.name << " (" << csharp_config << ") - C# project\n";
+        csharp_out << "# Generated by sighmake\n\n";
+        csharp_out << "DOTNET ?= dotnet\n";
+        csharp_out << "TARGET = " << csproj << "\n\n";
+        csharp_out << ".PHONY: all clean\n";
+        csharp_out << ".DEFAULT_GOAL := all\n\n";
+        csharp_out << "all:\n";
+        csharp_out << "\t$(DOTNET) build \"" << csproj << "\" -c " << csharp_config << " -p:Platform=" << dotnet_platform << "\n\n";
+        csharp_out << "clean:\n";
+        csharp_out << "\t$(DOTNET) clean \"" << csproj << "\" -c " << csharp_config << " -p:Platform=" << dotnet_platform << "\n";
+        csharp_out.close();
+        std::cout << "Generated: " << output_path << "\n";
+        return true;
+    }
     if (config.config_type == "ExternalCMake") {
         return generate_external_cmake_makefile(project, config, config_key, output_path);
     }
     if (config.config_type == "AndroidApk") {
-        return generate_android_apk_makefile(project, config, config_key, output_path, project_lookup);
+        return generate_android_apk_makefile(project, config, config_key, output_path, project_lookup, solution);
     }
 
     // Parse config key into config and platform
@@ -1657,7 +1717,9 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             out << "endif\n";
         }
     } else {
-        if (links_with_cxx) {
+        if (links_with_cxx && !solution.cxx_compiler.empty()) {
+            out << "CXX = " << solution.cxx_compiler << "\n";
+        } else if (links_with_cxx) {
 #ifdef __APPLE__
             out << "CXX = clang++\n";
 #else
@@ -1667,7 +1729,9 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         // C and assembler-only binaries still need a linker driver. Also emit
         // CC for empty binary targets so the generated recipe is syntactically
         // complete instead of starting with an empty $(CC).
-        if (has_c_files || (links_binary && !links_with_cxx)) {
+        if ((has_c_files || (links_binary && !links_with_cxx)) && !solution.c_compiler.empty()) {
+            out << "CC = " << solution.c_compiler << "\n";
+        } else if (has_c_files || (links_binary && !links_with_cxx)) {
 #ifdef __APPLE__
             out << "CC = clang\n";
 #else
@@ -2195,12 +2259,6 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
 // Generate all Makefiles for a solution
 bool MakefileGenerator::generate(Solution& solution, const std::string& output_dir) {
-    for (const auto& project : solution.projects) {
-        if (detect_project_language(project) == "C#") {
-            std::cerr << "Error: C# projects require the vcxproj generator.\n";
-            return false;
-        }
-    }
     namespace fs = std::filesystem;
 
     // Create output directory if it doesn't exist
@@ -2225,6 +2283,33 @@ bool MakefileGenerator::generate(Solution& solution, const std::string& output_d
     }
 
     std::cout << "Generating Makefiles for solution: " << solution.name << "\n";
+
+    // C# projects are built by `dotnet build` on their generated .csproj. Give each configuration a cell
+    // for the host platform (copied from the project's existing cell) so the master Makefile lists it, and
+    // write the project files next to the makefiles.
+    {
+        const std::string host_platform = target_os() == TargetOS::MacOS ? "macOS" : "Linux";
+        VcxprojGenerator csproj_writer;
+        for (auto& project : solution.projects) {
+            if (project.is_package_project || detect_project_language(project) != "C#") continue;
+            std::map<std::string, std::string> source_cell;  // config name -> key of an existing cell
+            std::set<std::string> has_unix_cell;
+            for (const auto& [key, cfg] : project.configurations) {
+                (void)cfg;
+                const auto [config_name, platform] = parse_config_key(key);
+                if (is_unix_platform(platform)) has_unix_cell.insert(config_name);
+                else if (!source_cell.count(config_name) || platform == "x64") source_cell[config_name] = key;
+            }
+            for (const auto& [config_name, key] : source_cell) {
+                if (has_unix_cell.count(config_name)) continue;
+                project.configurations[config_name + "|" + host_platform] = project.configurations.at(key);
+            }
+            if (!csproj_writer.generate_csproj(project, solution,
+                    (build_dir / VcxprojGenerator::csproj_filename(project)).string())) {
+                return false;
+            }
+        }
+    }
 
     auto project_lookup = build_project_lookup(solution);
 

@@ -356,6 +356,7 @@ struct AndroidApkSettings {
     std::vector<std::string> jars;          // Extra jars compiled against and dexed
     std::vector<std::string> native_libs;   // Extra prebuilt .so files (may contain $(ANDROID_ABI) and $(Configuration))
     std::vector<std::string> optional_native_libs; // Same, but a missing file is skipped (entry tagged [optional])
+    bool extract_native_libs = false;       // android:extractNativeLibs of the generated manifest (default false: libraries are mapped from the APK)
     bool aab = false;                       // Also produce an Android App Bundle (.aab) next to the .apk
     std::vector<std::string> permissions;   // uses-permission names (android.permission. prefix optional)
     std::vector<std::string> features;      // uses-feature entries: name, name:false, glEsVersion=0x00030000
@@ -475,6 +476,14 @@ struct Solution {
     // Target toolset for .sln/.vcxproj generation (e.g., "v110", "v143")
     // Populated from buildscript toolset or parsed from .sln VisualStudioVersion header
     std::string target_toolset;
+
+    // Host compiler drivers for Makefile output (solution keys `cxx` / `cc`, or --cxx / --cc). Empty = platform default.
+    std::string cxx_compiler;
+    std::string c_compiler;
+
+    // Buildscript variables (-D and find_package) in effect when the solution was parsed. Generators use them to
+    // expand ${NAME} / ${NAME:-default} in files they copy, such as a custom android_manifest.
+    std::map<std::string, std::string> variables;
 
     // Get all configuration keys (e.g., "Debug|Win32", "Release|x64")
     std::vector<std::string> get_config_keys() const {
@@ -614,6 +623,30 @@ inline bool is_android_platform(const std::string& platform) {
 inline bool is_unix_platform(const std::string& platform) {
     std::string p = to_lower(platform);
     return p == "linux" || p == "macos" || p == "darwin" || p == "osx" || p == "android";
+}
+
+// Expand ${NAME} and ${NAME:-default} references. An undefined or empty variable expands to its default,
+// or to nothing when it has none. Text without "${" is returned unchanged.
+inline std::string expand_variables(const std::string& text, const std::map<std::string, std::string>& variables) {
+    std::string result = text;
+    size_t pos = 0;
+    while ((pos = result.find("${", pos)) != std::string::npos) {
+        const size_t end = result.find('}', pos);
+        if (end == std::string::npos) break;
+        std::string name = result.substr(pos + 2, end - (pos + 2));
+        std::string fallback;
+        if (const size_t sep = name.find(":-"); sep != std::string::npos) {
+            fallback = name.substr(sep + 2);
+            name.resize(sep);
+        }
+        std::string value;
+        const auto it = variables.find(name);
+        if (it != variables.end()) value = it->second;
+        if (value.empty()) value = fallback;
+        result.replace(pos, end - pos + 1, value);
+        pos += value.size();
+    }
+    return result;
 }
 
 // Does one entry of a project's `platforms` filter match a solution platform? Matching is

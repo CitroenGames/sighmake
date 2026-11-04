@@ -28,6 +28,8 @@ version control.
 - Per-project platform filters (`platforms = Windows, macOS`), wildcard configuration sections (`[config:*|Android]`) and `Template:Release|x64` inheritance
 - Platform-scoped declarations: `target_link_libraries`, `dependencies`, `sources`, `type` and `[android]` source tags inside `if(Android) { }` stay out of the desktop projects
 - `.aab` App Bundle output for `apk` projects (`android_aab = true` or `--aab`, aapt2 proto, bundletool, jarsigner); `${NAME:-default}` buildscript variables for manifest data
+- Makefile builds of C# projects through `dotnet build` (no Visual Studio needed), `--cxx` / `--cc` compiler selection, `env(NAME)` conditions for build-time switches
+- Android manifests: `${NAME:-default}` expansion inside a custom `android_manifest`, `android_extract_native_libs`, prebuilt jar wildcards, space-safe list values
 - Android NDK/SDK auto-detection, `sighmake --build --platform android` (uses the NDK's make when the host has none), `find_package(Vulkan)` from the NDK sysroot
 - Visual Studio solution folders and project filters
 - `find_package()` support for common SDKs such as Vulkan, SDL, DirectX, and OpenGL

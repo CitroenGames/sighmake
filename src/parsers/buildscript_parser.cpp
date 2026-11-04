@@ -1105,6 +1105,7 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
         }
     }
 
+    solution.variables = state.variables;
     return solution;
 }
 
@@ -1957,6 +1958,10 @@ void BuildscriptParser::parse_solution_setting(const std::string& key, const std
             state.solution->solution_level_preprocessor_definitions.end(),
             defs.begin(), defs.end()
         );
+    } else if (key == "cxx" || key == "cxx_compiler") {
+        state.solution->cxx_compiler = value;
+    } else if (key == "cc" || key == "c_compiler") {
+        state.solution->c_compiler = value;
     } else if (key == "include") {
         process_include(value, state);
     }
@@ -4210,8 +4215,22 @@ bool BuildscriptParser::parse_android_apk_setting(const std::string& key, const 
     else if (key == "android_application_attrs") apk.application_attrs = value;
     else if (key == "android_cpp_shared") apk.cpp_shared = to_lower(value);
     else if (key == "android_assets") add_list(apk.assets, true);
-    else if (key == "android_java") add_list(apk.java, true);
-    else if (key == "android_jars") add_list(apk.jars, true);
+    else if (key == "android_java" || key == "android_jars") {
+        // Prebuilt Java: a .jar entry (or a wildcard such as sdk/java/*.jar) is an extra jar that is compiled
+        // against and dexed; any other entry of android_java is a source directory.
+        for (const auto& entry : split(value, ',')) {
+            const std::string t = trim(entry);
+            if (t.empty()) continue;
+            const bool jar_entry = key == "android_jars" || to_lower(t).size() >= 4 && to_lower(t).compare(to_lower(t).size() - 4, 4, ".jar") == 0;
+            if (jar_entry && is_wildcard_path(t)) {
+                auto expanded = expand_wildcards(t, state.base_path);
+                std::sort(expanded.begin(), expanded.end());
+                for (const auto& jar : expanded) apk.jars.push_back(resolve_path(jar, state.base_path));
+                continue;
+            }
+            (jar_entry ? apk.jars : apk.java).push_back(resolve_path(t, state.base_path));
+        }
+    }
     else if (key == "android_native_libs") {
         // `path/libfoo.so [optional]` marks a library that is skipped when the file does not exist.
         for (const auto& entry : split(value, ',')) {
@@ -4225,6 +4244,10 @@ bool BuildscriptParser::parse_android_apk_setting(const std::string& key, const 
             if (t.empty()) continue;
             (optional ? apk.optional_native_libs : apk.native_libs).push_back(resolve_path(t, state.base_path));
         }
+    }
+    else if (key == "android_extract_native_libs") {
+        const std::string v = to_lower(trim(value));
+        apk.extract_native_libs = v == "true" || v == "yes" || v == "1" || v == "on";
     }
     else if (key == "android_aab") {
         const std::string v = to_lower(trim(value));
@@ -4268,6 +4291,21 @@ BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const s
     if (cond == "linux") return {is_linux, ""};
     if (cond == "osx" || cond == "macos" || cond == "darwin") return {is_osx, ""};
     if (cond == "unix" || cond == "posix") return {is_unix, ""};
+
+    // env(NAME): true when the environment variable is set to something other than "", "0", "false", "no"
+    // or "off" at generation time; !env(NAME) negates. Use it to switch a pre-build step or a block on and off.
+    {
+        const std::string original = trim(condition);
+        const bool negated = !original.empty() && original[0] == '!';
+        const std::string body = negated ? trim(original.substr(1)) : original;
+        if (to_lower(body).rfind("env(", 0) == 0 && body.back() == ')') {
+            const std::string name = trim(body.substr(4, body.size() - 5));
+            const char* raw = name.empty() ? nullptr : std::getenv(name.c_str());
+            const std::string value = to_lower(trim(raw ? raw : ""));
+            const bool set = !(value.empty() || value == "0" || value == "false" || value == "no" || value == "off");
+            return {negated ? !set : set, ""};
+        }
+    }
 
     // Platform-level conditions: settings apply only to matching platform configurations
     if (cond == "win32") return {is_windows, "Win32"};

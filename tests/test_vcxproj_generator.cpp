@@ -249,7 +249,7 @@ dependencies = Host
     CHECK(roundtrip.projects[0].sources.size() == 2);
     MakefileGenerator make;
     CMakeGenerator cmake;
-    CHECK_FALSE(make.generate(solution, gen.temp_dir.string()));
+    CHECK(make.generate(solution, gen.temp_dir.string()));
     CHECK_FALSE(cmake.generate(solution, gen.temp_dir.string()));
     SECTION("Missing framework fails") {
         host.target_framework.clear();

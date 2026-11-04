@@ -38,6 +38,8 @@ void print_usage(const char* program_name) {
     std::cout << "      --target-os <os>       OS that if(windows)/if(linux)/... conditions evaluate\n";
     std::cout << "                             against: windows, linux, macos, ios, android\n";
     std::cout << "                             (default: the machine running sighmake)\n";
+    std::cout << "      --cxx <compiler>       C++ compiler driver written into Makefiles (default: g++, clang++ on macOS)\n";
+    std::cout << "      --cc <compiler>        C compiler driver written into Makefiles (default: gcc, clang on macOS)\n";
     std::cout << "      --export-deps          Export dependency report as HTML\n\n";
     std::cout << "Build options:\n";
     std::cout << "  -b, --build <dir>          Build using previously generated project files\n";
@@ -172,7 +174,8 @@ int main(int argc, char* argv[]) {
                 vcxproj::VpcParser parser;
                 vcxproj::Solution solution = parser.parse(input_file);
 
-                std::cout << "Solution: " << solution.name << "\n";
+
+        std::cout << "Solution: " << solution.name << "\n";
                 std::cout << "Projects: " << solution.projects.size() << "\n";
 
                 vcxproj::BuildscriptWriter writer;
@@ -257,6 +260,8 @@ int main(int argc, char* argv[]) {
     bool convert_mode = false;
     bool export_deps = false;
     std::map<std::string, std::string> cli_variables;
+    std::string cxx_override;
+    std::string cc_override;
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -326,6 +331,13 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             vcxproj::set_target_os(parsed);
+        } else if (strcmp(argv[i], "--cxx") == 0 || strcmp(argv[i], "--cc") == 0) {
+            const bool is_cxx = strcmp(argv[i], "--cxx") == 0;
+            if (i + 1 >= argc) {
+                std::cerr << "Error: " << argv[i] << " requires an argument\n";
+                return 1;
+            }
+            (is_cxx ? cxx_override : cc_override) = argv[++i];
         } else if (strcmp(argv[i], "--export-deps") == 0) {
             export_deps = true;
         } else if (strcmp(argv[i], "-D") == 0) {
@@ -489,6 +501,9 @@ int main(int argc, char* argv[]) {
             }
             solution = parser.parse(buildscript_path);
         }
+
+        if (!cxx_override.empty()) solution.cxx_compiler = cxx_override;
+        if (!cc_override.empty()) solution.c_compiler = cc_override;
 
         std::cout << "Solution: " << solution.name << "\n";
         std::cout << "Projects: " << solution.projects.size() << "\n";

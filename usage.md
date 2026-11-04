@@ -102,6 +102,7 @@ an input file produces an "Unexpected argument" error.
 | `-D <NAME>=<VALUE>` | Define a value used by `${NAME}` substitutions while parsing a buildscript. Repeat for multiple variables. |
 | `-t`, `--toolset <name>` | Set the default MSVC toolset for projects that do not specify one. |
 | `--target-os <os>` | Evaluate `if(...)` blocks and `[tag]` conditions for this OS instead of the machine running sighmake: `windows`, `linux`, `macos` (`osx`, `darwin`), `ios`, or `android`. See [Cross-generating for another OS](#cross-generating-for-another-os). |
+| `--cxx <compiler>`, `--cc <compiler>` | Makefile generator: the C++ / C compiler driver written as `CXX` / `CC` (default `g++` / `gcc`, `clang++` / `clang` on macOS). Overrides the `cxx` / `cc` solution keys. `make CXX=...` still overrides the generated value. |
 | `--export-deps` | Write `<Solution>_dependencies.html` in the output root. |
 | `-l`, `--list` | List registered generators. |
 | `--list-toolsets` | List recognized `msvcYYYY` toolset aliases. |
@@ -558,7 +559,23 @@ Prebuild/postbuild commands, however, run on the machine that builds. Use the
 | `host_macos` (`host_osx`, `host_darwin`) | macOS |
 | `host_posix` (`host_unix`) | Linux or macOS |
 
-Their `!` negations are supported. Conditions do not combine with `&&`; nest the
+Their `!` negations are supported. `env(NAME)` is true when the environment
+variable `NAME` is set at generation time to something other than empty, `0`,
+`false`, `no` or `off` (`!env(NAME)` negates). It switches a pre-build step, a
+dependency or any block on a build-time switch:
+
+```ini
+if(!env(SKIP_DEPCHECK)) {
+    prebuild = tools/depcheck --all
+}
+if(host_posix) {
+    if(env(CI)) {
+        defines = RUNNING_ON_CI
+    }
+}
+```
+
+Conditions do not combine with `&&`; nest the
 blocks instead:
 
 ```ini
@@ -780,9 +797,10 @@ target_link_libraries(
 | `android_activity` | Launcher activity (default `android.app.NativeActivity`, needs no Java). |
 | `android_native_lib` | `lib<name>.so` loaded by NativeActivity (default `main`). |
 | `android_min_sdk`, `android_target_sdk` | Default: `ANDROID_API`, and the newest installed platform. |
-| `android_manifest` | Use your own AndroidManifest.xml instead of the generated one. |
+| `android_manifest` | Use your own AndroidManifest.xml instead of the generated one. `${NAME}` and `${NAME:-default}` references inside it are expanded from `-D` / `find_package` variables into a copy next to the makefiles (a manifest without `${` is used in place), so an engine does not have to render its template itself. |
+| `android_extract_native_libs` | `android:extractNativeLibs` of the generated manifest. Default `false` (libraries are mapped straight out of the APK); `true` makes the installer extract them to the app's `nativeLibraryDir`, needed by code that `dlopen()`s the library by absolute path. |
 | `android_res`, `android_assets` | Resource directory; asset directories merged into `assets/`. |
-| `android_java`, `android_jars` | Java source directories (compiled with `javac`, dexed with `d8`) and extra jars. |
+| `android_java`, `android_jars` | Java source directories (compiled with `javac`, dexed with `d8`) and extra jars. Prebuilt Java in an SDK layout works without sources: list jars or wildcards (`android_jars = sdk/java/*.jar`); a `.jar` or `*.jar` entry of `android_java` counts as a jar. Jars are compiled against and dexed into the package. |
 | `android_native_libs` | Extra prebuilt `.so` files. The path may contain `$(ANDROID_ABI)` and `$(Configuration)` / `$(Platform)`, so Debug and Release share one spelling (`prebuilt/$(Configuration)/$(ANDROID_ABI)/libfoo.so`). Tag an entry `[optional]` to skip it, with a notice, when the file does not exist. |
 | `android_aab` | `true` also builds `<target_name>.aab` (Android App Bundle) next to the `.apk`, see below. Default `false`; `--aab` / `ANDROID_AAB=1` enable it for one build. |
 | `android_permissions`, `android_features` | `uses-permission` names (`android.permission.` optional); `uses-feature` entries: `name`, `name:false`, `glEsVersion=0x00030000`, and `name key=value ...` for features with more attributes, for example `android.hardware.vulkan.version version=0x00401000` or `android.hardware.vulkan.level level=1 required=false`. |
@@ -1790,6 +1808,7 @@ the primary names shown here in hand-written buildscripts.
 | `name` | Solution name. Defaults to the first project name. |
 | `configurations` | Comma-separated configuration names. |
 | `platforms` | Comma-separated platform names. |
+| `cxx`, `cc` | C++ / C compiler drivers written into Makefiles (`cxx = clang++`, `cc = clang`); `--cxx` / `--cc` override them. |
 | `defines` | Definitions applied to every project/configuration. Exact/platform selectors are accepted. |
 | `include` | Settings fragment path. |
 
@@ -2036,6 +2055,13 @@ such key; [SIMD and vectorization](#simd-and-vectorization) shows the `cflags`
 equivalent for GCC and Clang.
 
 ## C# projects
+
+The Makefile generator (`-g makefile`) builds C# projects too, which is the way to
+build them on Linux and macOS where no Visual Studio is installed: it writes each
+project's `.csproj` next to the makefiles and gives every configuration a
+`<Project>.<Config>` makefile that runs `dotnet build <csproj> -c <Config> -p:Platform=<platform>`
+(the Windows-style platform of the project, `x64` for example, else the host platform). The master
+Makefile orders the C# and native projects through their dependencies as usual.
 
 The Visual Studio generator (`-g vcxproj`) supports SDK-style C# executables and
 libraries alongside native projects. Install Visual Studio and a .NET SDK that

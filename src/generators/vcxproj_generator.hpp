@@ -33,6 +33,8 @@ public:
                           const std::string& output_path);
     bool generate_csproj(const Project& project, const Solution& solution,
                          const std::string& output_path);
+    // File name generate() gives the project file of a C# project (the Makefile generator builds it with dotnet).
+    static std::string csproj_filename(const Project& project);
 
     // Generate a .vcxproj.filters file from project file filter metadata
     bool generate_vcxproj_filters(const Project& project, const std::string& vcxproj_path);

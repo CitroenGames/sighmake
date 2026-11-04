@@ -35,6 +35,10 @@ static std::string generated_project_filename(const Project& project) {
         ? GENERATED_CSPROJ : GENERATED_VCXPROJ);
 }
 
+std::string VcxprojGenerator::csproj_filename(const Project& project) {
+    return generated_project_filename(project);
+}
+
 // Adjust relative file paths in a custom build command
 static std::string adjust_command_paths(const std::string& command,
                                        const std::string&,
@@ -380,12 +384,16 @@ bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& s
     // The per-configuration groups below are conditioned on '$(Configuration)|$(Platform)'. A plain
     // `dotnet build` leaves Platform empty (the SDK then defaults to AnyCPU) and none of them, including
     // the per-project defines, would apply. Default it to the project's preferred platform instead.
+    // Unix cells (Linux, macOS) only describe the project when it has no Windows-style cell, which is the
+    // case when a Linux host generates C# projects for its Makefile build.
+    const bool csharp_has_non_unix_cell = std::any_of(project.configurations.begin(), project.configurations.end(),
+        [](const auto& entry) { return !is_unix_platform(parse_config_key(entry.first).second); });
     {
         std::string default_platform;
         for (const auto& [key, cfg] : project.configurations) {
             (void)cfg;
             const std::string platform = parse_config_key(key).second;
-            if (is_unix_platform(platform)) continue;
+            if (csharp_has_non_unix_cell && is_unix_platform(platform)) continue;
             if (default_platform.empty() || platform == "x64") default_platform = platform;
         }
         if (!default_platform.empty()) {
@@ -438,7 +446,7 @@ bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& s
 
     for (const auto& [key, cfg] : project.configurations) {
         auto [config, platform] = parse_config_key(key);
-        if (is_unix_platform(platform)) continue;
+        if (csharp_has_non_unix_cell && is_unix_platform(platform)) continue;
         if (cfg.config_type != "Application" && cfg.config_type != "DynamicLibrary") {
             std::cerr << "Error: C# project '" << project.name << "' requires type = exe or dll.\n";
             return false;
@@ -448,7 +456,7 @@ bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& s
         group.append_child("OutputType").text() = cfg.config_type == "Application"
             ? (cfg.link.sub_system == "Windows" ? "WinExe" : "Exe") : "Library";
         group.append_child("PlatformTarget").text() = platform == "Win32" ? "x86"
-            : (platform == "Any CPU" || platform == "AnyCPU" ? "AnyCPU" : platform.c_str());
+            : (platform == "Any CPU" || platform == "AnyCPU" || is_unix_platform(platform) ? "AnyCPU" : platform.c_str());
         group.append_child("Optimize").text() = !cfg.use_debug_libraries;
         group.append_child("DebugType").text() = "portable";
         group.append_child("IntermediateOutputPath").text() = ("obj/" + project.name + "/" + platform + "/" + config + "/").c_str();
