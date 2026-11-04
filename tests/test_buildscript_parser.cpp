@@ -469,6 +469,53 @@ depends = LibA
     CHECK_FALSE(app->project_references[0].link_library_dependencies);
 }
 
+TEST_CASE("Repeated dependency declarations collapse to one reference", "[buildscript_parser][dependencies]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64
+
+[project:Runtime]
+type = lib
+
+[project:Tool]
+type = lib
+
+[project:App]
+type = exe
+target_link_libraries(PRIVATE Runtime)
+dependencies = Runtime, Tool
+dependencies = Runtime, Tool
+)");
+    auto* app = find_project(sol, "App");
+    REQUIRE(app != nullptr);
+    REQUIRE(app->project_references.size() == 2);
+    CHECK(app->project_references[0].name == "Runtime");
+    CHECK(app->project_references[0].visibility == DependencyVisibility::PRIVATE);
+    CHECK(app->project_references[0].link_library_dependencies);
+    CHECK(app->project_references[1].name == "Tool");
+    CHECK_FALSE(app->project_references[1].link_library_dependencies);
+}
+
+TEST_CASE("A build-order dependency later linked through target_link_libraries links", "[buildscript_parser][dependencies]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[project:Runtime]
+type = lib
+
+[project:App]
+type = exe
+dependencies = Runtime
+target_link_libraries(PUBLIC Runtime)
+)");
+    auto* app = find_project(sol, "App");
+    REQUIRE(app != nullptr);
+    REQUIRE(app->project_references.size() == 1);
+    CHECK(app->project_references[0].link_library_dependencies);
+}
+
 TEST_CASE("Parse multiple projects", "[buildscript_parser]") {
     BuildscriptParser parser;
     auto sol = parser.parse_string(R"(

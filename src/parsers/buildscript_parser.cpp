@@ -157,6 +157,7 @@ static void apply_target_link_libraries(const std::string& call_text, Project& p
             } else {
                 it->visibility = current_visibility;  // Update visibility
                 it->whole_archive = dep.whole_archive;  // Update whole_archive
+                it->link_library_dependencies = true;   // An earlier build-order-only entry now links
             }
         }
     }
@@ -3227,10 +3228,18 @@ bool BuildscriptParser::parse_project_misc_setting(const std::string& key, const
         const bool link_dependency = (key == "project_references");
         for (const auto& dep_name : deps) {
             std::string trimmed_name = trim(dep_name);
-            if (!trimmed_name.empty()) {
-                proj.project_references.push_back(
-                    ProjectDependency(trimmed_name, DependencyVisibility::PUBLIC, false, link_dependency));
+            if (trimmed_name.empty()) continue;
+            // The same project may already be referenced (a target_link_libraries entry, or this
+            // key repeated in a platform block). Keep one entry: it links if any declaration links.
+            auto existing = std::find_if(
+                proj.project_references.begin(), proj.project_references.end(),
+                [&](const ProjectDependency& d) { return d.name == trimmed_name; });
+            if (existing != proj.project_references.end()) {
+                existing->link_library_dependencies = existing->link_library_dependencies || link_dependency;
+                continue;
             }
+            proj.project_references.push_back(
+                ProjectDependency(trimmed_name, DependencyVisibility::PUBLIC, false, link_dependency));
         }
     } else {
         return false;

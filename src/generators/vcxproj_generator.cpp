@@ -129,6 +129,34 @@ static const Project* find_dependency_project(const Solution& solution, const st
     return nullptr;
 }
 
+// A project can reach the same dependency through several declarations (for example a
+// `target_link_libraries` entry plus a build-order `dependencies` entry, the same `dependencies`
+// line repeated in a platform block, or an imported project file listing a reference twice).
+// Solution and project files must list each referenced project once: MSBuild rejects a .slnx with
+// a repeated BuildDependency. Entries are collapsed by the project they resolve to (names match
+// case-insensitively and by target name), first-seen order is kept so output stays deterministic,
+// and the merged entry links if any occurrence links and is INTERFACE only if every occurrence is.
+static std::vector<ProjectDependency> unique_project_references(const Solution& solution,
+                                                                const Project& project) {
+    std::vector<ProjectDependency> unique;
+    std::vector<std::string> keys;
+    for (const auto& dep : project.project_references) {
+        const Project* target = find_dependency_project(solution, dep.name);
+        const std::string key = target ? "#" + target->name : to_lower(dep.name);
+        auto it = std::find(keys.begin(), keys.end(), key);
+        if (it == keys.end()) {
+            keys.push_back(key);
+            unique.push_back(dep);
+            continue;
+        }
+        ProjectDependency& merged = unique[static_cast<size_t>(it - keys.begin())];
+        merged.link_library_dependencies = merged.link_library_dependencies || dep.link_library_dependencies;
+        merged.whole_archive = merged.whole_archive || dep.whole_archive;
+        if (merged.visibility == DependencyVisibility::INTERFACE) merged.visibility = dep.visibility;
+    }
+    return unique;
+}
+
 static std::string normalize_filter_path(std::string filter) {
     std::replace(filter.begin(), filter.end(), '\\', '/');
     while (!filter.empty() && filter.front() == '/') {
@@ -534,7 +562,7 @@ bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& s
         error.append_attribute("Text") = "Required runtime dependency is missing: %(_SighmakeRequiredRuntimeDependency.Identity)";
     }
     auto refs = root.append_child("ItemGroup");
-    for (const auto& dep : project.project_references) {
+    for (const auto& dep : unique_project_references(solution, project)) {
         if (dep.visibility == DependencyVisibility::INTERFACE) continue;
         const Project* target = find_dependency_project(solution, dep.name);
         if (!target || target->is_package_project) {
@@ -1065,7 +1093,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             {
                 // Build whole-archive linker flags for dependencies marked WHOLE_ARCHIVE
                 std::string whole_archive_opts;
-                for (const auto& dep : project.project_references) {
+                for (const auto& dep : unique_project_references(solution, project)) {
                     if (!dep.link_library_dependencies) continue;
                     if (!dep.whole_archive) continue;
                     // Find the dependency project to determine its output library name
@@ -1704,7 +1732,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     // Project references
     if (!project.project_references.empty()) {
         auto ref_group = root.append_child("ItemGroup");
-        for (const auto& dep : project.project_references) {
+        for (const auto& dep : unique_project_references(solution, project)) {
             // Skip INTERFACE dependencies - they don't get linked, only their includes propagate
             if (dep.visibility == DependencyVisibility::INTERFACE) {
                 continue;
@@ -1908,7 +1936,7 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
         // Write ProjectSection(ProjectDependencies) if the project has dependencies
         if (!proj.project_references.empty()) {
             file << "\tProjectSection(ProjectDependencies) = postProject\n";
-            for (const auto& dep : proj.project_references) {
+            for (const auto& dep : unique_project_references(solution, proj)) {
                 // Skip INTERFACE dependencies - they don't get linked
                 if (dep.visibility == DependencyVisibility::INTERFACE) {
                     continue;
@@ -2054,7 +2082,7 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
         }
 
         // Add build dependencies
-        for (const auto& dep : proj.project_references) {
+        for (const auto& dep : unique_project_references(solution, proj)) {
             if (dep.visibility == DependencyVisibility::INTERFACE) {
                 continue;
             }

@@ -2397,3 +2397,77 @@ TEST_CASE("VcxprojGenerator does not duplicate user /FS", "[vcxproj_generator][p
     CHECK(count == 1);
     CHECK(opts.find("/W3") != std::string::npos);
 }
+
+TEST_CASE("Solution and project files list a dependency reached through several declarations once",
+          "[vcxproj_generator][dependencies]") {
+    // App links Runtime through target_link_libraries and also lists it as a build-order
+    // dependency twice (once unconditionally, once in a platform block). MSBuild rejects a .slnx
+    // that repeats a BuildDependency, so every generated file must name Runtime exactly once.
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = DupDeps
+configurations = Debug, Release
+platforms = x64
+
+[project:Runtime]
+type = lib
+sources = runtime.cpp
+
+[project:Other]
+type = lib
+sources = other.cpp
+
+[project:App]
+type = exe
+sources = main.cpp
+target_link_libraries(PRIVATE Runtime)
+dependencies = Runtime
+if(Windows)
+{
+    dependencies = Runtime, Other
+}
+)");
+    auto count = [](const std::string& text, const std::string& needle) {
+        size_t n = 0;
+        for (size_t p = text.find(needle); p != std::string::npos; p = text.find(needle, p + 1)) ++n;
+        return n;
+    };
+    const Project* app = nullptr;
+    const Project* runtime = nullptr;
+    for (const auto& p : gen.solution.projects) {
+        if (p.name == "App") app = &p;
+        if (p.name == "Runtime") runtime = &p;
+    }
+    REQUIRE(app != nullptr);
+    REQUIRE(runtime != nullptr);
+
+    VcxprojGenerator generator;
+    REQUIRE(generator.generate_slnx(gen.solution, (gen.temp_dir / "DupDeps.slnx").string()));
+    REQUIRE(generator.generate_sln(gen.solution, (gen.temp_dir / "DupDeps.sln").string()));
+    REQUIRE(generator.generate_vcxproj(*app, gen.solution, (gen.temp_dir / "build/App_dup.vcxproj").string()));
+
+    const std::string slnx = read_file(gen.temp_dir / "DupDeps.slnx");
+    CHECK(count(slnx, "<BuildDependency Project=\"Runtime_.vcxproj\"") == 1);
+    CHECK(count(slnx, "<BuildDependency Project=\"Other_.vcxproj\"") == 1);
+    // First-seen order is kept.
+    CHECK(slnx.find("Runtime_.vcxproj\"") < slnx.find("<BuildDependency Project=\"Other_.vcxproj\""));
+    pugi::xml_document slnx_doc;
+    REQUIRE(slnx_doc.load_string(slnx.c_str()));
+
+    const std::string sln = read_file(gen.temp_dir / "DupDeps.sln");
+    const std::string runtime_dep = "{" + runtime->uuid + "} = {" + runtime->uuid + "}";
+    CHECK(count(sln, runtime_dep) == 1);
+
+    pugi::xml_document vcx;
+    REQUIRE(vcx.load_file((gen.temp_dir / "build/App_dup.vcxproj").string().c_str()));
+    size_t runtime_refs = 0;
+    for (auto node : vcx.select_nodes("//ProjectReference")) {
+        const std::string include = node.node().attribute("Include").value();
+        if (include == "Runtime_.vcxproj") {
+            ++runtime_refs;
+            // The link from target_link_libraries survives the merge with build-order entries.
+            CHECK(std::string(node.node().child_value("LinkLibraryDependencies")) != "false");
+        }
+    }
+    CHECK(runtime_refs == 1);
+}
