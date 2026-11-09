@@ -159,6 +159,62 @@ defines = MY_FLAG
     }
 }
 
+static std::string makefile_for_config(const std::string& defines_lines, const std::string& config) {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = Linux
+
+[project:App]
+type = exe
+sources = main.cpp
+)" + defines_lines);
+    for (const auto& [name, content] : result.files) {
+        if (name.find("." + config) != std::string::npos && name.find("App") != std::string::npos)
+            return content;
+    }
+    return {};
+}
+
+TEST_CASE("MakefileGenerator defaults NDEBUG for Release and _DEBUG for Debug", "[makefile_generator][ndebug]") {
+    const std::string rel = makefile_for_config("defines = MY_FLAG\n", "Release");
+    const std::string dbg = makefile_for_config("defines = MY_FLAG\n", "Debug");
+    REQUIRE(!rel.empty());
+    REQUIRE(!dbg.empty());
+    CHECK(rel.find("-DNDEBUG") != std::string::npos);
+    CHECK(rel.find("-D_DEBUG") == std::string::npos);
+    CHECK(dbg.find("-D_DEBUG") != std::string::npos);
+    CHECK(dbg.find("-DNDEBUG") == std::string::npos);
+    CHECK(rel.find("-DMY_FLAG") != std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator explicit NDEBUG or _DEBUG suppresses the default", "[makefile_generator][ndebug]") {
+    // Project keeps asserts live in Release: no NDEBUG is added.
+    const std::string rel = makefile_for_config("defines[Release|Linux] = _DEBUG\n", "Release");
+    REQUIRE(!rel.empty());
+    CHECK(rel.find("-D_DEBUG") != std::string::npos);
+    CHECK(rel.find("-DNDEBUG") == std::string::npos);
+    // Explicit NDEBUG in Debug: no _DEBUG is added.
+    const std::string dbg = makefile_for_config("defines[Debug|Linux] = NDEBUG\n", "Debug");
+    REQUIRE(!dbg.empty());
+    CHECK(dbg.find("-DNDEBUG") != std::string::npos);
+    CHECK(dbg.find("-D_DEBUG") == std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator NDEBUG default is per config and recorded in the flag stamp", "[makefile_generator][ndebug]") {
+    // An explicit define in Release must not leak into Debug's default.
+    const std::string dbg = makefile_for_config("defines[Release|Linux] = NDEBUG\n", "Debug");
+    REQUIRE(!dbg.empty());
+    CHECK(dbg.find("-D_DEBUG") != std::string::npos);
+    // The define is part of CXXFLAGS, which feeds the per-target flag stamp, so a
+    // generator upgrade that adds NDEBUG changes the stamp and rebuilds objects.
+    const std::string rel = makefile_for_config("", "Release");
+    REQUIRE(!rel.empty());
+    CHECK(rel.find("CXXFLAGS") != std::string::npos);
+    CHECK(rel.find("SIGHMAKE_CXX_STAMP") != std::string::npos);
+}
+
 TEST_CASE("MakefileGenerator name and description", "[makefile_generator]") {
     MakefileGenerator gen;
     CHECK(gen.name() == "makefile");

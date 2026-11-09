@@ -46,7 +46,8 @@ private:
 
     // Helper functions for assembling flag strings
     std::string get_compiler_flags(const Configuration& config, const Project& project,
-                                   const std::filesystem::path& makefile_dir, bool c_flags);
+                                   const std::filesystem::path& makefile_dir, bool c_flags,
+                                   const std::string& config_name = {});
     std::string get_linker_flags(const Configuration& config, const std::filesystem::path& makefile_dir,
                                  bool android);
     std::string get_linker_libs(const Configuration& config, const std::filesystem::path& makefile_dir = {});

@@ -668,7 +668,8 @@ std::tuple<std::string, std::string> MakefileGenerator::get_file_pch_mode(
 
 // Get all compiler flags for a configuration
 std::string MakefileGenerator::get_compiler_flags(const Configuration& config, const Project& project,
-                                                   const std::filesystem::path& makefile_dir, bool c_flags) {
+                                                   const std::filesystem::path& makefile_dir, bool c_flags,
+                                                   const std::string& config_name) {
     std::stringstream ss;
 
     // Language standard. Mixed C/C++ projects need distinct flags for each
@@ -709,7 +710,8 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
     }
 
     // Preprocessor definitions
-    for (const auto& def : config.cl_compile.preprocessor_definitions) {
+    // Release gains NDEBUG and Debug gains _DEBUG unless the project sets either itself.
+    for (const auto& def : flags::with_default_build_defines(config_name, config.cl_compile.preprocessor_definitions)) {
         ss << "-D" << def << " ";
     }
 
@@ -1757,8 +1759,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     }
 
     // Compiler flags
-    std::string cxxflags = get_compiler_flags(config, project, makefile_dir, false);
-    std::string cflags = get_compiler_flags(config, project, makefile_dir, true);
+    std::string cxxflags = get_compiler_flags(config, project, makefile_dir, false, config_name);
+    std::string cflags = get_compiler_flags(config, project, makefile_dir, true, config_name);
     std::string ldflags = get_linker_flags(config, makefile_dir, android);
     std::string ldlibs = get_linker_libs(config, makefile_dir);
 

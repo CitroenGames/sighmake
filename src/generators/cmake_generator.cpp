@@ -264,9 +264,15 @@ void CMakeGenerator::write_compile_definitions(std::ostream& out, const Project&
     // Collect common defines across all configs
     std::set<std::string> common_defines;
     bool first = true;
+    // Release gains NDEBUG and Debug gains _DEBUG (unless the project sets either), the
+    // same default the other generators apply. Utility targets compile nothing.
+    auto effective_defines = [&](const std::string& cfg_name, const Configuration& config) {
+        if (config_type == "Utility") return config.cl_compile.preprocessor_definitions;
+        return flags::with_default_build_defines(cfg_name, config.cl_compile.preprocessor_definitions);
+    };
     for (const auto& [key, config] : project.configurations) {
-        std::set<std::string> cfg_defines(config.cl_compile.preprocessor_definitions.begin(),
-                                           config.cl_compile.preprocessor_definitions.end());
+        auto defs = effective_defines(parse_config_key(key).first, config);
+        std::set<std::string> cfg_defines(defs.begin(), defs.end());
         if (first) {
             common_defines = cfg_defines;
             first = false;
@@ -295,7 +301,7 @@ void CMakeGenerator::write_compile_definitions(std::ostream& out, const Project&
         if (!config) continue;
 
         std::vector<std::string> extra;
-        for (const auto& def : config->cl_compile.preprocessor_definitions) {
+        for (const auto& def : effective_defines(cfg_name, *config)) {
             if (!common_defines.count(def)) {
                 extra.push_back(def);
             }

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <string>
+#include <vector>
 
 // Single source of truth for translating the MSVC-style setting values stored
 // in Configuration ("MaxSpeed", "Level4", "MultiThreadedDLL", "Console", ...)
@@ -9,6 +11,23 @@
 
 namespace vcxproj {
 namespace flags {
+
+// ---- Conventional assertion define (_DEBUG / NDEBUG) ----
+
+// Returns the preprocessor definitions for a configuration with the
+// conventional default applied: "Debug" gains _DEBUG and "Release" gains
+// NDEBUG, unless the project already states _DEBUG or NDEBUG itself (any
+// explicit choice wins, so a project can build Release with live asserts).
+// Shared by every generator so they behave identically; the vcxproj generator
+// applies the same rule inline.
+inline std::vector<std::string> with_default_build_defines(const std::string& config_name,
+                                                           std::vector<std::string> defines) {
+    auto has = [&](const char* d) { return std::find(defines.begin(), defines.end(), d) != defines.end(); };
+    if (has("_DEBUG") || has("NDEBUG")) return defines;
+    if (config_name == "Debug") defines.push_back("_DEBUG");
+    else if (config_name == "Release") defines.push_back("NDEBUG");
+    return defines;
+}
 
 // ---- Optimization (ClCompile <Optimization>) ----
 
