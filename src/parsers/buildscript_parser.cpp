@@ -830,7 +830,7 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 cl.runtime_type_info = d.runtime_type_info;
             if (!cl.support_just_my_code.has_value())
                 cl.support_just_my_code = d.support_just_my_code;
-            if (!cl.utf8_source && d.utf8_source)
+            if (!cl.utf8_source.has_value() && d.utf8_source.has_value())
                 cl.utf8_source = d.utf8_source;
             if (!cl.multi_processor_compilation && d.multi_processor_compilation)
                 cl.multi_processor_compilation = d.multi_processor_compilation;
@@ -971,6 +971,15 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
             if (project.configurations.count(cfg_key)) {
                 auto& defines = project.configurations[cfg_key].cl_compile.preprocessor_definitions;
                 defines.insert(defines.end(), defs.begin(), defs.end());
+            }
+        }
+
+        // Apply the solution-level utf8 default to every configuration that did not set utf8
+        // itself (project-level, [config:...] and template values were resolved above and win).
+        if (solution.solution_level_utf8_source.has_value()) {
+            for (const auto& config_key : solution.get_config_keys()) {
+                auto& utf8 = project.configurations[config_key].cl_compile.utf8_source;
+                if (!utf8.has_value()) utf8 = solution.solution_level_utf8_source;
             }
         }
 
@@ -1958,6 +1967,9 @@ void BuildscriptParser::parse_solution_setting(const std::string& key, const std
             state.solution->solution_level_preprocessor_definitions.end(),
             defs.begin(), defs.end()
         );
+    } else if (key == "utf8" || key == "utf8_source") {
+        state.solution->solution_level_utf8_source =
+            (value == "true" || value == "yes" || value == "1");
     } else if (key == "cxx" || key == "cxx_compiler") {
         state.solution->cxx_compiler = value;
     } else if (key == "cc" || key == "c_compiler") {
@@ -3932,7 +3944,7 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
         d_cl.expand_attributed_source = t_cl.expand_attributed_source;
     if (!d_cl.treat_warning_as_error && t_cl.treat_warning_as_error)
         d_cl.treat_warning_as_error = t_cl.treat_warning_as_error;
-    if (!d_cl.utf8_source && t_cl.utf8_source)
+    if (!d_cl.utf8_source.has_value() && t_cl.utf8_source.has_value())
         d_cl.utf8_source = t_cl.utf8_source;
 
     // PCH settings

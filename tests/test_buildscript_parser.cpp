@@ -1015,6 +1015,54 @@ utf8 = true
     CHECK(sol.projects[0].configurations["Debug|Win32"].cl_compile.utf8_source == true);
 }
 
+TEST_CASE("Solution-level utf8 is a default that projects and configs can override", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = x64
+utf8 = true
+
+[project:Inherits]
+type = exe
+
+[project:OptsOut]
+type = lib
+utf8 = false
+
+[project:ConfigOptsOut]
+type = lib
+
+[config:Debug|x64]
+warning_level = Level4
+
+[config:Release|x64]
+utf8 = false
+)");
+    REQUIRE(sol.projects.size() == 3);
+    CHECK(sol.projects[0].configurations["Debug|x64"].cl_compile.utf8_source == true);
+    CHECK(sol.projects[0].configurations["Release|x64"].cl_compile.utf8_source == true);
+    CHECK(sol.projects[1].configurations["Debug|x64"].cl_compile.utf8_source == false);
+    CHECK(sol.projects[1].configurations["Release|x64"].cl_compile.utf8_source == false);
+    CHECK(sol.projects[2].configurations["Debug|x64"].cl_compile.utf8_source == true);
+    CHECK(sol.projects[2].configurations["Release|x64"].cl_compile.utf8_source == false);
+}
+
+TEST_CASE("utf8 stays unset without a solution or project value", "[buildscript_parser]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64
+
+[project:App]
+type = exe
+)");
+    CHECK_FALSE(sol.projects[0].configurations["Debug|x64"].cl_compile.utf8_source.has_value());
+}
+
 // ============================================================================
 // Public properties
 // ============================================================================

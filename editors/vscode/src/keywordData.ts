@@ -408,8 +408,8 @@ export const KEYWORDS: KeywordInfo[] = [
         name: 'utf8',
         aliases: ['utf8_source'],
         valueType: 'bool',
-        context: ['project', 'config'],
-        documentation: 'Set source and execution character set to UTF-8 (/utf-8).',
+        context: ['solution', 'project', 'config'],
+        documentation: 'Set source and execution character set to UTF-8 (/utf-8). In [solution] it is the default for every project; a project or config can still set utf8 = false.',
         supportsConfigQualifier: true,
     },
     {
