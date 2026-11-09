@@ -1761,6 +1761,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
         }
     }
 
+    std::vector<std::pair<std::string, std::string>> csharp_references;  // (generated csproj file, project name)
     // Project references
     if (!project.project_references.empty()) {
         auto ref_group = root.append_child("ItemGroup");
@@ -1784,6 +1785,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
 
                 ref_elem.append_attribute("Include") = ref_path.c_str();
 
+                if (detect_project_language(*sol_proj) == "C#")
+                    csharp_references.emplace_back(ref_path, sol_proj->name);
                 // Add the Project GUID element
                 ref_elem.append_child("Project").text() = ("{" + sol_proj->uuid + "}").c_str();
 
@@ -1812,6 +1815,30 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                 ref_elem.append_attribute("Include") = ref_path.c_str();
             }
         }
+    }
+
+    // A native project that references C# projects cannot restore them itself: `msbuild Native_.vcxproj` (no /restore) builds the referenced
+    // SDK style csproj files, which then fail with NETSDK1004 (project.assets.json not found) in a fresh clone or worktree. Restore each C#
+    // reference whose assets file is missing before its references are resolved. The restore runs in its own evaluation (distinct global
+    // properties), so the build that follows reads the generated nuget props; an up to date tree skips it.
+    if (!csharp_references.empty()) {
+        auto restore = root.append_child("Target");
+        restore.append_attribute("Name") = "SighmakeRestoreCSharpReferences";
+        restore.append_attribute("BeforeTargets") = "ResolveProjectReferences";
+        restore.append_attribute("Condition") = "'$(SighmakeRestoringReferences)' != 'true'";
+        auto missing = restore.append_child("ItemGroup");
+        for (const auto& [csproj_file, project_name] : csharp_references) {
+            auto item = missing.append_child("_SighmakeUnrestoredProject");
+            item.append_attribute("Include") = csproj_file.c_str();
+            const std::string assets = "obj/" + project_name + "/project.assets.json";
+            item.append_attribute("Condition") = ("!Exists('" + assets + "')").c_str();
+        }
+        auto task = restore.append_child("MSBuild");
+        task.append_attribute("Projects") = "@(_SighmakeUnrestoredProject)";
+        task.append_attribute("Targets") = "Restore";
+        task.append_attribute("Properties") =
+            "SighmakeRestoringReferences=true;MSBuildRestoreSessionId=$([System.Guid]::NewGuid())";
+        task.append_attribute("Condition") = "'@(_SighmakeUnrestoredProject)' != ''";
     }
 
     // Library references

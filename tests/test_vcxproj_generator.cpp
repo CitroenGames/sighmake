@@ -272,6 +272,62 @@ dependencies = Host
     }
 }
 
+TEST_CASE("Native projects restore the C# projects they reference", "[csharp][restore]") {
+    GeneratedProject gen;
+    gen.temp_dir = fs::temp_directory_path() / ("sighmake_restore_" + generate_uuid());
+    fs::create_directories(gen.temp_dir / "build");
+    BuildscriptParser parser;
+    auto solution = parser.parse_string(R"(
+[solution]
+name = Restore
+configurations = Debug, Release
+platforms = x64
+[project:Host]
+language = C#
+type = dll
+target_framework = net10.0
+sources = Host.cs
+[project:Native]
+type = exe
+sources = main.cpp
+dependencies = Host
+[project:Plain]
+type = exe
+sources = plain.cpp
+)", gen.temp_dir.string());
+    REQUIRE(solution.projects.size() == 3);
+    VcxprojGenerator generator;
+    REQUIRE(generator.generate(solution, gen.temp_dir.string()));
+
+    // A native project with a C# reference restores it before the references resolve (a fresh clone has no project.assets.json).
+    pugi::xml_document doc;
+    REQUIRE(doc.load_file((gen.temp_dir / "build/Native_.vcxproj").string().c_str()));
+    auto target = doc.select_node("/Project/Target[@Name='SighmakeRestoreCSharpReferences']").node();
+    REQUIRE(target);
+    CHECK(std::string(target.attribute("BeforeTargets").value()) == "ResolveProjectReferences");
+    auto item = target.child("ItemGroup").child("_SighmakeUnrestoredProject");
+    REQUIRE(item);
+    CHECK(std::string(item.attribute("Include").value()) == "Host_.csproj");
+    CHECK(std::string(item.attribute("Condition").value()) == "!Exists('obj/Host/project.assets.json')");
+    auto task = target.child("MSBuild");
+    REQUIRE(task);
+    CHECK(std::string(task.attribute("Targets").value()) == "Restore");
+    CHECK(std::string(task.attribute("Properties").value()).find("SighmakeRestoringReferences=true") != std::string::npos);
+
+    // The assets path must match the C# project's own BaseIntermediateOutputPath (both files live side by side in build/).
+    pugi::xml_document cs;
+    REQUIRE(cs.load_file((gen.temp_dir / "build/Host_.csproj").string().c_str()));
+    CHECK(std::string(cs.select_node("/Project/PropertyGroup/BaseIntermediateOutputPath").node().text().get()) == "obj/Host/");
+
+    // The restore runs under different global properties than the build, so the build re-evaluates the project and sees the generated props.
+    CHECK(std::string(target.attribute("Condition").value()) == "'$(SighmakeRestoringReferences)' != 'true'");
+
+    // A project without C# references gets no restore target.
+    pugi::xml_document plain;
+    REQUIRE(plain.load_file((gen.temp_dir / "build/Plain_.vcxproj").string().c_str()));
+    CHECK_FALSE(plain.select_node("/Project/Target[@Name='SighmakeRestoreCSharpReferences']").node());
+}
+
 TEST_CASE("C# AppendTargetFrameworkToOutputPath is opt-in and assembly references emit HintPath", "[csharp]") {
     std::string settings;
     bool expect_node = false;
