@@ -297,7 +297,11 @@ sources = plain.cpp
 )", gen.temp_dir.string());
     REQUIRE(solution.projects.size() == 3);
     VcxprojGenerator generator;
-    REQUIRE(generator.generate(solution, gen.temp_dir.string()));
+    // Generate the project files one by one (as the mixed C# test does): off Windows, the whole-solution generate() only accepts
+    // managed-only solutions, so a native + C# solution returns false on the macOS and Linux CI runners.
+    REQUIRE(generator.generate_csproj(solution.projects[0], solution, (gen.temp_dir / "build/Host_.csproj").string()));
+    REQUIRE(generator.generate_vcxproj(solution.projects[1], solution, (gen.temp_dir / "build/Native_.vcxproj").string()));
+    REQUIRE(generator.generate_vcxproj(solution.projects[2], solution, (gen.temp_dir / "build/Plain_.vcxproj").string()));
 
     // A native project with a C# reference restores it before the references resolve (a fresh clone has no project.assets.json).
     pugi::xml_document doc;
