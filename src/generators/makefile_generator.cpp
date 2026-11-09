@@ -2044,7 +2044,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         } else {
             link_text = std::string(links_with_cxx ? "$(CXX)" : "$(CC)") +
                 (config.config_type == "DynamicLibrary" ? " -shared" : "") +
-                " $(LDFLAGS) $(ANDROID_LINK_FLAGS) $(LDLIBS)";
+                " $(LDFLAGS)" + (android ? " $(ANDROID_LINK_FLAGS)" : "") + " $(LDLIBS)";
         }
         stamps.push_back({"SIGHMAKE_LINK_STAMP", "sighmake-link.flags", link_text});
     }

@@ -1538,20 +1538,29 @@ defines = )") + define + "\n" + ldflag + "\n";
     fs::remove_all(dir, ec);
     fs::create_directories(dir);
     std::ofstream(dir / "main.cpp") << "#include <cstdio>\nint main() { std::printf(\"%d\", FOO); return 0; }\n";
+    // Generated output paths are relative to the working directory: generate and build from inside `dir`.
+    struct CwdGuard {
+        fs::path previous = fs::current_path();
+        ~CwdGuard() { std::error_code ignored; fs::current_path(previous, ignored); }
+    } cwd_guard;
+    fs::current_path(dir);
 
     REQUIRE(gen(dir, script("FOO=1", "")));
     const std::string make_cmd = "make -C \"" + (dir / "build").string() + "\" Release >/dev/null 2>&1";
     REQUIRE(std::system(make_cmd.c_str()) == 0);
 
-    auto find_file = [&](const std::string& name) {
+    // Objects carry a path hash (main_<hash>.o).
+    auto find_file = [&](const std::string& stem, const std::string& ext) {
         fs::path found;
         for (auto& e : fs::recursive_directory_iterator(dir)) {
-            if (e.is_regular_file() && e.path().filename() == name) found = e.path();
+            const std::string name = e.path().filename().string();
+            if (!e.is_regular_file()) continue;
+            if (ext.empty() ? name == stem : (name.rfind(stem, 0) == 0 && e.path().extension() == ext)) found = e.path();
         }
         return found;
     };
-    fs::path obj = find_file("main.o");
-    fs::path app = find_file("App");
+    fs::path obj = find_file("main", ".o");
+    fs::path app = find_file("App", "");
     REQUIRE(!obj.empty());
     REQUIRE(!app.empty());
     const auto obj_time = fs::last_write_time(obj);
@@ -1580,6 +1589,7 @@ defines = )") + define + "\n" + ldflag + "\n";
     REQUIRE(std::system(make_j.c_str()) == 0);
     CHECK((fs::last_write_time(obj) == obj_time2));
     CHECK((fs::last_write_time(app) > app_time2));
+    fs::current_path(cwd_guard.previous);
     fs::remove_all(dir, ec);
 }
 #endif
