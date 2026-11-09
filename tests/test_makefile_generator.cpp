@@ -1470,12 +1470,40 @@ if(posix) {
     CHECK(mk.find("$(OBJS) Core.Debug") == std::string::npos);
 }
 
+
 // ============================================================================
 // Command-line stamps: objects/links must rebuild when flags change
 // ============================================================================
 
-TEST_CASE("MakefileGenerator objects depend on a command-line stamp", "[makefile_generator][stamp]") {
-    auto result = generate_makefile(R"(
+namespace {
+
+// sighmake resolves default output directories against the process working directory, so tests
+// that look at generated outputs run with the temp directory as the working directory.
+struct ScopedCwd {
+    fs::path previous;
+    explicit ScopedCwd(const fs::path& dir) : previous(fs::current_path()) { fs::current_path(dir); }
+    ~ScopedCwd() {
+        std::error_code ec;
+        fs::current_path(previous, ec);
+    }
+};
+
+fs::path find_file_matching(const fs::path& root, const std::string& prefix, const std::string& suffix) {
+    fs::path found;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+        if (!it->is_regular_file()) continue;
+        const std::string name = it->path().filename().string();
+        if (name.size() >= prefix.size() + suffix.size() && name.compare(0, prefix.size(), prefix) == 0 &&
+            name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            found = it->path();
+        }
+    }
+    return found;
+}
+
+std::string stamp_test_script(const std::string& define, const std::string& extra) {
+    return std::string(R"(
 [solution]
 name = Test
 configurations = Release
@@ -1484,25 +1512,66 @@ platforms = Linux
 [project:App]
 type = exe
 sources = main.cpp
-defines = FOO=1
-)");
-    REQUIRE(result.files.count("App.Release"));
-    const std::string& mk = result.files["App.Release"];
+defines = )") + define + "\n" + extra + "\n";
+}
+
+bool generate_stamp_test(const fs::path& dir, const std::string& text) {
+    BuildscriptParser parser;
+    Solution sol = parser.parse_string(text, dir.string());
+    MakefileGenerator generator;
+    return generator.generate(sol, dir.string());
+}
+
+} // namespace
+
+TEST_CASE("MakefileGenerator objects depend on generation-time command-line stamps", "[makefile_generator][stamp]") {
+    const fs::path dir = fs::temp_directory_path() / "sighmake_test_stamps_struct";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir);
+    std::ofstream(dir / "main.cpp") << "int main() { return 0; }\n";
+    ScopedCwd cwd(dir);
+
+    REQUIRE(generate_stamp_test(dir, stamp_test_script("FOO=1", "")));
+    const std::string mk = read_file(dir / "build" / "App.Release");
     INFO(mk);
-    // Stamp variable, FORCE rule that only rewrites the stamp when content differs.
-    CHECK(mk.find("SIGHMAKE_CXX_STAMP = $(OBJ_DIR)sighmake-cxx.flags") != std::string::npos);
-    CHECK(mk.find("$(SIGHMAKE_CXX_STAMP): SIGHMAKE_FORCE") != std::string::npos);
-    CHECK(mk.find("cmp -s $@.new $@") != std::string::npos);
-    CHECK(mk.find("$(subst $(SIGHMAKE_SQUOTE),'\\'',$(CXX) $(CXXFLAGS))'") != std::string::npos);
-    CHECK(mk.find(".PHONY: SIGHMAKE_FORCE") != std::string::npos);
-    // The object rule lists the stamp after the source (so $< is still the source).
-    const auto obj_rule = mk.find("main.cpp $(SIGHMAKE_CXX_STAMP)");
-    CHECK(obj_rule != std::string::npos);
-    // Link step relinks on link-flag changes.
-    CHECK(mk.find("$(SIGHMAKE_LINK_STAMP): SIGHMAKE_FORCE") != std::string::npos);
+    // Stamp variable, ordinary prerequisites, no work at make time beyond creating a missing stamp.
+    CHECK(mk.find("SIGHMAKE_CXX_STAMP = $(OBJ_DIR)sighmake-cxx.Release-Linux.flags") != std::string::npos);
+    CHECK(mk.find("main.cpp $(SIGHMAKE_CXX_STAMP)") != std::string::npos);
     CHECK(mk.find("$(TARGET): $(SIGHMAKE_LINK_STAMP)") != std::string::npos);
-    // No C sources: no C stamp.
+    CHECK(mk.find("SIGHMAKE_FORCE") == std::string::npos);
+    CHECK(mk.find("cmp -s") == std::string::npos);
     CHECK(mk.find("SIGHMAKE_C_STAMP") == std::string::npos);
+    // Desktop Makefiles never mention Android link flags.
+    CHECK(mk.find("ANDROID_LINK_FLAGS") == std::string::npos);
+
+    // The stamp files hold the command line and only change when it changes.
+    const fs::path cxx_stamp = find_file_matching(dir, "sighmake-cxx.", ".flags");
+    const fs::path link_stamp = find_file_matching(dir, "sighmake-link.", ".flags");
+    REQUIRE(!cxx_stamp.empty());
+    REQUIRE(!link_stamp.empty());
+    const std::string cxx_text = read_file(cxx_stamp);
+    CHECK(cxx_text.find("-DFOO=1") != std::string::npos);
+    const auto cxx_time = fs::last_write_time(cxx_stamp);
+    const auto link_time = fs::last_write_time(link_stamp);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    REQUIRE(generate_stamp_test(dir, stamp_test_script("FOO=1", "")));
+    CHECK((fs::last_write_time(cxx_stamp) == cxx_time));
+    CHECK((fs::last_write_time(link_stamp) == link_time));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    REQUIRE(generate_stamp_test(dir, stamp_test_script("FOO=2", "")));
+    CHECK(read_file(cxx_stamp).find("-DFOO=2") != std::string::npos);
+    CHECK((fs::last_write_time(cxx_stamp) != cxx_time));
+    CHECK((fs::last_write_time(link_stamp) == link_time));  // compile-only change: link stamp untouched
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const auto cxx_time2 = fs::last_write_time(cxx_stamp);
+    REQUIRE(generate_stamp_test(dir, stamp_test_script("FOO=2", "ldflags = -g")));
+    CHECK((fs::last_write_time(cxx_stamp) == cxx_time2));
+    CHECK((fs::last_write_time(link_stamp) != link_time));
+    CHECK(read_file(link_stamp).find("-g") != std::string::npos);
 }
 
 #ifndef _WIN32
@@ -1514,60 +1583,38 @@ TEST_CASE("MakefileGenerator rebuilds objects and relinks when flags change", "[
     if (!tool_available("make") || !tool_available("c++")) {
         SKIP("make or c++ not available");
     }
-    auto script = [](const std::string& define, const std::string& ldflag) {
-        return std::string(R"(
-[solution]
-name = Test
-configurations = Release
-platforms = Linux
-
-[project:App]
-type = exe
-sources = main.cpp
-defines = )") + define + "\n" + ldflag + "\n";
-    };
-    auto gen = [](const fs::path& dir, const std::string& text) {
-        BuildscriptParser parser;
-        Solution sol = parser.parse_string(text, dir.string());
-        MakefileGenerator generator;
-        return generator.generate(sol, dir.string());
-    };
-
-    fs::path dir = fs::temp_directory_path() / "sighmake_test_stamps";
+    const fs::path dir = fs::temp_directory_path() / "sighmake_test_stamps_run";
     std::error_code ec;
     fs::remove_all(dir, ec);
     fs::create_directories(dir);
     std::ofstream(dir / "main.cpp") << "#include <cstdio>\nint main() { std::printf(\"%d\", FOO); return 0; }\n";
+    ScopedCwd cwd(dir);
 
-    REQUIRE(gen(dir, script("FOO=1", "")));
+    REQUIRE(generate_stamp_test(dir, stamp_test_script("FOO=1", "")));
     const std::string make_cmd = "make -C \"" + (dir / "build").string() + "\" Release >/dev/null 2>&1";
+    const std::string make_j = "make -j4 -C \"" + (dir / "build").string() + "\" Release >/dev/null 2>&1";
     REQUIRE(std::system(make_cmd.c_str()) == 0);
 
-    auto find_file = [&](const std::string& name) {
-        fs::path found;
-        for (auto& e : fs::recursive_directory_iterator(dir)) {
-            if (e.is_regular_file() && e.path().filename() == name) found = e.path();
-        }
-        return found;
-    };
-    fs::path obj = find_file("main.o");
-    fs::path app = find_file("App");
+    const fs::path obj = find_file_matching(dir, "main", ".o");
+    fs::path app;  // the linked binary, not the App.Release Makefile
+    for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        if (it->is_regular_file() && it->path().filename() == "App") app = it->path();
+    }
     REQUIRE(!obj.empty());
     REQUIRE(!app.empty());
     const auto obj_time = fs::last_write_time(obj);
     const auto app_time = fs::last_write_time(app);
 
-    // Same flags again (regenerated): nothing rebuilds, also under -j.
+    // Regenerating with the same flags rebuilds nothing.
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
-    REQUIRE(gen(dir, script("FOO=1", "")));
-    REQUIRE(std::system((make_cmd + "").c_str()) == 0);
+    REQUIRE(generate_stamp_test(dir, stamp_test_script("FOO=1", "")));
+    REQUIRE(std::system(make_cmd.c_str()) == 0);
     CHECK((fs::last_write_time(obj) == obj_time));
     CHECK((fs::last_write_time(app) == app_time));
 
-    // Changed define, source untouched: object and binary must rebuild.
+    // Changed define, source untouched: the object and the binary rebuild.
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
-    REQUIRE(gen(dir, script("FOO=2", "")));
-    const std::string make_j = "make -j4 -C \"" + (dir / "build").string() + "\" Release >/dev/null 2>&1";
+    REQUIRE(generate_stamp_test(dir, stamp_test_script("FOO=2", "")));
     REQUIRE(std::system(make_j.c_str()) == 0);
     CHECK((fs::last_write_time(obj) > obj_time));
     CHECK((fs::last_write_time(app) > app_time));
@@ -1576,10 +1623,14 @@ defines = )") + define + "\n" + ldflag + "\n";
     const auto obj_time2 = fs::last_write_time(obj);
     const auto app_time2 = fs::last_write_time(app);
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
-    REQUIRE(gen(dir, script("FOO=2", "ldflags = -g")));
+    REQUIRE(generate_stamp_test(dir, stamp_test_script("FOO=2", "ldflags = -g")));
     REQUIRE(std::system(make_j.c_str()) == 0);
     CHECK((fs::last_write_time(obj) == obj_time2));
     CHECK((fs::last_write_time(app) > app_time2));
-    fs::remove_all(dir, ec);
+
+    // A missing stamp (make clean removes the intermediate directory) must not break the build.
+    REQUIRE(std::system(("make -C \"" + (dir / "build").string() + "\" clean >/dev/null 2>&1").c_str()) == 0);
+    REQUIRE(std::system(make_j.c_str()) == 0);
+    CHECK(fs::exists(app));
 }
 #endif

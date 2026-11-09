@@ -1695,12 +1695,16 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                                       config.config_type == "DynamicLibrary";
     const bool links_with_cxx = has_cpp_files || has_objcxx_files;
 
-    // Compiler variables
+    // Compiler variables (their literal text is also recorded in the command-line stamps)
+    std::string cxx_cmd = "$(CXX)", cc_cmd = "$(CC)", ar_cmd = "ar";
     if (android) {
         // Android NDK toolchain. The --target wrappers are what the NDK's own
         // clang launcher scripts do, but calling clang directly works on every
         // host OS (the .cmd wrappers are Windows-only, the bare ones POSIX-only).
         write_android_setup(out);
+        cxx_cmd = "\"$(ANDROID_TOOLCHAIN)/clang++\" --target=$(ANDROID_TRIPLE)$(ANDROID_API)";
+        cc_cmd = "\"$(ANDROID_TOOLCHAIN)/clang\" --target=$(ANDROID_TRIPLE)$(ANDROID_API)";
+        ar_cmd = "\"$(ANDROID_TOOLCHAIN)/llvm-ar\"";
         out << "CXX = \"$(ANDROID_TOOLCHAIN)/clang++\" --target=$(ANDROID_TRIPLE)$(ANDROID_API)\n";
         out << "CC = \"$(ANDROID_TOOLCHAIN)/clang\" --target=$(ANDROID_TRIPLE)$(ANDROID_API)\n";
         out << "AR = \"$(ANDROID_TOOLCHAIN)/llvm-ar\"\n";
@@ -1718,11 +1722,14 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         }
     } else {
         if (links_with_cxx && !solution.cxx_compiler.empty()) {
+            cxx_cmd = solution.cxx_compiler;
             out << "CXX = " << solution.cxx_compiler << "\n";
         } else if (links_with_cxx) {
 #ifdef __APPLE__
+            cxx_cmd = "clang++";
             out << "CXX = clang++\n";
 #else
+            cxx_cmd = "g++";
             out << "CXX = g++\n";
 #endif
         }
@@ -1730,17 +1737,22 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         // CC for empty binary targets so the generated recipe is syntactically
         // complete instead of starting with an empty $(CC).
         if ((has_c_files || (links_binary && !links_with_cxx)) && !solution.c_compiler.empty()) {
+            cc_cmd = solution.c_compiler;
             out << "CC = " << solution.c_compiler << "\n";
         } else if (has_c_files || (links_binary && !links_with_cxx)) {
 #ifdef __APPLE__
+            cc_cmd = "clang";
             out << "CC = clang\n";
 #else
+            cc_cmd = "gcc";
             out << "CC = gcc\n";
 #endif
         }
     }
+    std::string nasm_cmd = "nasm", nasmflags_text;
     if (has_nasm_files) {
         std::string nasm_exe = config.nasm.path.empty() ? "nasm" : config.nasm.path;
+        nasm_cmd = nasm_exe;
         out << "NASM = " << nasm_exe << "\n";
     }
 
@@ -1918,6 +1930,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         if (!config.nasm.additional_options.empty()) {
             nasmflags += " " + config.nasm.additional_options;
         }
+        nasmflags_text = nasmflags;
         out << "NASMFLAGS = " << nasmflags << "\n";
     }
 
@@ -2015,10 +2028,12 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     out << "\n\n";
 
     // Command-line stamps. Make only compares timestamps, so an object whose compiler flags or
-    // defines changed (but whose source did not) would stay stale. Each stamp file holds the
-    // exact command line for one language / for the link step; it is rewritten only when its
-    // content differs (FORCE + compare), so objects depending on it rebuild exactly when their
-    // command line changed. One stamp check per language per make run, none per object.
+    // defines changed (but whose source did not) would stay stale. sighmake writes one stamp file
+    // per language, and one for the link step, at generation time, and only when the command line
+    // differs from the stored content: a stamp's mtime therefore changes exactly when its command
+    // line changed. Objects (and the target) list the stamp as an ordinary prerequisite, so nothing
+    // extra runs at make time. Changes made only on the make command line or in the environment
+    // (make CXXFLAGS+=...) are not tracked; buildscript changes always go through regeneration.
     bool stamp_cxx = false, stamp_c = false, stamp_objcxx = false, stamp_nasm = false;
     for (const auto& so : source_to_obj) {
         std::string e = file_types::lowercase_extension(so.first);
@@ -2031,33 +2046,73 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                             config.config_type == "Driver" || config.config_type == "StaticLibrary";
     const std::string pch_stamp_suffix =
         (has_pch && !pch_include_base.empty()) ? (" -include \"" + pch_include_base + "\"") : "";
-    struct StampDef { const char* var; const char* file; std::string text; };
+    struct StampDef { const char* var; std::string file; std::string text; };
     std::vector<StampDef> stamps;
-    if (stamp_cxx) stamps.push_back({"SIGHMAKE_CXX_STAMP", "sighmake-cxx.flags", "$(CXX) $(CXXFLAGS)" + pch_stamp_suffix});
-    if (stamp_c) stamps.push_back({"SIGHMAKE_C_STAMP", "sighmake-c.flags", "$(CC) $(CFLAGS)" + pch_stamp_suffix});
-    if (stamp_objcxx) stamps.push_back({"SIGHMAKE_OBJCXX_STAMP", "sighmake-objcxx.flags", "$(CXX) $(OBJCXXFLAGS)" + pch_stamp_suffix});
-    if (stamp_nasm) stamps.push_back({"SIGHMAKE_NASM_STAMP", "sighmake-nasm.flags", "$(NASM) $(NASMFLAGS)"});
-    if (stamp_link) {
-        std::string link_text;
-        if (config.config_type == "StaticLibrary") {
-            link_text = android ? "$(AR) rcs" : "ar rcs";
-        } else {
-            link_text = std::string(links_with_cxx ? "$(CXX)" : "$(CC)") +
-                (config.config_type == "DynamicLibrary" ? " -shared" : "") +
-                " $(LDFLAGS) $(ANDROID_LINK_FLAGS) $(LDLIBS)";
+    {
+        // Stamp names carry the configuration so configurations sharing one intermediate
+        // directory do not rewrite each other's stamps on every generation.
+        std::string cfg_tag;
+        for (char ch : config_key) cfg_tag += std::isalnum(static_cast<unsigned char>(ch)) ? ch : '-';
+        auto stamp_file = [&](const char* lang) { return std::string("sighmake-") + lang + "." + cfg_tag + ".flags"; };
+        std::string objcxx_extra = config.cl_compile.objcxx_flags.empty() ? "" : " " + config.cl_compile.objcxx_flags;
+        if (stamp_cxx) stamps.push_back({"SIGHMAKE_CXX_STAMP", stamp_file("cxx"), cxx_cmd + " " + cxxflags + pch_stamp_suffix});
+        if (stamp_c) stamps.push_back({"SIGHMAKE_C_STAMP", stamp_file("c"), cc_cmd + " " + cflags + pch_stamp_suffix});
+        if (stamp_objcxx) stamps.push_back({"SIGHMAKE_OBJCXX_STAMP", stamp_file("objcxx"), cxx_cmd + " " + cxxflags + objcxx_extra + pch_stamp_suffix});
+        if (stamp_nasm) stamps.push_back({"SIGHMAKE_NASM_STAMP", stamp_file("nasm"), nasm_cmd + " " + nasmflags_text});
+        if (stamp_link) {
+            std::string link_text;
+            if (config.config_type == "StaticLibrary") {
+                link_text = ar_cmd + " rcs";
+            } else {
+                link_text = (links_with_cxx ? cxx_cmd : cc_cmd) +
+                    (config.config_type == "DynamicLibrary" ? " -shared" : "") + " " + ldflags +
+                    (android ? " $(ANDROID_LINK_FLAGS)" : "") + " " + ldlibs;
+            }
+            stamps.push_back({"SIGHMAKE_LINK_STAMP", stamp_file("link"), link_text});
         }
-        stamps.push_back({"SIGHMAKE_LINK_STAMP", "sighmake-link.flags", link_text});
+
+        // The Makefile is run with its own directory as the working directory (make -C), and the
+        // intermediate directory is relative to it unless absolute. A directory that depends on
+        // make variables cannot be resolved here: such configurations get no stamps.
+        bool dir_ok = int_dir.find('$') == std::string::npos;
+        const fs::path stamp_dir = fs::path(makefile_dir) / fs::path(int_dir);
+        std::vector<StampDef> written;
+        for (auto& st : stamps) {
+            if (!dir_ok) break;
+            const fs::path stamp_path = stamp_dir / st.file;
+            const std::string content = st.text + "\n";
+            std::error_code ec;
+            std::string existing;
+            {
+                std::ifstream in(stamp_path, std::ios::binary);
+                if (in) existing.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            }
+            if (existing != content) {
+                fs::create_directories(stamp_dir, ec);
+                std::ofstream sf(stamp_path, std::ios::binary | std::ios::trunc);
+                sf << content;
+                if (!sf) continue;
+            }
+            written.push_back(st);
+        }
+        stamps.swap(written);
     }
     auto stamp_var_for = [&](const std::string& e) -> const char* {
-        if (file_types::is_cpp_source(e)) return "$(SIGHMAKE_CXX_STAMP)";
-        if (file_types::is_c_source(e)) return "$(SIGHMAKE_C_STAMP)";
-        if (file_types::is_objcxx_source(e)) return "$(SIGHMAKE_OBJCXX_STAMP)";
-        if (e == ".asm" || e == ".nasm") return "$(SIGHMAKE_NASM_STAMP)";
+        for (const auto& st : stamps) {
+            std::string v = st.var;
+            if (file_types::is_cpp_source(e) && v == "SIGHMAKE_CXX_STAMP") return "$(SIGHMAKE_CXX_STAMP)";
+            if (file_types::is_c_source(e) && v == "SIGHMAKE_C_STAMP") return "$(SIGHMAKE_C_STAMP)";
+            if (file_types::is_objcxx_source(e) && v == "SIGHMAKE_OBJCXX_STAMP") return "$(SIGHMAKE_OBJCXX_STAMP)";
+            if ((e == ".asm" || e == ".nasm") && v == "SIGHMAKE_NASM_STAMP") return "$(SIGHMAKE_NASM_STAMP)";
+        }
         return "";
     };
+    const bool link_stamped = std::any_of(stamps.begin(), stamps.end(),
+        [](const StampDef& st) { return std::string(st.var) == "SIGHMAKE_LINK_STAMP"; });
+    const bool cxx_stamped = std::any_of(stamps.begin(), stamps.end(),
+        [](const StampDef& st) { return std::string(st.var) == "SIGHMAKE_CXX_STAMP"; });
     if (!stamps.empty()) {
-        out << "# Command-line stamps (rebuild when compiler/link flags change)\n";
-        out << "SIGHMAKE_SQUOTE := '\n";
+        out << "# Command-line stamps (written by sighmake at generation time when flags change)\n";
         for (const auto& st : stamps) {
             out << st.var << " = $(OBJ_DIR)" << st.file << "\n";
         }
@@ -2082,19 +2137,15 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     // Default target
     out << "all: " << (emits_target_receipt ? "sighmake-target-receipt" : "$(TARGET)") << "\n\n";
 
-    // Stamp rules: rewrite the stamp only when the command line differs from the stored one.
+    // Stamp rules. Normally the stamp already exists and make only stats it. If it is missing
+    // (for example after "make clean" removed the intermediate directory) an empty one is
+    // created; the next generation rewrites it and the objects rebuild once.
     if (!stamps.empty()) {
-        out << ".PHONY: SIGHMAKE_FORCE\nSIGHMAKE_FORCE:\n\n";
         for (const auto& st : stamps) {
-            out << "$(" << st.var << "): SIGHMAKE_FORCE\n";
-            out << "\t@mkdir -p $(dir $@)\n";
-            // Single-quote the command line for the shell: every ' becomes '\'' (no re-expansion
-            // of $ or commas, unlike $(call)).
-            out << "\t@printf '%s\\n' '$(subst $(SIGHMAKE_SQUOTE),'\\'',"
-                << st.text << ")' > $@.new; "
-                << "if cmp -s $@.new $@; then rm -f $@.new; else mv -f $@.new $@; fi\n\n";
+            out << "$(" << st.var << "):\n";
+            out << "\t@mkdir -p $(dir $@) && touch $@\n\n";
         }
-        if (stamp_link) {
+        if (link_stamped) {
             out << "$(TARGET): $(SIGHMAKE_LINK_STAMP)\n\n";
         }
     }
@@ -2102,7 +2153,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     // PCH compilation rule
     if (has_pch && !pch_header_path.empty()) {
         out << "# Precompiled header compilation\n";
-        out << "$(PCH_OUTPUT): $(PCH_HEADER) $(SIGHMAKE_CXX_STAMP)\n";
+        out << "$(PCH_OUTPUT): $(PCH_HEADER)" << (cxx_stamped ? " $(SIGHMAKE_CXX_STAMP)" : "") << "\n";
         out << "\t@mkdir -p $(dir $@)\n";
         out << "\t$(CXX) $(CXXFLAGS) -x c++-header -o $@ $<\n\n";
     }
@@ -2280,7 +2331,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         if (!is_nasm && uses_pch && has_pch) {
             out << " $(PCH_OUTPUT)";
         }
-        out << " " << stamp_var_for(ext) << "\n";
+        if (const std::string sv = stamp_var_for(ext); !sv.empty()) out << " " << sv;
+        out << "\n";
 
         out << "\t@mkdir -p $(dir $@)\n";
 
