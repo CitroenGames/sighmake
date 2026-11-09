@@ -397,7 +397,7 @@ void CMakeGenerator::write_compile_options(std::ostream& out, const Project& pro
     }
 
     // UTF-8
-    if (first_config->cl_compile.utf8_source) {
+    if (first_config->cl_compile.utf8_source.value_or(false)) {
         shared_msvc.push_back("/utf-8");
         shared_gcc.push_back("-finput-charset=UTF-8");
         shared_gcc.push_back("-fexec-charset=UTF-8");

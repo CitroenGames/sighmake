@@ -968,7 +968,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
 
         // Build AdditionalOptions with UTF-8 flag if needed
         std::string additional_opts = cfg.cl_compile.additional_options;
-        if (cfg.cl_compile.utf8_source) {
+        if (cfg.cl_compile.utf8_source.value_or(false)) {
             if (!additional_opts.empty()) {
                 additional_opts += " /utf-8";
             } else {

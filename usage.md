@@ -1848,7 +1848,7 @@ the primary names shown here in hand-written buildscripts.
 | `multiprocessor` | Boolean parallel compilation setting. |
 | `simd` | MSVC instruction set, e.g. `AdvancedVectorExtensions2`. Visual Studio only; see [SIMD and vectorization](#simd-and-vectorization). |
 | `floating_point` | `Precise`, `Strict`, or `Fast`. |
-| `utf8` | Use UTF-8 source/execution character sets. |
+| `utf8` | Use UTF-8 source/execution character sets (`/utf-8`; `-finput-charset=UTF-8 -fexec-charset=UTF-8` in Makefiles). Also accepted in `[solution]`, where it is the default for every project and configuration that does not set `utf8` itself; `utf8 = false` in a project or `[config:...]` opts out. |
 | `cflags` | Raw additional compiler options. |
 | `objcflags` | Additional flags for `.m`/`.mm` files. |
 | `compile_as` | `Default`, `CompileAsC`, or `CompileAsCpp`. |

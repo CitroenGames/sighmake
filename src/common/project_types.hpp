@@ -122,7 +122,9 @@ struct ClCompileSettings {
     bool expand_attributed_source = false;              // ExpandAttributedSource
     bool openmp_support = false;                        // OpenMPSupport
     bool treat_warning_as_error = false;                // TreatWarningAsError
-    bool utf8_source = false;                           // Use UTF-8 for source and execution character sets (/utf-8)
+    // Use UTF-8 for source and execution character sets (/utf-8). Unset inherits the [solution]
+    // `utf8` default (off when that is unset too); an explicit false opts a project out of it.
+    std::optional<bool> utf8_source;
 };
 
 // Linker settings
@@ -468,6 +470,9 @@ struct Solution {
     std::vector<std::string> solution_level_preprocessor_definitions;
     // Per-config solution-level defines (for bracket notation like defines[Win32])
     std::map<std::string, std::vector<std::string>> solution_level_preprocessor_definitions_per_config;
+    // Solution-level `utf8 = true|false`: default for every project/configuration that does not
+    // set utf8 itself (project, [config:...] or template). Unset leaves projects untouched.
+    std::optional<bool> solution_level_utf8_source;
 
     // Solution-wide found packages (from find_package())
     // Used to create synthetic projects for automatic dependency propagation
