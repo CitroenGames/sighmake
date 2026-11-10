@@ -124,17 +124,19 @@ std::vector<VpcParser::Token> VpcParser::tokenize(const std::string& content) {
             continue;
         }
 
-        // Keyword ($...)
-        if (content[i] == '$') {
+        // Keyword ($...), or a removal keyword (-$File)
+        if (content[i] == '$' || (content[i] == '-' && i + 1 < content.size() && content[i + 1] == '$')) {
             Token tok;
             tok.type = TokenType::Keyword;
             tok.line = line;
+            const bool removal = content[i] == '-';
+            if (removal) i++;  // Skip -
             i++;  // Skip $
             size_t start = i;
             while (i < content.size() && (std::isalnum(content[i]) || content[i] == '_')) {
                 i++;
             }
-            tok.value = "$" + content.substr(start, i - start);
+            tok.value = (removal ? "-$" : "$") + content.substr(start, i - start);
             tokens.push_back(tok);
             continue;
         }
@@ -1138,11 +1140,16 @@ void VpcParser::handle_pre_build_event(std::vector<Token>& tokens, size_t& i, Pa
             i++;
         }
 
-        // Apply to configurations
+        // Apply to the enclosing $Configuration (or every configuration), like $Compiler/$Linker
         if (state.current_project && !command.empty()) {
-            for (auto& [key, cfg] : state.current_project->configurations) {
-                cfg.pre_build_event.command = command;
-                cfg.pre_build_event.message = message;
+            std::vector<std::string> configs = state.current_config.empty()
+                ? defaults::configurations() : std::vector<std::string>{state.current_config};
+            for (const auto& config : configs) {
+                for (const auto& platform : defaults::platforms()) {
+                    auto& cfg = state.current_project->configurations[config + "|" + platform];
+                    cfg.pre_build_event.command = command;
+                    cfg.pre_build_event.message = message;
+                }
             }
         }
     }
@@ -1190,10 +1197,16 @@ void VpcParser::handle_post_build_event(std::vector<Token>& tokens, size_t& i, P
             i++;
         }
 
+        // Apply to the enclosing $Configuration (or every configuration), like $Compiler/$Linker
         if (state.current_project && !command.empty()) {
-            for (auto& [key, cfg] : state.current_project->configurations) {
-                cfg.post_build_event.command = command;
-                cfg.post_build_event.message = message;
+            std::vector<std::string> configs = state.current_config.empty()
+                ? defaults::configurations() : std::vector<std::string>{state.current_config};
+            for (const auto& config : configs) {
+                for (const auto& platform : defaults::platforms()) {
+                    auto& cfg = state.current_project->configurations[config + "|" + platform];
+                    cfg.post_build_event.command = command;
+                    cfg.post_build_event.message = message;
+                }
             }
         }
     }
@@ -1228,11 +1241,19 @@ void VpcParser::parse_block(std::vector<Token>& tokens, size_t& i, ParseState& s
             } else if (keyword == "$FILE" || keyword == "$DYNAMICFILE" || keyword == "$SCHEMAFILE") {
                 handle_file(tokens, i, state);
             } else if (keyword == "-$FILE") {
-                // Remove file - skip
+                // Remove a previously added file
                 i++;
-                get_next_value(tokens, i, state);
-                check_condition(tokens, i);
-                if (!check_condition(tokens, i).empty()) i++;
+                std::string path = get_next_value(tokens, i, state);
+                std::string condition = check_condition(tokens, i);
+                if (!condition.empty()) i++;
+                if (!path.empty() && state.current_project &&
+                    (condition.empty() || evaluate_condition(condition, state))) {
+                    const std::string resolved = resolve_path(path, state.base_path);
+                    auto& sources = state.current_project->sources;
+                    sources.erase(std::remove_if(sources.begin(), sources.end(),
+                                                 [&](const SourceFile& sf) { return sf.path == resolved; }),
+                                  sources.end());
+                }
             } else if (keyword == "$LIB" || keyword == "$IMPLIB" || keyword == "$LIBEXTERNAL") {
                 handle_lib(tokens, i, state);
             } else if (keyword == "$GENERAL") {

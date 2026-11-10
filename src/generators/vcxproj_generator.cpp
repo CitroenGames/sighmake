@@ -1003,8 +1003,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
         if (cfg.cl_compile.intrinsic_functions.value_or(false))
             cl.append_child("IntrinsicFunctions").text() = "true";
         // Always write RuntimeTypeInfo explicitly
-        if (cfg.cl_compile.runtime_type_info)
-            cl.append_child("RuntimeTypeInfo").text() = "true";
+        cl.append_child("RuntimeTypeInfo").text() = cfg.cl_compile.runtime_type_info ? "true" : "false";
         if (cfg.cl_compile.support_just_my_code.has_value())
             cl.append_child("SupportJustMyCode").text() =
                 *cfg.cl_compile.support_just_my_code ? "true" : "false";
@@ -1025,8 +1024,8 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
         if (!cfg.cl_compile.buffer_security_check)
             cl.append_child("BufferSecurityCheck").text() = "false";
         // Always write ForceConformanceInForLoopScope explicitly
-        if (cfg.cl_compile.force_conformance_in_for_loop_scope)
-            cl.append_child("ForceConformanceInForLoopScope").text() = "true";
+        cl.append_child("ForceConformanceInForLoopScope").text() =
+            cfg.cl_compile.force_conformance_in_for_loop_scope ? "true" : "false";
         if (!cfg.cl_compile.assembler_listing_location.empty())
             cl.append_child("AssemblerListingLocation").text() = cfg.cl_compile.assembler_listing_location.c_str();
         if (!cfg.cl_compile.object_file_name.empty())
@@ -1136,19 +1135,16 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                     if (!dep.link_library_dependencies) continue;
                     if (!dep.whole_archive) continue;
                     // Find the dependency project to determine its output library name
-                    for (const auto& sol_proj : solution.projects) {
-                        if (sol_proj.name == dep.name) {
-                            std::string lib_name;
-                            auto dep_cfg_it = sol_proj.configurations.find(config_key);
-                            if (dep_cfg_it != sol_proj.configurations.end() && !dep_cfg_it->second.target_name.empty()) {
-                                lib_name = dep_cfg_it->second.target_name;
-                            } else {
-                                lib_name = sol_proj.name;
-                            }
-                            if (!whole_archive_opts.empty()) whole_archive_opts += " ";
-                            whole_archive_opts += "/WHOLEARCHIVE:" + lib_name;
-                            break;
+                    if (const Project* sol_proj = find_dependency_project(solution, dep.name)) {
+                        std::string lib_name;
+                        auto dep_cfg_it = sol_proj->configurations.find(config_key);
+                        if (dep_cfg_it != sol_proj->configurations.end() && !dep_cfg_it->second.target_name.empty()) {
+                            lib_name = dep_cfg_it->second.target_name;
+                        } else {
+                            lib_name = sol_proj->name;
                         }
+                        if (!whole_archive_opts.empty()) whole_archive_opts += " ";
+                        whole_archive_opts += "/WHOLEARCHIVE:" + lib_name;
                     }
                 }
                 // Combine existing additional_options with whole-archive flags
@@ -1184,8 +1180,15 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             if (cfg.link.randomized_base_address.has_value()) {
                 link.append_child("RandomizedBaseAddress").text() =
                     cfg.link.randomized_base_address.value() ? "true" : "false";
-            } else if (cfg.link.fixed_base_address ||
-                       cfg.link.additional_options.find("/FIXED") != std::string::npos) {
+            } else if (cfg.link.fixed_base_address || [&] {
+                           // /FIXED requests a fixed base; /FIXED:NO is the opposite.
+                           const std::string& opts = cfg.link.additional_options;
+                           for (size_t pos = opts.find("/FIXED"); pos != std::string::npos;
+                                pos = opts.find("/FIXED", pos + 1)) {
+                               if (opts.compare(pos + 6, 3, ":NO") != 0) return true;
+                           }
+                           return false;
+                       }()) {
                 link.append_child("RandomizedBaseAddress").text() = "false";
             }
             if (cfg.link.large_address_aware)
