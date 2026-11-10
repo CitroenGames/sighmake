@@ -91,7 +91,7 @@ sighmake --version
 `--version`/`-V` are recognized only as the first argument. Placing them after
 an input file produces an "Unexpected argument" error.
 
-`<input-file>` may be a `.buildscript`, `CMakeLists.txt`, or `.cmake` file.
+`<input-file>` may be a `.buildscript`, `CMakeLists.txt`, or `.cmake` file. A directory is rejected. An argument that starts with `-` and is not a known option is an "Unknown option" error; put `--` before an input file whose name starts with `-`.
 
 ### Generation options
 
