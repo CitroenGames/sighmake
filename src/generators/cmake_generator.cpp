@@ -26,10 +26,79 @@ std::string cmake_arg(const std::string& value) {
     return cmake_quote(value);
 }
 
-std::string command_to_cmake(const std::string& command) {
-    std::string result = command;
-    std::replace(result.begin(), result.end(), '\\', '/');
+// True when `text` starts like a Windows path or a path made of a variable reference
+bool starts_like_path(const std::string& text, size_t pos) {
+    auto at = [&](size_t i) { return pos + i < text.size() ? text[pos + i] : '\0'; };
+    if (std::isalpha(static_cast<unsigned char>(at(0))) && at(1) == ':' && (at(2) == '\\' || at(2) == '/')) return true;
+    if (at(0) == '.' && at(1) == '\\') return true;
+    if (at(0) == '.' && at(1) == '.' && at(2) == '\\') return true;
+    if (at(0) == '\\' && at(1) == '\\') return true;
+    return (at(0) == '$' && (at(1) == '{' || at(1) == '(' || at(1) == '<')) || at(0) == '%';
+}
+
+// Converts the backslashes of a build command line. Windows path separators become `/`. Backslashes
+// inside a quoted string that does not start like a path are escape sequences for the program
+// (`printf "a\n"`) and stay. With `words` false the result is CMake source text (quotes kept, kept
+// backslashes escaped); with `words` true it is the list of decoded arguments.
+std::vector<std::string> convert_command(const std::string& command, bool words) {
+    std::vector<std::string> result;
+    std::string current;
+    bool in_word = false;
+    char quote = 0;
+    bool path_region = false;
+    auto flush = [&]() {
+        if (in_word) result.push_back(current);
+        current.clear();
+        in_word = false;
+    };
+    for (size_t i = 0; i < command.size(); ++i) {
+        char c = command[i];
+        if (quote == 0 && std::isspace(static_cast<unsigned char>(c))) {
+            if (words) flush();
+            else current += c;
+            continue;
+        }
+        in_word = true;
+        if (quote == 0 && (c == '"' || c == '\'')) {
+            quote = c;
+            path_region = starts_like_path(command, i + 1);
+            if (!words) current += c;
+        } else if (quote != 0 && c == quote) {
+            quote = 0;
+            if (!words) current += c;
+        } else if (c == '\\') {
+            // CMake passes arguments to the shell without escaping backslashes, so a backslash that
+            // must reach the program is doubled in the argument (`bs` is one backslash of the
+            // argument, written as CMake source text when `words` is false)
+            const std::string bs = words ? "\\" : "\\\\";
+            const char next = i + 1 < command.size() ? command[i + 1] : '\0';
+            if (quote == 0 || path_region) {
+                if (quote == 0 && next == '"') {
+                    current += bs + (words ? "\"" : "\\\"");
+                    ++i;
+                } else {
+                    current += '/';
+                }
+            } else if (quote == '"' && next == '"') {
+                current += bs + (words ? "\"" : "\\\"");
+                ++i;
+            } else if (quote == '"' && next == '\\') {
+                current += bs + bs;
+                ++i;
+            } else {
+                current += bs + bs;
+            }
+        } else {
+            current += c;
+        }
+    }
+    if (words) flush();
+    else result.push_back(current);
     return result;
+}
+
+std::string command_to_cmake(const std::string& command) {
+    return convert_command(command, false).front();
 }
 
 // Writes `COMMAND` lines. `commands` holds one (configuration, command text) pair per configuration;
@@ -40,21 +109,19 @@ void write_command_lines(std::ostream& out, const std::vector<std::pair<std::str
     for (const auto& [cfg_name, command] : commands) {
         if (command.empty()) continue;
         // Each line is a separate command
-        std::istringstream lines(command_to_cmake(unescape_newlines(command)));
+        std::istringstream lines(unescape_newlines(command));
         std::string line;
         while (std::getline(lines, line)) {
             line = trim(line);
             if (line.empty()) continue;
             if (all_same) {
-                out << "    COMMAND " << line << "\n";
+                out << "    COMMAND " << command_to_cmake(line) << "\n";
                 continue;
             }
             // Configuration-specific: every word becomes empty in the other configurations,
             // which drops the command there
             out << "    COMMAND";
-            std::istringstream words(line);
-            std::string word;
-            while (words >> word) {
+            for (const auto& word : convert_command(line, true)) {
                 std::string escaped;
                 for (char c : word) {
                     if (c == '>') escaped += "$<ANGLE-R>";

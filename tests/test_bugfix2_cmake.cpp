@@ -186,3 +186,48 @@ subsystem = Console
     CHECK(c.find("CXX_COMPILER_ID") == std::string::npos);
 }
 
+// ============================================================================
+// Backslashes in build-event commands
+// ============================================================================
+
+TEST_CASE("bugfix2_cmake: escape sequences in build events survive, Windows paths still convert",
+          "[bugfix2_cmake]") {
+    auto result = generate_cmake(R"(
+[solution]
+name = T
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp
+postbuild = printf "a\n" && copy "C:\out\app.exe" bin\app.exe
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("a/n") == std::string::npos);
+    CHECK(c.find("\"a\\\\\\\\n\"") != std::string::npos);
+    CHECK(c.find("C:/out/app.exe") != std::string::npos);
+    CHECK(c.find("bin/app.exe") != std::string::npos);
+}
+
+TEST_CASE("bugfix2_cmake: escape sequences survive in configuration-specific build events",
+          "[bugfix2_cmake]") {
+    auto result = generate_cmake(R"(
+[solution]
+name = T
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp
+
+[config:Release|x64]
+postbuild = printf "x\ty\n" "C:\out\app.exe"
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("$<$<CONFIG:Release>:x\\\\\\\\ty\\\\\\\\n>") != std::string::npos);
+    CHECK(c.find("$<$<CONFIG:Release>:C:/out/app.exe>") != std::string::npos);
+}
