@@ -3,6 +3,9 @@
 #include "project_types.hpp"
 #include "defaults.hpp"
 #include "android_sdk.hpp"
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -39,6 +42,36 @@ std::optional<std::string> resolve_build_platform(
         return normalize_platform(available_platforms.front());
     }
     return std::string("x64");
+}
+
+int exit_code_from_system_status(int status) {
+#ifdef _WIN32
+    return status;
+#else
+    if (status == -1) return 1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return 1;
+#endif
+}
+
+static int run_shell(const std::string& command) {
+    return exit_code_from_system_status(std::system(command.c_str()));
+}
+
+// Quote a path or value for the shell that std::system uses. POSIX: single quotes, so `$`, backticks
+// and `"` stay literal. Windows (cmd.exe): double quotes, as before.
+static std::string quote_path(const std::string& value) {
+#ifdef _WIN32
+    return "\"" + value + "\"";
+#else
+    std::string quoted = "'";
+    for (char c : value) {
+        if (c == '\'') quoted += "'\\''";
+        else quoted += c;
+    }
+    return quoted + "'";
+#endif
 }
 
 std::optional<int> parse_parallel_jobs(const std::string& value) {
@@ -292,7 +325,7 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
     std::cout << " [" << config << "|" << platform << "]\n";
     std::cout << "MSBuild: " << msbuild_path << "\n" << std::endl;
 
-    return std::system(cmd.c_str());
+    return run_shell(cmd);
 }
 
 // Look for an executable on PATH (Windows also tries .exe/.cmd/.bat). Empty when absent.
@@ -433,8 +466,8 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
         std::cout << make_note << "\n";
     }
     ensure_posix_shell_on_path();
-    std::string cmd = (make_program == "make" ? make_program : "\"" + make_program + "\"") +
-                      " -C \"" + build_dir.string() + "\"";
+    std::string cmd = (make_program == "make" ? make_program : quote_path(make_program)) +
+                      " -C " + quote_path(build_dir.string());
     // Android: --abi may name several ABIs (multi-ABI APK). Each is built in its own make run with
     // packaging skipped; a final run packages every listed ABI. Passed as make variables; the
     // generated Makefiles default them with ?=.
@@ -448,10 +481,10 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
     // path quoted by wrapping the whole command line once more.
     auto run_command = [](const std::string& command) {
         const std::string wrapped = command.rfind('"', 0) == 0 ? "\"" + command + "\"" : command;
-        return std::system(wrapped.c_str());
+        return run_shell(wrapped);
     };
 #else
-    auto run_command = [](const std::string& command) { return std::system(command.c_str()); };
+    auto run_command = [](const std::string& command) { return run_shell(command); };
 #endif
 
     // ANDROID_ABI variants of a command: one entry per ABI (or the plain command).
@@ -551,9 +584,9 @@ int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,
         }
 
         // Configure
-        std::string configure_cmd = "cmake -S \"" + cache_dir + "\" -B \"" + build_dir.string() + "\"";
+        std::string configure_cmd = "cmake -S " + quote_path(cache_dir) + " -B " + quote_path(build_dir.string());
         std::cout << "Configuring CMake project...\n";
-        int ret = std::system(configure_cmd.c_str());
+        int ret = run_shell(configure_cmd);
         if (ret != 0) {
             std::cerr << "Error: CMake configuration failed\n";
             return ret;
@@ -593,12 +626,12 @@ int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,
     const std::string requested_target = options.project.empty() ? options.target : options.project;
 
     // Build cmake --build command
-    std::string cmd = "cmake --build \"" + build_dir.string() + "\" --config \"" + config + "\"";
+    std::string cmd = "cmake --build " + quote_path(build_dir.string()) + " --config " + quote_path(config);
 
     if (options.clean_only) {
         cmd += " --target clean";
         std::cout << "Cleaning: " << cache.solution_name << " [" << config << "]" << std::endl;
-        return std::system(cmd.c_str());
+        return run_shell(cmd);
     }
 
     if (options.clean_first) {
@@ -615,7 +648,7 @@ int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,
 
     std::cout << "Building: " << cache.solution_name << " [" << config << "]" << std::endl;
 
-    return std::system(cmd.c_str());
+    return run_shell(cmd);
 }
 
 std::string missing_cache_message(const std::string& directory, const std::filesystem::path& cwd) {

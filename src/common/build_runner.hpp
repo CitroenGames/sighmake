@@ -30,6 +30,10 @@ std::optional<std::string> resolve_build_platform(
     const std::vector<std::string>& available_platforms,
     const std::string& requested_platform);
 
+// Convert the value std::system returns into a process exit code. On POSIX system() returns the wait
+// status (a failing `make` exiting with 2 yields 512, which main() would truncate to 0).
+int exit_code_from_system_status(int status);
+
 // Parse a -j / --parallel value: a positive integer, otherwise std::nullopt.
 std::optional<int> parse_parallel_jobs(const std::string& value);
 
