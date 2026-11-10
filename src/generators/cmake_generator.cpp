@@ -10,6 +10,24 @@ namespace vcxproj {
 
 namespace fs = std::filesystem;
 
+namespace {
+std::string cmake_quote(const std::string& value) {
+    std::string quoted = "\"";
+    for (char c : value) {
+        if (c == '"' || c == '\\') quoted += '\\';
+        quoted += c;
+    }
+    return quoted + "\"";
+}
+
+// Quote a command argument that would otherwise be split (spaces) or misread (quotes, parentheses, ...)
+std::string cmake_arg(const std::string& value) {
+    if (!value.empty() && value.find_first_of(" \t\n\"()#\\") == std::string::npos) return value;
+    return cmake_quote(value);
+}
+}
+
+
 // Convert Windows path to CMake path (backslash to forward slash)
 std::string CMakeGenerator::to_cmake_path(const std::string& path) {
     std::string result = path;
@@ -136,19 +154,19 @@ void CMakeGenerator::write_sources(std::ostream& out, const Project& project, co
     out << "\ntarget_sources(" << project.name << " PRIVATE\n";
 
     for (const auto& s : compile_sources) {
-        out << "    " << s << "\n";
+        out << "    " << cmake_arg(s) << "\n";
     }
     for (const auto& s : header_sources) {
-        out << "    " << s << "\n";
+        out << "    " << cmake_arg(s) << "\n";
     }
     for (const auto& s : resource_sources) {
-        out << "    " << s << "\n";
+        out << "    " << cmake_arg(s) << "\n";
     }
     for (const auto& s : masm_sources) {
-        out << "    " << s << "\n";
+        out << "    " << cmake_arg(s) << "\n";
     }
     for (const auto& s : def_sources) {
-        out << "    " << s << "\n";
+        out << "    " << cmake_arg(s) << "\n";
     }
 
     out << ")\n";
@@ -205,14 +223,14 @@ void CMakeGenerator::write_include_directories(std::ostream& out, const Project&
     if (!public_incs.empty()) {
         out << "    PUBLIC\n";
         for (const auto& inc : public_incs) {
-            out << "        " << inc << "\n";
+            out << "        " << cmake_arg(inc) << "\n";
         }
     }
 
     if (!common_includes.empty()) {
         out << "    " << visibility << "\n";
         for (const auto& inc : common_includes) {
-            out << "        " << compute_relative_path(inc, project_dir) << "\n";
+            out << "        " << cmake_arg(compute_relative_path(inc, project_dir)) << "\n";
         }
     }
 
@@ -241,7 +259,7 @@ void CMakeGenerator::write_include_directories(std::ostream& out, const Project&
             }
             out << "target_include_directories(" << project.name << " " << visibility << "\n";
             for (const auto& e : extra) {
-                out << "    $<$<CONFIG:" << cfg_name << ">:" << e << ">\n";
+                out << "    " << cmake_arg("$<$<CONFIG:" + cfg_name + ">:" + e + ">") << "\n";
             }
             out << ")\n";
         }
@@ -319,18 +337,18 @@ void CMakeGenerator::write_compile_definitions(std::ostream& out, const Project&
     if (!public_defs.empty()) {
         out << "    PUBLIC\n";
         for (const auto& d : public_defs) {
-            out << "        " << d << "\n";
+            out << "        " << cmake_arg(d) << "\n";
         }
     }
 
     if (!common_defines.empty() || !per_config.empty()) {
         out << "    " << visibility << "\n";
         for (const auto& d : common_defines) {
-            out << "        " << d << "\n";
+            out << "        " << cmake_arg(d) << "\n";
         }
         for (const auto& pc : per_config) {
             for (const auto& d : pc.defines) {
-                out << "        $<$<CONFIG:" << pc.name << ">:" << d << ">\n";
+                out << "        " << cmake_arg("$<$<CONFIG:" + pc.name + ">:" + d + ">") << "\n";
             }
         }
     }
@@ -663,11 +681,11 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
                     if (dep.name == lib) { is_proj_dep = true; break; }
                 }
                 if (is_proj_dep) continue;
-                out << "        " << to_cmake_path(lib) << "\n";
+                out << "        " << cmake_arg(to_cmake_path(lib)) << "\n";
             }
             for (const auto& pc : per_config) {
                 for (const auto& lib : pc.libs) {
-                    out << "        $<$<CONFIG:" << pc.name << ">:" << to_cmake_path(lib) << ">\n";
+                    out << "        " << cmake_arg("$<$<CONFIG:" + pc.name + ">:" + to_cmake_path(lib) + ">") << "\n";
                 }
             }
         }
@@ -823,14 +841,14 @@ void CMakeGenerator::write_link_directories(std::ostream& out, const Project& pr
     if (!public_dirs.empty()) {
         out << "    PUBLIC\n";
         for (const auto& d : public_dirs) {
-            out << "        " << d << "\n";
+            out << "        " << cmake_arg(d) << "\n";
         }
     }
 
     if (!common_libdirs.empty()) {
         out << "    PRIVATE\n";
         for (const auto& d : common_libdirs) {
-            out << "        " << compute_relative_path(d, project_dir) << "\n";
+            out << "        " << cmake_arg(compute_relative_path(d, project_dir)) << "\n";
         }
     }
 
@@ -1076,15 +1094,15 @@ void CMakeGenerator::write_per_file_settings(std::ostream& out, const Project& p
             has_settings = true;
         }
 
-        out << "set_source_files_properties(" << rel_path << " PROPERTIES";
+        out << "set_source_files_properties(" << cmake_arg(rel_path) << " PROPERTIES";
 
         if (!file_defines.empty()) {
-            out << "\n    COMPILE_DEFINITIONS \"";
+            std::string joined;
             for (size_t i = 0; i < file_defines.size(); i++) {
-                if (i > 0) out << ";";
-                out << file_defines[i];
+                if (i > 0) joined += ";";
+                joined += file_defines[i];
             }
-            out << "\"";
+            out << "\n    COMPILE_DEFINITIONS " << cmake_quote(joined);
         }
 
         if (excluded_all) {

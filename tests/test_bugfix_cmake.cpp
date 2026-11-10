@@ -275,3 +275,56 @@ endif()
     CHECK(contains(defs, "VERSION_LE_OK"));
     CHECK(contains(defs, "STRLESS_OK"));
 }
+
+// ============================================================================
+// CMake generator: quoting
+// ============================================================================
+
+TEST_CASE("bugfix_cmake: paths containing spaces are quoted", "[bugfix_cmake]") {
+    auto result = generate_cmake(R"(
+[solution]
+name = T
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = src dir/main.cpp
+includes = inc dir
+libdirs = lib dir
+src dir/main.cpp:defines = FILEDEF
+
+[config:Debug|x64]
+includes = dbg inc
+)", {{"src dir/main.cpp", "int main() { return 0; }\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("\n    \"../src dir/main.cpp\"\n") != std::string::npos);
+    CHECK(c.find("\n        \"../inc dir\"\n") != std::string::npos);
+    CHECK(c.find("\n        \"../lib dir\"\n") != std::string::npos);
+    CHECK(c.find("\"$<$<CONFIG:Debug>:../dbg inc>\"") != std::string::npos);
+    CHECK(c.find("set_source_files_properties(\"../src dir/main.cpp\" PROPERTIES") != std::string::npos);
+}
+
+TEST_CASE("bugfix_cmake: define values with spaces or quotes stay one definition", "[bugfix_cmake]") {
+    auto result = generate_cmake(R"(
+[solution]
+name = T
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp
+defines = MSG=hello world
+main.cpp:defines = NAME="x y"
+
+[config:Release|x64]
+defines = REL=a b
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("\n        \"MSG=hello world\"\n") != std::string::npos);
+    CHECK(c.find("\"$<$<CONFIG:Release>:REL=a b>\"") != std::string::npos);
+    CHECK(c.find("COMPILE_DEFINITIONS \"NAME=\\\"x y\\\"\"") != std::string::npos);
+}
