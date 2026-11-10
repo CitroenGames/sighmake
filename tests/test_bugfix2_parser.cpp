@@ -90,3 +90,20 @@ sources = late.cpp
     CHECK(err.find("line 10") != std::string::npos);
 }
 
+TEST_CASE("A wildcard config section forms the platform dimension like a literal one", "[bugfix2_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug
+
+[project:App]
+type = exe
+
+[config:*|Linux]
+defines = ON_LINUX
+)");
+    REQUIRE(sol.platforms.size() == 1);
+    CHECK(sol.platforms[0] == "Linux");
+    CHECK(sol.projects.at(0).configurations.count("Debug|Linux") == 1);
+}
+

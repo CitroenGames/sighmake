@@ -1640,16 +1640,6 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
         // the section had been written once per cell.
         if (config_spec.find('*') != std::string::npos) {
             std::vector<std::string> keys = expand_config_selector(config_spec, *state.solution);
-            // Keep the matrix declared in [solution] when no explicit section has replaced it yet.
-            if (state.discovered_configs.empty()) {
-                state.discovered_configs.insert(state.solution->configurations.begin(),
-                                                state.solution->configurations.end());
-            }
-            if (state.discovered_platforms.empty()) {
-                for (const auto& declared : state.solution->platforms) {
-                    state.discovered_platforms.insert(normalize_platform(declared));
-                }
-            }
             for (const auto& key : keys) {
                 auto [cfg_name, cfg_platform] = parse_config_key(key);
                 state.discovered_configs.insert(cfg_name);
