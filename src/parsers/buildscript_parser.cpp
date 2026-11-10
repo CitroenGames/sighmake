@@ -1915,12 +1915,17 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
         parse_file_setting(state.current_file->path, key, ALL_CONFIGS, resolved_value, state);
     } else if (!state.current_config.empty()) {
         // We're in a [config:...] section (a wildcard section applies to every expanded cell)
+        bool handled = false;
         if (state.current_config_targets.empty()) {
-            parse_config_setting(key, resolved_value, state.current_config, state);
+            handled = parse_config_setting(key, resolved_value, state.current_config, state);
         } else {
             for (const auto& target : state.current_config_targets) {
-                parse_config_setting(key, resolved_value, target, state);
+                handled = parse_config_setting(key, resolved_value, target, state) || handled;
             }
+        }
+        if (!handled) {
+            std::cerr << "Warning: '" << key << "' is not a configuration setting; ignored in [config:"
+                      << state.current_config << "] at line " << state.line_number << "\n";
         }
     } else {
         // Check for active platform filter from if(Win32)/if(x64) blocks
@@ -2158,13 +2163,17 @@ bool BuildscriptParser::parse_project_basic_setting(const std::string& key, cons
         if (kernel_mode) {
             proj.is_kernel_mode = true;
         }
-        // Apply to all configurations
-        for (auto& [_, cfg] : proj.configurations) {
-            cfg.config_type = config_type;
+        // Apply to all configurations that no platform-conditional `type` has claimed
+        const std::string cell_prefix = std::to_string(&proj - state.solution->projects.data()) + "|";
+        auto specific = [&](const std::string& key) {
+            return state.config_specific_type_cells.count(cell_prefix + key) > 0;
+        };
+        for (auto& [key, cfg] : proj.configurations) {
+            if (!specific(key)) cfg.config_type = config_type;
         }
         // Also set default for new configs
         for (const auto& config_key : state.solution->get_config_keys()) {
-            proj.configurations[config_key].config_type = config_type;
+            if (!specific(config_key)) proj.configurations[config_key].config_type = config_type;
         }
         proj.project_level_defaults.config_type = config_type;
 
@@ -2690,10 +2699,13 @@ bool BuildscriptParser::parse_project_source_setting(const std::string& key, con
 
             // If the library has a path separator, it's a file path → use <Library> element
             if (path.find('/') != std::string::npos || path.find('\\') != std::string::npos) {
-                LibraryFile lf;
-                // Don't normalize library paths - preserve exact case and format
-                lf.path = path;
-                proj.libraries.push_back(lf);
+                // Same storage as the config-level `libs`: per-config link dependencies (read by the
+                // Makefile, CMake and vcxproj generators), rebased onto the buildscript directory
+                const std::string rebased = rebase_library_entry(path, state.base_path);
+                for (const auto& config_key : state.solution->get_config_keys()) {
+                    proj.configurations[config_key].link.additional_dependencies.push_back(rebased);
+                }
+                proj.project_level_defaults.link.additional_dependencies.push_back(rebased);
             } else {
                 // System library (e.g., shell32.lib) → use <AdditionalDependencies>
                 for (const auto& config_key : state.solution->get_config_keys()) {
@@ -3564,6 +3576,8 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
     if (key == "type" || key == "configuration_type") {
         bool kernel_mode = false;
         cfg.config_type = parse_buildscript_config_type_value(value, kernel_mode);
+        state.config_specific_type_cells.insert(
+            std::to_string(state.current_project - state.solution->projects.data()) + "|" + config_key);
         if (kernel_mode) {
             state.current_project->is_kernel_mode = true;
         }

@@ -71,3 +71,22 @@ type = exe
     CHECK(app.configurations.at("Debug|Linux").config_type == "Application");
 }
 
+TEST_CASE("A project-level key inside a config section warns with line and key", "[bugfix2_parser]") {
+    Bf2CerrCapture cerr_capture;
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+
+[config:Debug|Linux]
+sources = late.cpp
+)");
+    const std::string err = cerr_capture.str();
+    CHECK(err.find("sources") != std::string::npos);
+    CHECK(err.find("line 10") != std::string::npos);
+}
+
