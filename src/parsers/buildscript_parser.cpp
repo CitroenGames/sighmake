@@ -956,6 +956,8 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 cfg.link.randomized_base_address = defs.link.randomized_base_address;
             if (!cfg.link.strip.has_value() && defs.link.strip.has_value())
                 cfg.link.strip = defs.link.strip;
+            if (cfg.link.debug_symbols.empty() && !defs.link.debug_symbols.empty())
+                cfg.link.debug_symbols = defs.link.debug_symbols;
         }
     }
 
@@ -3261,6 +3263,11 @@ bool BuildscriptParser::parse_project_linker_setting(const std::string& key, con
             proj.configurations[config_key].link.strip = val;
         }
         proj.project_level_defaults.link.strip = val;
+    } else if (key == "debug_symbols") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.debug_symbols = to_lower(value);
+        }
+        proj.project_level_defaults.link.debug_symbols = to_lower(value);
     } else if (key == "large_address_aware") {
         bool val = (value == "true" || value == "yes" || value == "1");
         for (const auto& config_key : state.solution->get_config_keys()) {
@@ -3822,6 +3829,8 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.link.randomized_base_address = (value == "true" || value == "yes" || value == "1");
     } else if (key == "strip") {
         cfg.link.strip = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "debug_symbols") {
+        cfg.link.debug_symbols = to_lower(value);
     } else if (key == "disable_warnings" || key == "disable_specific_warnings") {
         cfg.cl_compile.disable_specific_warnings = split(value, ',');
     } else if (key == "large_address_aware") {

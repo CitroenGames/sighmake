@@ -161,6 +161,7 @@ struct LinkSettings {
     // Makefile generator: strip linked executables and shared libraries, and compile without -g
     // (stripping would discard it). Unset means true for the "Release" configuration only.
     std::optional<bool> strip;
+    std::string debug_symbols;                          // Makefile generator: embedded | separate | none (lower case; empty = unset, `strip` decides)
 };
 
 // Librarian settings (for static library projects)
