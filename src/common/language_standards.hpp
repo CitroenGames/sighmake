@@ -52,7 +52,7 @@ inline const CStandard* find_c_standard(const std::string& value) {
         {"90", "stdc89", "-std=c89", "90"},
         {"99", nullptr,  "-std=c99", "99"},
         {"11", "stdc11", "-std=c11", "11"},
-        {"17", nullptr,  "-std=c17", "17"},
+        {"17", "stdc17", "-std=c17", "17"},
         {"23", nullptr,  "-std=c2x", "23"},  // GCC uses c2x for C23
     };
     for (const auto& info : kCStandards) {
@@ -89,7 +89,7 @@ inline std::string cpp_standard_to_cmake(const std::string& value) {
     return "17";
 }
 
-// MSVC LanguageStandard_C value. MSVC only ships stdc89/stdc11; other standards
+// MSVC LanguageStandard_C value. MSVC ships stdc89/stdc11/stdc17; other standards
 // warn and fall back. Unknown values return "" (compiler default).
 inline std::string c_standard_to_msvc(const std::string& value) {
     if (const auto* info = find_c_standard(value)) {
