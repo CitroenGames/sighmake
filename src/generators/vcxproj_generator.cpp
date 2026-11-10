@@ -1135,19 +1135,16 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
                     if (!dep.link_library_dependencies) continue;
                     if (!dep.whole_archive) continue;
                     // Find the dependency project to determine its output library name
-                    for (const auto& sol_proj : solution.projects) {
-                        if (sol_proj.name == dep.name) {
-                            std::string lib_name;
-                            auto dep_cfg_it = sol_proj.configurations.find(config_key);
-                            if (dep_cfg_it != sol_proj.configurations.end() && !dep_cfg_it->second.target_name.empty()) {
-                                lib_name = dep_cfg_it->second.target_name;
-                            } else {
-                                lib_name = sol_proj.name;
-                            }
-                            if (!whole_archive_opts.empty()) whole_archive_opts += " ";
-                            whole_archive_opts += "/WHOLEARCHIVE:" + lib_name;
-                            break;
+                    if (const Project* sol_proj = find_dependency_project(solution, dep.name)) {
+                        std::string lib_name;
+                        auto dep_cfg_it = sol_proj->configurations.find(config_key);
+                        if (dep_cfg_it != sol_proj->configurations.end() && !dep_cfg_it->second.target_name.empty()) {
+                            lib_name = dep_cfg_it->second.target_name;
+                        } else {
+                            lib_name = sol_proj->name;
                         }
+                        if (!whole_archive_opts.empty()) whole_archive_opts += " ";
+                        whole_archive_opts += "/WHOLEARCHIVE:" + lib_name;
                     }
                 }
                 // Combine existing additional_options with whole-archive flags

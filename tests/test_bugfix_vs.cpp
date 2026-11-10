@@ -332,3 +332,37 @@ $Project "App"
         CHECK(cfgs.at(key).post_build_event.command.empty());
     }
 }
+
+TEST_CASE("vcxproj: WHOLE_ARCHIVE resolves the dependency like the project reference does", "[bugfix_vs]") {
+    // Project references match names case-insensitively (and by target name); /WHOLEARCHIVE must too.
+    BugfixVsTempDir dir("whole_archive_case");
+    BuildscriptParser parser;
+    Solution solution = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp
+target_link_libraries(PRIVATE WHOLE_ARCHIVE pluginregistry)
+
+[project:PluginRegistry]
+type = lib
+sources = registry.cpp
+)", dir.path.string());
+    const Project* app = nullptr;
+    for (const auto& project : solution.projects) {
+        if (project.name == "App") app = &project;
+    }
+    REQUIRE(app);
+    fs::create_directories(dir.path / "build");
+    const fs::path path = dir.path / "build" / "App.vcxproj";
+    VcxprojGenerator generator;
+    REQUIRE(generator.generate_vcxproj(*app, solution, path.string()));
+    pugi::xml_document doc;
+    REQUIRE(doc.load_file(path.string().c_str()));
+    CHECK(std::string(doc.select_node("//ProjectReference").node().attribute("Include").value()).rfind("PluginRegistry", 0) == 0);
+    CHECK(bugfix_vs_item_definition(doc, "Link", "AdditionalOptions", "Debug|x64") == "/WHOLEARCHIVE:PluginRegistry");
+}
