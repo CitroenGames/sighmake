@@ -656,6 +656,14 @@ std::string MakefileGenerator::strip_lib_extension(const std::string& lib) {
         result = result.substr(0, result.size() - 2);
     }
 
+    // Remove shared-library extensions (libz.so -> -lz)
+    if (result.size() > 3 && result.substr(result.size() - 3) == ".so") {
+        result = result.substr(0, result.size() - 3);
+    }
+    if (result.size() > 6 && result.substr(result.size() - 6) == ".dylib") {
+        result = result.substr(0, result.size() - 6);
+    }
+
     // Remove lib prefix if present (e.g., libpthread -> pthread)
     if (result.size() > 3 && result.substr(0, 3) == "lib") {
         result = result.substr(3);

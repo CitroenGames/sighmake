@@ -292,3 +292,26 @@ pch.cpp:pch = Create
     CHECK(WEXITSTATUS(std::system(app.c_str())) == 7);
 #endif
 }
+
+TEST_CASE("Makefile translates bare shared-library file names to -l flags", "[bugfix_make]") {
+    BugfixMakeProject p("bare_so", R"(
+[solution]
+name = L
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+outdir = bin
+intdir = obj/App
+sources = main.cpp
+libs = libm.so, dl.so, libfoo.dylib
+)", {{"main.cpp", "#include <cmath>\nint main(int argc, char**) { return (int)std::sqrt((double)argc) - 1; }\n"}});
+    REQUIRE(p.generated);
+    const std::string mk = p.makefile("App.Debug");
+    CHECK(mk.find("-lm ") != std::string::npos);
+    CHECK(mk.find("-ldl ") != std::string::npos);
+    CHECK(mk.find("-lfoo ") != std::string::npos);
+    CHECK(mk.find(".so ") == std::string::npos);
+    CHECK(mk.find(".dylib") == std::string::npos);
+}
