@@ -1,6 +1,9 @@
 #pragma once
 
 #include "project_types.hpp"
+#include "output_manifest.hpp"
+
+#include <optional>
 
 namespace vcxproj {
 
@@ -18,6 +21,13 @@ public:
 
     // Get a description of this generator
     virtual std::string description() const = 0;
+
+    // Directory, section key and probable-output patterns of the generation manifest that tracks
+    // the files this generator writes (see output_manifest.hpp). None: outputs are not tracked.
+    virtual std::optional<OutputManifestScope> output_manifest_scope(const std::string& output_dir) const {
+        (void)output_dir;
+        return std::nullopt;
+    }
 };
 
 // Generator factory for registering and creating generators

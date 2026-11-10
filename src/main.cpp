@@ -40,7 +40,11 @@ void print_usage(const char* program_name) {
     std::cout << "                             (default: the machine running sighmake)\n";
     std::cout << "      --cxx <compiler>       C++ compiler driver written into Makefiles (default: g++, clang++ on macOS)\n";
     std::cout << "      --cc <compiler>        C compiler driver written into Makefiles (default: gcc, clang on macOS)\n";
-    std::cout << "      --export-deps          Export dependency report as HTML\n\n";
+    std::cout << "      --export-deps          Export dependency report as HTML\n";
+    std::cout << "      --keep-stale           Keep generated files of earlier runs that this run no longer\n";
+    std::cout << "                             writes (default: remove them, see .sighmake-manifest)\n";
+    std::cout << "      --prune-unlisted       Also remove probable sighmake outputs that no manifest lists\n";
+    std::cout << "                             (first run in an existing build directory)\n\n";
     std::cout << "Build options:\n";
     std::cout << "  -b, --build <dir>          Build using previously generated project files\n";
     std::cout << "      --config <cfg>         Build configuration (e.g. Debug, Release)\n";
@@ -262,6 +266,7 @@ int main(int argc, char* argv[]) {
     std::map<std::string, std::string> cli_variables;
     std::string cxx_override;
     std::string cc_override;
+    vcxproj::StaleOutputOptions stale_options;
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -340,6 +345,10 @@ int main(int argc, char* argv[]) {
             (is_cxx ? cxx_override : cc_override) = argv[++i];
         } else if (strcmp(argv[i], "--export-deps") == 0) {
             export_deps = true;
+        } else if (strcmp(argv[i], "--keep-stale") == 0) {
+            stale_options.keep_stale = true;
+        } else if (strcmp(argv[i], "--prune-unlisted") == 0) {
+            stale_options.prune_unlisted = true;
         } else if (strcmp(argv[i], "-D") == 0) {
             if (i + 1 < argc) {
                 std::string def = argv[++i];
@@ -537,9 +546,16 @@ int main(int argc, char* argv[]) {
         }
 
         // Generate project files
+        vcxproj::reset_generated_outputs();
         if (!generator->generate(solution, output_dir)) {
             std::cerr << "Error: Generation failed\n";
             return 1;
+        }
+
+        // Remove (or list) the outputs of earlier generations that this one no longer writes.
+        if (auto scope = generator->output_manifest_scope(output_dir)) {
+            vcxproj::reconcile_generated_outputs(*scope, vcxproj::generated_outputs(), stale_options,
+                                                 std::cout, std::cerr);
         }
 
         // Export dependency report if requested

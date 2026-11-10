@@ -27,6 +27,7 @@ sources = {
     test_cmake_generator.cpp
     test_updater.cpp
     test_android_features.cpp
+    test_output_manifest.cpp
 }
 
 # Source files under test (exclude main.cpp to avoid duplicate main)
@@ -45,6 +46,7 @@ sources = {
     ../src/common/vs_detector.cpp
     ../src/common/build_cache.cpp
     ../src/common/build_runner.cpp
+    ../src/common/output_manifest.cpp
     ../src/common/updater.cpp
     ../src/pugixml.cpp
 }
