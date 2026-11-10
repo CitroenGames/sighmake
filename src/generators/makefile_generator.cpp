@@ -2324,7 +2324,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "# Precompiled header compilation\n";
         out << "$(PCH_OUTPUT): $(PCH_HEADER)" << (cxx_stamped ? " $(SIGHMAKE_CXX_STAMP)" : "") << "\n";
         out << "\t@mkdir -p $(dir $@)\n";
-        out << "\t$(CXX) $(CXXFLAGS) -x c++-header -o $@ \"$<\"\n\n";
+        out << "\t$(CXX) $(CXXFLAGS) -x c++-header -MMD -MP -MF $@.d -o $@ \"$<\"\n\n";
     }
 
     // Link rule
@@ -2529,6 +2529,10 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     if (!obj_files.empty()) {
         out << "# Include dependencies\n";
         out << "-include $(OBJS:.o=.d)\n";
+    }
+    if (has_pch && !pch_header_path.empty()) {
+        // Headers included by the precompiled header rebuild it (and so every object using it)
+        out << "-include $(PCH_OUTPUT).d\n";
     }
 
     if (emits_target_receipt && !write_target_receipt_support(project, output_path)) {

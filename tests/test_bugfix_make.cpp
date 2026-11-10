@@ -3,7 +3,12 @@
 #include "parsers/buildscript_parser.hpp"
 #include "generators/makefile_generator.hpp"
 
+#include <chrono>
 #include <cstdlib>
+#include <thread>
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
 
 using namespace vcxproj;
 namespace fs = std::filesystem;
@@ -253,5 +258,37 @@ sources = my src/main.cpp
 #ifndef _WIN32
     CHECK(p.make("App.Debug") == 0);
     CHECK(fs::exists(p.dir / "bin" / "App"));
+#endif
+}
+
+TEST_CASE("Makefile rebuilds the PCH when a header it includes changes", "[bugfix_make]") {
+    BugfixMakeProject p("pch_deps", R"(
+[solution]
+name = PCH
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+outdir = bin
+intdir = obj/App
+sources = main.cpp, pch.cpp
+pch = Use
+pch_header = pch.h
+pch.cpp:pch = Create
+)", {{"pch.h", "#pragma once\n#include \"common.h\"\n"},
+     {"common.h", "#define VALUE 1\n"},
+     {"pch.cpp", "#include \"pch.h\"\n"},
+     {"main.cpp", "int main() { return VALUE; }\n"}});
+    REQUIRE(p.generated);
+    CHECK(p.makefile("App.Debug").find("-include $(PCH_OUTPUT).d") != std::string::npos);
+#ifndef _WIN32
+    REQUIRE(p.make("App.Debug") == 0);
+    const std::string app = "\"" + (p.dir / "bin" / "App").string() + "\"";
+    CHECK(WEXITSTATUS(std::system(app.c_str())) == 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+    std::ofstream(p.dir / "common.h") << "#define VALUE 7\n";
+    REQUIRE(p.make("App.Debug") == 0);
+    CHECK(WEXITSTATUS(std::system(app.c_str())) == 7);
 #endif
 }
