@@ -56,6 +56,7 @@ void print_usage(const char* program_name) {
     std::cout << "      --target <tgt>         Build specific target\n";
     std::cout << "      --project <name|file>  Build a generated project instead of the whole graph\n";
     std::cout << "      --no-project-references Do not build referenced projects with --project\n";
+    std::cout << "                             (alias: --no-deps)\n";
     std::cout << "      --clean                Clean build artifacts without building\n";
     std::cout << "      --clean-first          Clean before building\n";
     std::cout << "  -j, --parallel <N>         Parallel build jobs\n\n";
@@ -64,7 +65,7 @@ void print_usage(const char* program_name) {
     std::cout << "                             single projects (.vcxproj/.vcproj) to buildscripts\n";
     std::cout << "  convert vpc <file.vpc>     Convert Valve VPC file to buildscript\n\n";
     std::cout << "Info:\n";
-    std::cout << "      --version             Show sighmake version\n";
+    std::cout << "  -V, --version              Show sighmake version (first argument only)\n";
     std::cout << "      update [options]      Update sighmake from GitHub releases\n";
     std::cout << "      --list-toolsets        List available toolsets\n";
     std::cout << "  -l, --list                 List available generators\n";
@@ -275,8 +276,18 @@ int main(int argc, char* argv[]) {
     vcxproj::StaleOutputOptions stale_options;
 
     // Parse command line arguments
+    bool options_done = false;  // after "--" every argument is the input file
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+        if (options_done) {
+            if (buildscript_path.empty()) {
+                buildscript_path = argv[i];
+            } else {
+                std::cerr << "Error: Unexpected argument: " << argv[i] << "\n";
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--") == 0) {
+            options_done = true;
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
         } else if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--convert") == 0) {
@@ -369,6 +380,9 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Error: -D requires an argument\n";
                 return 1;
             }
+        } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
+            std::cerr << "Error: Unknown option: " << argv[i] << "\n";
+            return 1;
         } else if (buildscript_path.empty()) {
             buildscript_path = argv[i];
         } else {
@@ -398,6 +412,11 @@ int main(int argc, char* argv[]) {
     // Check if input file exists
     if (!fs::exists(buildscript_path)) {
         std::cerr << "Error: Input file not found: " << buildscript_path << "\n";
+        return 1;
+    }
+
+    if (fs::is_directory(buildscript_path)) {
+        std::cerr << "Error: Input is a directory, not a file: " << buildscript_path << "\n";
         return 1;
     }
 
