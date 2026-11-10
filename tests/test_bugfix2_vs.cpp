@@ -125,3 +125,75 @@ $Project "App"
     CHECK(filters["root.cpp"] == "");
 }
 
+TEST_CASE("vcproj reader: MIDL DefaultCharType Ascii maps to a valid value", "[bugfix2_vs]") {
+    // VCProjectEngine midlCharOption: 0 = unsigned, 1 = signed, 2 = ascii7.
+    Bugfix2VsTempDir dir("vcproj_midl_char");
+    bugfix2_vs_write_file(dir.path / "App.vcproj", R"(<?xml version="1.0" encoding="Windows-1252"?>
+<VisualStudioProject ProjectType="Visual C++" Version="9.00" Name="App" ProjectGUID="{11111111-2222-3333-4444-555555555555}">
+  <Configurations>
+    <Configuration Name="Debug|Win32" ConfigurationType="1">
+      <Tool Name="VCMIDLTool" DefaultCharType="2"/>
+    </Configuration>
+    <Configuration Name="Release|Win32" ConfigurationType="1">
+      <Tool Name="VCMIDLTool" DefaultCharType="1"/>
+    </Configuration>
+  </Configurations>
+  <Files/>
+</VisualStudioProject>
+)");
+    VcprojReader reader;
+    Project project = reader.read_vcproj((dir.path / "App.vcproj").string());
+    REQUIRE(project.configurations.count("Debug|Win32"));
+    CHECK(project.configurations.at("Debug|Win32").midl.default_char_type == "Ascii");
+    CHECK(project.configurations.at("Release|Win32").midl.default_char_type == "Signed");
+}
+
+TEST_CASE("vcxproj: NASM custom build rules are not written for Unix configurations", "[bugfix2_vs]") {
+    Bugfix2VsTempDir dir("nasm_unix");
+    Bugfix2VsGenerated gen;
+    bugfix2_vs_generate(dir, R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64, Linux
+
+[project:app]
+type = exe
+nasm = boot.asm
+)", gen);
+    int linux_rules = 0, win_rules = 0;
+    for (auto node : gen.doc.select_nodes("//*[@Include='../boot.asm' or @Include='boot.asm' or contains(@Include,'boot.asm')]")) {
+        for (auto child : node.node().children()) {
+            std::string cond = child.attribute("Condition").as_string();
+            if (cond.find("Linux") != std::string::npos) linux_rules++;
+            if (cond.find("Debug|x64") != std::string::npos) win_rules++;
+        }
+    }
+    CHECK(win_rules > 0);
+    CHECK(linux_rules == 0);
+}
+
+TEST_CASE("VPC: linker $AdditionalOptions honours $BASE", "[bugfix2_vs]") {
+    VpcParser parser;
+    auto sol = parser.parse_string(R"(
+$Project "App"
+{
+    $Configuration "Debug"
+    {
+        $Linker
+        {
+            $AdditionalOptions "/FIRST"
+            $AdditionalOptions "$BASE /SECOND"
+        }
+    }
+}
+)");
+    REQUIRE(sol.projects.size() == 1);
+    const auto& cfgs = sol.projects[0].configurations;
+    REQUIRE(!cfgs.empty());
+    for (const auto& [key, cfg] : cfgs) {
+        if (key.rfind("Debug|", 0) != 0) continue;
+        CHECK(cfg.link.additional_options == "/FIRST /SECOND");
+    }
+}
+

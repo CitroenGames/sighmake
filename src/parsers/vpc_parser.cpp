@@ -1036,6 +1036,7 @@ void VpcParser::handle_linker(std::vector<Token>& tokens, size_t& i, ParseState&
                             auto& cfg = state.current_project->configurations[key];
 
                             // Handle $BASE
+                            bool append = (value.find("$BASE") != std::string::npos);
                             std::string clean_value = value;
                             size_t base_pos = clean_value.find("$BASE");
                             if (base_pos != std::string::npos) {
@@ -1073,7 +1074,11 @@ void VpcParser::handle_linker(std::vector<Token>& tokens, size_t& i, ParseState&
                                                                 to_upper(clean_value) == "YES" ||
                                                                 clean_value == "1");
                             } else if (keyword == "$ADDITIONALOPTIONS") {
-                                cfg.link.additional_options = clean_value;
+                                if (append && !cfg.link.additional_options.empty()) {
+                                    cfg.link.additional_options += " " + clean_value;
+                                } else {
+                                    cfg.link.additional_options = clean_value;
+                                }
                             } else if (keyword == "$STACKRESERVESIZE") {
                                 // Stack reserve - store in additional options
                                 cfg.link.additional_options += " /STACK:" + clean_value;
