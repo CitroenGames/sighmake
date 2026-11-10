@@ -302,7 +302,7 @@ includes = dbg inc
     CHECK(c.find("\n    \"../src dir/main.cpp\"\n") != std::string::npos);
     CHECK(c.find("\n        \"../inc dir\"\n") != std::string::npos);
     CHECK(c.find("\n        \"../lib dir\"\n") != std::string::npos);
-    CHECK(c.find("\"$<$<CONFIG:Debug>:../dbg inc>\"") != std::string::npos);
+    CHECK(c.find("\"$<$<CONFIG:Debug>:${CMAKE_CURRENT_SOURCE_DIR}/../dbg inc>\"") != std::string::npos);
     CHECK(c.find("set_source_files_properties(\"../src dir/main.cpp\" PROPERTIES") != std::string::npos);
 }
 
@@ -327,4 +327,29 @@ defines = REL=a b
     CHECK(c.find("\n        \"MSG=hello world\"\n") != std::string::npos);
     CHECK(c.find("\"$<$<CONFIG:Release>:REL=a b>\"") != std::string::npos);
     CHECK(c.find("COMPILE_DEFINITIONS \"NAME=\\\"x y\\\"\"") != std::string::npos);
+}
+
+TEST_CASE("bugfix_cmake: per-configuration include and library directories are emitted with absolute paths",
+          "[bugfix_cmake]") {
+    // CMake rejects relative paths that come out of a generator expression in INCLUDE_DIRECTORIES
+    auto result = generate_cmake(R"(
+[solution]
+name = T
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp
+
+[config:Debug|x64]
+includes = dbginc
+libdirs = dbglib
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("target_include_directories(App PRIVATE\n    $<$<CONFIG:Debug>:${CMAKE_CURRENT_SOURCE_DIR}/../dbginc>")
+          != std::string::npos);
+    CHECK(c.find("target_link_directories(App PRIVATE\n    $<$<CONFIG:Debug>:${CMAKE_CURRENT_SOURCE_DIR}/../dbglib>")
+          != std::string::npos);
 }

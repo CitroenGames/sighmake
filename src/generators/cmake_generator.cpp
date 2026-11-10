@@ -216,25 +216,25 @@ void CMakeGenerator::write_include_directories(std::ostream& out, const Project&
         public_incs.push_back(compute_relative_path(inc, project_dir));
     }
 
-    if (common_includes.empty() && public_incs.empty()) return;
+    if (!common_includes.empty() || !public_incs.empty()) {
+        out << "\ntarget_include_directories(" << project.name << "\n";
 
-    out << "\ntarget_include_directories(" << project.name << "\n";
-
-    if (!public_incs.empty()) {
-        out << "    PUBLIC\n";
-        for (const auto& inc : public_incs) {
-            out << "        " << cmake_arg(inc) << "\n";
+        if (!public_incs.empty()) {
+            out << "    PUBLIC\n";
+            for (const auto& inc : public_incs) {
+                out << "        " << cmake_arg(inc) << "\n";
+            }
         }
-    }
 
-    if (!common_includes.empty()) {
-        out << "    " << visibility << "\n";
-        for (const auto& inc : common_includes) {
-            out << "        " << cmake_arg(compute_relative_path(inc, project_dir)) << "\n";
+        if (!common_includes.empty()) {
+            out << "    " << visibility << "\n";
+            for (const auto& inc : common_includes) {
+                out << "        " << cmake_arg(compute_relative_path(inc, project_dir)) << "\n";
+            }
         }
-    }
 
-    out << ")\n";
+        out << ")\n";
+    }
 
     // Per-config includes that differ from common
     auto config_names = get_config_names(solution);
@@ -248,7 +248,10 @@ void CMakeGenerator::write_include_directories(std::ostream& out, const Project&
             for (const auto& part : split_semicolons(inc)) {
                 std::string normalized = to_cmake_path(part);
                 if (!common_includes.count(normalized)) {
-                    extra.push_back(compute_relative_path(normalized, project_dir));
+                    // CMake does not absolutize paths produced by a generator expression
+                    std::string rel = compute_relative_path(normalized, project_dir);
+                    if (!fs::path(rel).is_absolute()) rel = "${CMAKE_CURRENT_SOURCE_DIR}/" + rel;
+                    extra.push_back(rel);
                 }
             }
         }
@@ -796,7 +799,7 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
 // ============================================================================
 
 void CMakeGenerator::write_link_directories(std::ostream& out, const Project& project,
-                                             const Solution& /*solution*/, const std::string& project_dir) {
+                                             const Solution& solution, const std::string& project_dir) {
     std::string config_type;
     for (const auto& [key, config] : project.configurations) {
         if (!config.config_type.empty()) {
@@ -834,25 +837,49 @@ void CMakeGenerator::write_link_directories(std::ostream& out, const Project& pr
         public_dirs.push_back(compute_relative_path(dir, project_dir));
     }
 
-    if (common_libdirs.empty() && public_dirs.empty()) return;
+    if (!common_libdirs.empty() || !public_dirs.empty()) {
+        out << "\ntarget_link_directories(" << project.name << "\n";
 
-    out << "\ntarget_link_directories(" << project.name << "\n";
-
-    if (!public_dirs.empty()) {
-        out << "    PUBLIC\n";
-        for (const auto& d : public_dirs) {
-            out << "        " << cmake_arg(d) << "\n";
+        if (!public_dirs.empty()) {
+            out << "    PUBLIC\n";
+            for (const auto& d : public_dirs) {
+                out << "        " << cmake_arg(d) << "\n";
+            }
         }
+
+        if (!common_libdirs.empty()) {
+            out << "    PRIVATE\n";
+            for (const auto& d : common_libdirs) {
+                out << "        " << cmake_arg(compute_relative_path(d, project_dir)) << "\n";
+            }
+        }
+
+        out << ")\n";
     }
 
-    if (!common_libdirs.empty()) {
-        out << "    PRIVATE\n";
-        for (const auto& d : common_libdirs) {
-            out << "        " << cmake_arg(compute_relative_path(d, project_dir)) << "\n";
+    // Per-config library directories that differ from common
+    for (const auto& cfg_name : get_config_names(solution)) {
+        const Configuration* config = find_config(project, cfg_name);
+        if (!config) continue;
+
+        std::vector<std::string> extra;
+        for (const auto& libdir : config->link.additional_library_directories) {
+            for (const auto& part : split_semicolons(libdir)) {
+                std::string normalized = to_cmake_path(part);
+                if (common_libdirs.count(normalized)) continue;
+                std::string rel = compute_relative_path(normalized, project_dir);
+                if (!fs::path(rel).is_absolute()) rel = "${CMAKE_CURRENT_SOURCE_DIR}/" + rel;
+                extra.push_back(rel);
+            }
+        }
+        if (!extra.empty()) {
+            out << "target_link_directories(" << project.name << " PRIVATE\n";
+            for (const auto& e : extra) {
+                out << "    " << cmake_arg("$<$<CONFIG:" + cfg_name + ">:" + e + ">") << "\n";
+            }
+            out << ")\n";
         }
     }
-
-    out << ")\n";
 }
 
 // ============================================================================
