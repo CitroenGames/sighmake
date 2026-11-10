@@ -3595,7 +3595,7 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
     } else if (key == "intdir" || key == "intermediate_dir") {
         cfg.int_dir = (value.find("$(") != std::string::npos)
             ? value : resolve_path(value, state.base_path);
-    } else if (key == "includes" || key == "additional_include_directories") {
+    } else if (key == "includes" || key == "include_dirs" || key == "additional_include_directories") {
         auto dirs = split(value, ',');
         std::vector<std::string> resolved_dirs;
         for (const auto& dir : dirs) {
@@ -3606,11 +3606,11 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
     } else if (key == "forced_includes" || key == "forced_include_files") {
         auto files = split(value, ',');
         cfg.cl_compile.forced_include_files = files;
-    } else if (key == "defines" || key == "preprocessor_definitions") {
+    } else if (key == "defines" || key == "preprocessor" || key == "preprocessor_definitions") {
         auto defs = split(value, ',');
         cfg.cl_compile.preprocessor_definitions.insert(
             cfg.cl_compile.preprocessor_definitions.end(), defs.begin(), defs.end());
-    } else if (key == "libs" || key == "additional_dependencies") {
+    } else if (key == "libs" || key == "link_libs" || key == "additional_dependencies") {
         // Config-level libs should go into AdditionalDependencies
         auto libs = split(rebase_library_entries(value, state.base_path), ',');
         // For static libraries, use lib.additional_dependencies (Librarian)

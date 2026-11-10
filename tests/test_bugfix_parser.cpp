@@ -340,3 +340,31 @@ optimization = MaxSpeed
     CHECK(parser_contains(app.configurations.at("Debug|Linux").cl_compile.additional_include_directories,
                           BuildscriptParser::resolve_path("debug_include", "/work/parser_proj")));
 }
+
+TEST_CASE("link_libs and include_dirs inside if(Android) stay on the Android configurations", "[bugfix_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug
+platforms = Linux, Android
+
+[project:App]
+type = exe
+if(Android) {
+    link_libs = log, android
+    include_dirs = android_include
+}
+
+[config:Debug|Linux]
+link_libs = rt
+)", "/work/parser_proj");
+    REQUIRE(sol.projects.size() == 1);
+    const auto& android = sol.projects[0].configurations.at("Debug|Android");
+    const auto& linux_cfg = sol.projects[0].configurations.at("Debug|Linux");
+    const std::string inc = BuildscriptParser::resolve_path("android_include", "/work/parser_proj");
+    CHECK(parser_contains(android.link.additional_dependencies, "log"));
+    CHECK(parser_contains(android.cl_compile.additional_include_directories, inc));
+    CHECK_FALSE(parser_contains(linux_cfg.link.additional_dependencies, "log"));
+    CHECK_FALSE(parser_contains(linux_cfg.cl_compile.additional_include_directories, inc));
+    CHECK(parser_contains(linux_cfg.link.additional_dependencies, "rt"));
+}
