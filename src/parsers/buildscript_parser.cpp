@@ -1267,14 +1267,15 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
              return;
         }
 
+        // Folder block closing (when the folder was opened inside the innermost if() block)
+        if (state.innermost_block_is_folder()) {
+            state.pop_folder();
+            return;
+        }
+
         if (!state.conditional_stack.empty()) {
              state.conditional_stack.pop_back();
              return;
-        }
-
-        // Folder block closing
-        if (state.pop_folder()) {
-            return;
         }
     }
 
@@ -1552,6 +1553,7 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
 
     // [project:name]
     if (section.rfind("project:", 0) == 0) {
+        state.promote_file_filters_to_solution_folders();
         state.solution->projects.emplace_back();
         state.current_project = &state.solution->projects.back();
         state.current_project->name = trim(section.substr(8));

@@ -112,3 +112,51 @@ defines = AFTER
     CHECK(parser_contains(defines, "AFTER"));
     CHECK_FALSE(parser_contains(defines, "ANDROID_ONLY"));
 }
+
+TEST_CASE("A second top-level folder after a project is a solution folder", "[bugfix_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug
+platforms = Linux
+
+folder("Libraries") {
+    [project:Core]
+    type = lib
+}
+folder("Apps") {
+    [project:App]
+    type = exe
+}
+)");
+    const Project* core = find_parser_project(sol, "Core");
+    const Project* app = find_parser_project(sol, "App");
+    REQUIRE(core);
+    REQUIRE(app);
+    CHECK(core->solution_folder == "Libraries");
+    CHECK(app->solution_folder == "Apps");
+}
+
+TEST_CASE("A closing brace closes the innermost block, folder inside if()", "[bugfix_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug
+platforms = Linux
+
+if(Android) {
+    folder("Libs") {
+        [project:Core]
+        type = lib
+    }
+    [project:App]
+    type = exe
+}
+)");
+    const Project* core = find_parser_project(sol, "Core");
+    const Project* app = find_parser_project(sol, "App");
+    REQUIRE(core);
+    REQUIRE(app);
+    CHECK(core->solution_folder == "Libs");
+    CHECK(app->solution_folder.empty());
+}
