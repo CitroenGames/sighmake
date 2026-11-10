@@ -285,11 +285,13 @@ pch.cpp:pch = Create
 #ifndef _WIN32
     REQUIRE(p.make("App.Debug") == 0);
     const std::string app = "\"" + (p.dir / "bin" / "App").string() + "\"";
-    CHECK(WEXITSTATUS(std::system(app.c_str())) == 1);
+    const int first_status = std::system(app.c_str());
+    CHECK(WEXITSTATUS(first_status) == 1);
     std::this_thread::sleep_for(std::chrono::milliseconds(1100));
     std::ofstream(p.dir / "common.h") << "#define VALUE 7\n";
     REQUIRE(p.make("App.Debug") == 0);
-    CHECK(WEXITSTATUS(std::system(app.c_str())) == 7);
+    const int second_status = std::system(app.c_str());
+    CHECK(WEXITSTATUS(second_status) == 7);
 #endif
 }
 
