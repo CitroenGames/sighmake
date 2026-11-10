@@ -283,6 +283,188 @@ sources = main.cpp
     }
 }
 
+// Static libraries are compiled -fPIC only when a shared library of the solution links them.
+static const char* kMakefilePicGraph = R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:ExeOnly]
+type = lib
+sources = exeonly.cpp
+
+[project:OrderOnly]
+type = lib
+sources = orderonly.cpp
+
+[project:Inner]
+type = lib
+sources = inner.cpp
+
+[project:IntoShared]
+type = lib
+sources = intoshared.cpp
+target_link_libraries(PRIVATE Inner)
+
+[project:Plugin]
+type = dll
+sources = plugin.cpp
+dependencies = OrderOnly
+target_link_libraries(PRIVATE IntoShared)
+
+[project:App]
+type = exe
+sources = app.cpp
+target_link_libraries(PRIVATE ExeOnly, OrderOnly, Plugin)
+)";
+
+static const std::vector<std::string> kMakefilePicSources = {
+    "exeonly.cpp", "orderonly.cpp", "inner.cpp", "intoshared.cpp", "plugin.cpp", "app.cpp"};
+
+static std::string cxxflags_line(const std::string& makefile) {
+    const size_t start = makefile.find("\nCXXFLAGS = ");
+    if (start == std::string::npos) return {};
+    return makefile.substr(start + 1, makefile.find('\n', start + 1) - start - 1);
+}
+
+TEST_CASE("MakefileGenerator static lib linked only into executables is not -fPIC", "[makefile_generator]") {
+    auto result = generate_makefile(kMakefilePicGraph, kMakefilePicSources);
+    REQUIRE(result.files.count("ExeOnly.Release"));
+    REQUIRE(result.files.count("OrderOnly.Release"));
+    REQUIRE(result.files.count("App.Release"));
+    for (const char* name : {"ExeOnly.Release", "OrderOnly.Release", "App.Release"}) {
+        INFO(name);
+        const std::string& mk = result.files[name];
+        CHECK(!cxxflags_line(mk).empty());
+        CHECK(mk.find("-fPIC") == std::string::npos);
+        CHECK(mk.find("semantic-interposition") == std::string::npos);
+        CHECK(mk.find("SIGHMAKE_NO_SEMANTIC_INTERPOSITION") == std::string::npos);
+    }
+}
+
+TEST_CASE("MakefileGenerator static lib linked into a shared lib is -fPIC, transitively", "[makefile_generator]") {
+    auto result = generate_makefile(kMakefilePicGraph, kMakefilePicSources);
+    for (const char* name : {"IntoShared.Release", "Inner.Release", "Plugin.Release"}) {
+        INFO(name);
+        REQUIRE(result.files.count(name));
+        const std::string flags = cxxflags_line(result.files[name]);
+        CHECK(flags.find("-fPIC") != std::string::npos);
+        CHECK(flags.find("$(SIGHMAKE_NO_SEMANTIC_INTERPOSITION)") != std::string::npos);
+    }
+}
+
+TEST_CASE("MakefileGenerator adds -fno-semantic-interposition to PIC targets", "[makefile_generator]") {
+    auto result = generate_makefile(kMakefilePicGraph, kMakefilePicSources);
+    REQUIRE(result.files.count("Plugin.Release"));
+    const std::string& mk = result.files["Plugin.Release"];
+#ifdef __APPLE__
+    // Mach-O has no ELF interposition model; the flag is not used there.
+    CHECK(mk.find("semantic-interposition") == std::string::npos);
+#else
+    // Default GCC toolchain: the flag is set directly and can be overridden on the make command line.
+    CHECK(mk.find("SIGHMAKE_NO_SEMANTIC_INTERPOSITION ?= -fno-semantic-interposition") != std::string::npos);
+    const size_t def = mk.find("SIGHMAKE_NO_SEMANTIC_INTERPOSITION ?=");
+    const size_t use = mk.find("\nCXXFLAGS = ");
+    CHECK(def < use);
+#endif
+}
+
+TEST_CASE("MakefileGenerator probes clang for -fno-semantic-interposition", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux, Android
+
+[project:Engine]
+type = dll
+sources = main.cpp
+)");
+    REQUIRE(result.files.count("Engine.Release.Android"));
+    const std::string& mk = result.files["Engine.Release.Android"];
+    // NDK r19-r21 ship clang 8/9, which reject the flag: the compiler is asked first.
+    CHECK(mk.find("ifeq ($(origin SIGHMAKE_NO_SEMANTIC_INTERPOSITION),undefined)") != std::string::npos);
+    CHECK(mk.find("-fno-semantic-interposition -fsyntax-only") != std::string::npos);
+    CHECK(cxxflags_line(mk).find("$(SIGHMAKE_NO_SEMANTIC_INTERPOSITION)") != std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator position_independent override", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:ForcedOn]
+type = lib
+sources = on.cpp
+position_independent = true
+
+[project:ForcedOff]
+type = lib
+sources = off.cpp
+position_independent = false
+
+[project:PieApp]
+type = exe
+sources = app.cpp
+position_independent = true
+target_link_libraries(PRIVATE ForcedOn)
+
+[project:Plugin]
+type = dll
+sources = plugin.cpp
+position_independent = false
+target_link_libraries(PRIVATE ForcedOff)
+)", {"on.cpp", "off.cpp", "app.cpp", "plugin.cpp"});
+    REQUIRE(result.files.count("ForcedOn.Release"));
+    REQUIRE(result.files.count("ForcedOff.Release"));
+    REQUIRE(result.files.count("PieApp.Release"));
+    REQUIRE(result.files.count("Plugin.Release"));
+    CHECK(cxxflags_line(result.files["ForcedOn.Release"]).find("-fPIC") != std::string::npos);
+    CHECK(cxxflags_line(result.files["PieApp.Release"]).find("-fPIC") != std::string::npos);
+    // false wins over the graph for a static library ...
+    CHECK(cxxflags_line(result.files["ForcedOff.Release"]).find("-fPIC") == std::string::npos);
+    // ... but a shared library always needs position-independent code.
+    CHECK(cxxflags_line(result.files["Plugin.Release"]).find("-fPIC") != std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator semantic_interposition = true opts out", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:Preloadable]
+type = dll
+sources = main.cpp
+semantic_interposition = true
+)");
+    REQUIRE(result.files.count("Preloadable.Release"));
+    const std::string& mk = result.files["Preloadable.Release"];
+    CHECK(cxxflags_line(mk).find("-fPIC") != std::string::npos);
+    CHECK(mk.find("semantic-interposition") == std::string::npos);
+    CHECK(mk.find("SIGHMAKE_NO_SEMANTIC_INTERPOSITION") == std::string::npos);
+}
+
+TEST_CASE("BuildscriptParser warns on invalid position_independent and falls back to auto", "[makefile_generator]") {
+    BuildscriptParser parser;
+    Solution solution = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:Lib]
+type = lib
+position_independent = sometimes
+)", fs::temp_directory_path().string());
+    REQUIRE(!solution.projects.empty());
+    CHECK(solution.projects[0].position_independent == "auto");
+}
+
 // ============================================================================
 // Driver (sys) type
 // ============================================================================

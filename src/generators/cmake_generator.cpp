@@ -887,9 +887,23 @@ void CMakeGenerator::write_target_properties(std::ostream& out, const Project& p
         props.push_back("SUFFIX \"" + target_ext + "\"");
     }
 
-    // Position independent code for shared libs
-    if (config_type == "DynamicLibrary") {
+    // Position-independent code, decided like the Makefile generator: shared libraries, static
+    // libraries a shared library of the solution links, and `position_independent` overrides.
+    // A static library is PIC when any of its configurations needs it (one CMake target serves
+    // every configuration). Projects in "auto" mode that need no PIC keep CMake's default.
+    bool position_independent = false;
+    for (const auto& [key, config] : project.configurations) {
+        (void)config;
+        if (project_uses_position_independent_code(solution, project, key)) {
+            position_independent = true;
+            break;
+        }
+    }
+    const bool pic_forced_off = position_independent_override(project) == 0 && config_type != "DynamicLibrary";
+    if (position_independent) {
         props.push_back("POSITION_INDEPENDENT_CODE ON");
+    } else if (pic_forced_off && (config_type == "StaticLibrary" || config_type == "Application")) {
+        props.push_back("POSITION_INDEPENDENT_CODE OFF");
     }
 
     if (props.empty()) return;
@@ -899,6 +913,17 @@ void CMakeGenerator::write_target_properties(std::ostream& out, const Project& p
         out << "    " << p << "\n";
     }
     out << ")\n";
+
+    // PIC objects on ELF targets: -fno-semantic-interposition (GCC 5+, Clang 10+; older Clang
+    // rejects the flag). `semantic_interposition = true` keeps the default model (LD_PRELOAD).
+    if (position_independent && !project.semantic_interposition) {
+        const std::string lang = detected_lang == "C" ? "C" : "CXX";
+        out << "if(NOT APPLE AND NOT WIN32 AND (CMAKE_" << lang << "_COMPILER_ID STREQUAL \"GNU\" OR "
+            << "(CMAKE_" << lang << "_COMPILER_ID STREQUAL \"Clang\" AND CMAKE_" << lang
+            << "_COMPILER_VERSION VERSION_GREATER_EQUAL 10)))\n";
+        out << "    target_compile_options(" << project.name << " PRIVATE -fno-semantic-interposition)\n";
+        out << "endif()\n";
+    }
 
     // Per-config output directories
     auto config_names = get_config_names(solution);

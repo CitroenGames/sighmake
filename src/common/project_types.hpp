@@ -4,6 +4,10 @@
 #include "file_types.hpp"
 #include <algorithm>
 #include <cstdint>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
 
 namespace vcxproj {
 
@@ -448,6 +452,17 @@ struct Project {
     // Optional per-project platform filter (the project-level `platforms` key). Empty means the
     // project is built for every platform in the solution matrix. See project_supports_platform().
     std::vector<std::string> platform_filter;
+
+    // Position-independent code on GCC/Clang targets (`position_independent = auto|true|false`).
+    // "auto": shared libraries always, static libraries only when a shared library of the solution
+    // links them (directly or through other static libraries), executables never. "true" forces
+    // -fPIC, "false" turns it off for static libraries and executables (shared libraries always
+    // need it). See project_uses_position_independent_code().
+    std::string position_independent = "auto";
+    // `semantic_interposition = true` keeps the compiler's default ELF interposition model for
+    // position-independent code (needed when symbols are replaced through LD_PRELOAD). The default
+    // (false) adds -fno-semantic-interposition to every position-independent compile.
+    bool semantic_interposition = false;
 };
 
 struct SolutionFolder {
@@ -756,6 +771,76 @@ inline bool project_excluded_from_visual_studio(const Project& project) {
         if (!is_unix_platform(platform)) return false;
     }
     return true;
+}
+
+// ConfigurationType of `project` for a "Config|Platform" key (project default when the key has none).
+inline std::string project_config_type(const Project& project, const std::string& config_key) {
+    const auto it = project.configurations.find(config_key);
+    if (it != project.configurations.end() && !it->second.config_type.empty()) return it->second.config_type;
+    return project.project_level_defaults.config_type;
+}
+
+// Names of the static libraries that a shared library of the solution links for `config_key`,
+// directly or through other static (or interface) libraries. Build-order-only references and
+// edges scoped to other platforms do not count. These objects end up inside a shared object and
+// so must be position-independent; static libraries linked only into executables need not be.
+inline std::set<std::string> static_libraries_linked_into_shared_libraries(const Solution& solution,
+                                                                           const std::string& config_key) {
+    const std::string platform = parse_config_key(config_key).second;
+    std::map<std::string, const Project*> by_name;
+    for (const auto& p : solution.projects) by_name.emplace(p.name, &p);
+
+    std::set<std::string> result;
+    for (const auto& root : solution.projects) {
+        if (project_config_type(root, config_key) != "DynamicLibrary") continue;
+        if (!project_supports_platform(root, platform)) continue;
+        std::vector<const Project*> stack{&root};
+        std::set<std::string> visited{root.name};
+        while (!stack.empty()) {
+            const Project* current = stack.back();
+            stack.pop_back();
+            for (const auto& dep : current->project_references) {
+                if (!dep.link_library_dependencies || !dependency_applies_to_platform(dep, platform)) continue;
+                if (!visited.insert(dep.name).second) continue;
+                const auto found = by_name.find(dep.name);
+                if (found == by_name.end()) continue;
+                const std::string type = project_config_type(*found->second, config_key);
+                // A shared library dependency is a root of its own; executables are never linked in.
+                if (type == "StaticLibrary") {
+                    result.insert(dep.name);
+                    stack.push_back(found->second);
+                } else if (type == "Utility") {
+                    stack.push_back(found->second);  // interface library: its links pass through
+                }
+            }
+        }
+    }
+    return result;
+}
+
+// Parsed `position_independent` value: 1 = true, 0 = false, -1 = auto (also for unknown values).
+inline int position_independent_override(const Project& project) {
+    const std::string v = to_lower(trim(project.position_independent));
+    if (v == "true" || v == "yes" || v == "on" || v == "1") return 1;
+    if (v == "false" || v == "no" || v == "off" || v == "0") return 0;
+    return -1;
+}
+
+// Does `project` compile position-independent code (-fPIC) for `config_key` on GCC/Clang targets?
+// Shared libraries always do. Executables and static libraries follow `position_independent`;
+// in "auto" mode a static library does exactly when static_libraries_linked_into_shared_libraries()
+// lists it, and an executable never does. `linked_into_shared` may pass that precomputed set.
+inline bool project_uses_position_independent_code(const Solution& solution, const Project& project,
+                                                   const std::string& config_key,
+                                                   const std::set<std::string>* linked_into_shared = nullptr) {
+    const std::string type = project_config_type(project, config_key);
+    if (type == "DynamicLibrary") return true;
+    if (type != "StaticLibrary" && type != "Application") return false;
+    const int forced = position_independent_override(project);
+    if (forced >= 0) return forced == 1;
+    if (type != "StaticLibrary") return false;
+    if (linked_into_shared) return linked_into_shared->count(project.name) != 0;
+    return static_libraries_linked_into_shared_libraries(solution, config_key).count(project.name) != 0;
 }
 
 // Default output / intermediate directory layout when a buildscript does not

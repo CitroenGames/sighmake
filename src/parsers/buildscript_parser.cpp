@@ -2690,6 +2690,20 @@ bool BuildscriptParser::parse_project_compiler_setting(const std::string& key, c
         proj.nullable = value;
     } else if (key == "implicit_usings") {
         proj.implicit_usings = value;
+    } else if (key == "position_independent" || key == "pic") {
+        // GCC/Clang -fPIC: auto (default; shared libraries and the static libraries linked into
+        // them), true (always), false (never for static libraries and executables).
+        proj.position_independent = to_lower(trim(value));
+        if (position_independent_override(proj) < 0 && proj.position_independent != "auto") {
+            std::cerr << "Warning: Invalid position_independent value '" << value << "' at line "
+                      << state.line_number << ". Use auto, true or false; using auto.\n";
+            proj.position_independent = "auto";
+        }
+    } else if (key == "semantic_interposition") {
+        // true: keep the default ELF interposition model (LD_PRELOAD-replaceable symbols) instead
+        // of compiling position-independent code with -fno-semantic-interposition.
+        const std::string v = to_lower(trim(value));
+        proj.semantic_interposition = (v == "true" || v == "yes" || v == "on" || v == "1");
     } else if (key == "allow_unsafe") {
         proj.allow_unsafe = value == "true";
     } else if (key == "generate_runtime_configuration_files") {

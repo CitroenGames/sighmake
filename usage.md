@@ -1484,6 +1484,58 @@ such as `Release` while Android configurations use `Release.Android`.
 Linux and macOS configurations with the same name also share one desktop
 Makefile name, so generate them in separate runs when their settings differ.
 
+#### Position-independent code
+
+`-fPIC` makes code slower: GCC and Clang reach global variables through the GOT
+and, on ELF, must assume any exported function can be replaced at load time
+(semantic interposition), so they inline less across functions. sighmake
+therefore compiles position-independent code only where it is needed:
+
+| Project | `-fPIC` |
+| --- | --- |
+| Shared library (`dll`/`shared`) | Always. |
+| Static library linked by a shared library of the solution, directly or through other static or interface libraries | Yes. |
+| Static library linked only into executables | No. |
+| Executable | No. |
+
+Only real link edges count: `target_link_libraries` and `project_references`,
+not build-order-only `dependencies`, and an edge inside a platform block such as
+`if(Android) { ... }` counts only for that platform. The project-level key
+`position_independent` overrides the decision for static libraries and
+executables:
+
+```ini
+[project:Plugin_Support]
+type = lib
+# auto (default) | true | false
+position_independent = true   # e.g. linked into a shared library outside this solution
+```
+
+`position_independent = false` on a static library that a shared library links
+produces objects the linker rejects on most targets; shared libraries always
+compile `-fPIC`, whatever the key says.
+
+Position-independent code on ELF targets (Linux, Android) also gets
+`-fno-semantic-interposition`, which lets the compiler inline and call functions
+of the same library directly. A library whose functions are meant to be
+replaced through `LD_PRELOAD` (or another library that defines the same symbol
+first) sets `semantic_interposition = true` to keep the default model. GCC
+supports the flag from version 5, so the generated Makefile sets
+`SIGHMAKE_NO_SEMANTIC_INTERPOSITION ?= -fno-semantic-interposition`. Clang
+before 10 rejects it (NDK r19 to r21 ship Clang 8 and 9), so when the compiler
+is Clang (always on Android) the Makefile asks the compiler once, when make
+reads it, and leaves the variable empty when the flag is not accepted. Setting
+the variable on the make command line overrides both, e.g.
+`make SIGHMAKE_NO_SEMANTIC_INTERPOSITION=` to turn the flag off when building
+with an old Clang through `CXX=`. Apple targets do not use the flag; Mach-O has
+no such interposition model.
+
+The CMake generator makes the same decision: `POSITION_INDEPENDENT_CODE ON` for
+the targets above (a static library is PIC when any of its configurations needs
+it), `POSITION_INDEPENDENT_CODE OFF` for `position_independent = false`, and
+`-fno-semantic-interposition` behind a GCC / Clang 10+ check on non-Apple,
+non-Windows hosts.
+
 ### CMake
 
 ```text
@@ -1600,7 +1652,7 @@ clang++ --target=aarch64-linux-android24 -shared -Wl,-soname,libgame.so \
 
 | Item | Behaviour |
 | --- | --- |
-| `-shared`, `-fPIC` | Always for shared libraries; static libraries are compiled `-fPIC` so they can be linked into one. |
+| `-shared`, `-fPIC` | `-shared` for shared libraries. `-fPIC` for shared libraries and for the static libraries they link; see [Position-independent code](#position-independent-code). |
 | `-Wl,-soname,<file name>` | Shared libraries only. The loader and the APK packager rely on it. |
 | 16 KB page alignment | `-Wl,-z,max-page-size=16384` for `arm64-v8a` and `x86_64` (required for Android 15+ devices; NDK r27 does not enable it itself). `make ANDROID_MAX_PAGE_SIZE=4096` changes it, `ANDROID_MAX_PAGE_SIZE=` (empty) turns it off. `armeabi-v7a` and `x86` are never aligned. |
 | Archives | Linked inside `--start-group ... --end-group`, so their order does not matter. `whole_archive` dependencies use `--whole-archive`. |
@@ -1853,6 +1905,8 @@ the primary names shown here in hand-written buildscripts.
 | `objcflags` | Additional flags for `.m`/`.mm` files. |
 | `compile_as` | `Default`, `CompileAsC`, or `CompileAsCpp`. |
 | `pch`, `pch_header`, `pch_output` | Precompiled-header policy. |
+| `position_independent` (`pic`) | Project-level, Make and CMake only: `auto` (default), `true`, or `false`. See [Position-independent code](#position-independent-code). |
+| `semantic_interposition` | Project-level, Make and CMake only. `true` keeps the compiler's default ELF interposition model for position-independent code (no `-fno-semantic-interposition`). Default `false`. |
 
 For Visual Studio C/C++ projects, use `support_just_my_code` instead of adding
 `/JMC-` to `cflags`. It emits `<SupportJustMyCode>false</SupportJustMyCode>`

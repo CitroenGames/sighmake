@@ -430,6 +430,89 @@ type = dll
 sources = main.cpp
 )", "Lib");
     CHECK(result.project_content.find("POSITION_INDEPENDENT_CODE ON") != std::string::npos);
+    CHECK(result.project_content.find("-fno-semantic-interposition") != std::string::npos);
+}
+
+static const char* kCMakePicGraph = R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64
+
+[project:ExeOnly]
+type = lib
+sources = util.cpp
+
+[project:Inner]
+type = lib
+sources = util.cpp
+
+[project:IntoShared]
+type = lib
+sources = util.cpp
+target_link_libraries(PRIVATE Inner)
+
+[project:Plugin]
+type = dll
+sources = main.cpp
+target_link_libraries(PRIVATE IntoShared)
+
+[project:App]
+type = exe
+sources = main.cpp
+target_link_libraries(PRIVATE ExeOnly, Plugin)
+)";
+
+TEST_CASE("CMakeGenerator static lib linked only into an executable is not PIC", "[cmake_generator]") {
+    auto result = generate_cmake(kCMakePicGraph, "ExeOnly");
+    REQUIRE(!result.project_content.empty());
+    CHECK(result.project_content.find("POSITION_INDEPENDENT_CODE") == std::string::npos);
+    CHECK(result.project_content.find("-fno-semantic-interposition") == std::string::npos);
+}
+
+TEST_CASE("CMakeGenerator static lib linked into a shared lib is PIC, transitively", "[cmake_generator]") {
+    auto direct = generate_cmake(kCMakePicGraph, "IntoShared");
+    CHECK(direct.project_content.find("POSITION_INDEPENDENT_CODE ON") != std::string::npos);
+    CHECK(direct.project_content.find("-fno-semantic-interposition") != std::string::npos);
+    auto transitive = generate_cmake(kCMakePicGraph, "Inner");
+    CHECK(transitive.project_content.find("POSITION_INDEPENDENT_CODE ON") != std::string::npos);
+    auto app = generate_cmake(kCMakePicGraph, "App");
+    CHECK(app.project_content.find("POSITION_INDEPENDENT_CODE") == std::string::npos);
+}
+
+TEST_CASE("CMakeGenerator position_independent and semantic_interposition overrides", "[cmake_generator]") {
+    auto forced_on = generate_cmake(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64
+
+[project:Lib]
+type = lib
+sources = util.cpp
+position_independent = true
+semantic_interposition = true
+)", "Lib");
+    CHECK(forced_on.project_content.find("POSITION_INDEPENDENT_CODE ON") != std::string::npos);
+    CHECK(forced_on.project_content.find("-fno-semantic-interposition") == std::string::npos);
+
+    auto forced_off = generate_cmake(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64
+
+[project:Lib]
+type = lib
+sources = util.cpp
+position_independent = false
+
+[project:Plugin]
+type = dll
+sources = main.cpp
+target_link_libraries(PRIVATE Lib)
+)", "Lib");
+    CHECK(forced_off.project_content.find("POSITION_INDEPENDENT_CODE OFF") != std::string::npos);
 }
 
 TEST_CASE("CMakeGenerator custom target name", "[cmake_generator]") {

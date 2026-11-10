@@ -668,7 +668,8 @@ std::tuple<std::string, std::string> MakefileGenerator::get_file_pch_mode(
 
 // Get all compiler flags for a configuration
 std::string MakefileGenerator::get_compiler_flags(const Configuration& config, const Project& project,
-                                                   const std::filesystem::path& makefile_dir, bool c_flags) {
+                                                   const std::filesystem::path& makefile_dir, bool c_flags,
+                                                   const std::string& pic_flags) {
     std::stringstream ss;
 
     // Language standard. Mixed C/C++ projects need distinct flags for each
@@ -694,11 +695,10 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
         ss << flags::warning_level_to_gnu_flags(config.cl_compile.warning_level) << " ";
     }
 
-    // Position-independent code for shared libraries, and for static libraries since those are
-    // commonly linked into a shared library (non-PIC objects cannot be).
-    if (config.config_type == "DynamicLibrary" || config.config_type == "StaticLibrary") {
-        ss << "-fPIC ";
-    }
+    // Position-independent code: shared libraries, the static libraries linked into them, and
+    // whatever `position_independent` forces. Decided by the caller from the dependency graph;
+    // static libraries linked only into executables stay non-PIC (cheaper code, no GOT loads).
+    ss << pic_flags;
 
     // Include directories - convert to relative paths
     for (const auto& inc : config.cl_compile.additional_include_directories) {
@@ -1756,9 +1756,27 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "NASM = " << nasm_exe << "\n";
     }
 
+    // Position-independent code (see project_uses_position_independent_code). PIC objects also get
+    // -fno-semantic-interposition on ELF targets unless the project sets semantic_interposition =
+    // true: without it GCC must assume every exported function can be replaced at load time, so it
+    // inlines less across functions and reaches globals through the GOT. Mach-O (two-level
+    // namespaces) has no such interposition model, so Apple targets do not need the flag.
+    const bool position_independent = project_uses_position_independent_code(solution, project, config_key);
+#ifdef __APPLE__
+    const bool elf_target = android;
+#else
+    const bool elf_target = true;
+#endif
+    const bool no_semantic_interposition = position_independent && elf_target && !project.semantic_interposition;
+    std::string pic_flags;
+    if (position_independent) {
+        pic_flags = "-fPIC ";
+        if (no_semantic_interposition) pic_flags += "$(SIGHMAKE_NO_SEMANTIC_INTERPOSITION) ";
+    }
+
     // Compiler flags
-    std::string cxxflags = get_compiler_flags(config, project, makefile_dir, false);
-    std::string cflags = get_compiler_flags(config, project, makefile_dir, true);
+    std::string cxxflags = get_compiler_flags(config, project, makefile_dir, false, pic_flags);
+    std::string cflags = get_compiler_flags(config, project, makefile_dir, true, pic_flags);
     std::string ldflags = get_linker_flags(config, makefile_dir, android);
     std::string ldlibs = get_linker_libs(config, makefile_dir);
 
@@ -1900,6 +1918,25 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         }
     }
 
+    if (no_semantic_interposition && (has_cpp_files || has_objcxx_files || has_c_files)) {
+        // GCC has the flag since 5. Clang rejects it before 10 (NDK r19-r21 ship clang 8/9), so for
+        // clang the compiler is asked once when make reads this file; an unsupported compiler (or a
+        // host shell that cannot run the probe) leaves the variable empty. Setting the variable on
+        // the make command line (empty to disable) overrides both.
+        const bool probe_cxx = has_cpp_files || has_objcxx_files;
+        const std::string& probe_cmd = probe_cxx ? cxx_cmd : cc_cmd;
+        const bool clang_family = android || probe_cmd.find("clang") != std::string::npos;
+        out << "# Position-independent code without semantic interposition (semantic_interposition = true opts out)\n";
+        if (clang_family) {
+            out << "ifeq ($(origin SIGHMAKE_NO_SEMANTIC_INTERPOSITION),undefined)\n";
+            out << "  SIGHMAKE_NO_SEMANTIC_INTERPOSITION := $(shell echo | " << probe_cmd
+                << " -fno-semantic-interposition -fsyntax-only -x " << (probe_cxx ? "c++" : "c")
+                << " - 2>/dev/null && echo -fno-semantic-interposition)\n";
+            out << "endif\n";
+        } else {
+            out << "SIGHMAKE_NO_SEMANTIC_INTERPOSITION ?= -fno-semantic-interposition\n";
+        }
+    }
     if (has_cpp_files || has_objcxx_files) {
         out << "CXXFLAGS = " << cxxflags << "\n";
     }

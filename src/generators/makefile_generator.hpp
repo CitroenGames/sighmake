@@ -44,9 +44,11 @@ private:
                                        const std::string& config_key, const std::string& output_path,
                                        const ProjectLookup& project_lookup, const Solution& solution);
 
-    // Helper functions for assembling flag strings
+    // Helper functions for assembling flag strings. `pic_flags` is the position-independent-code
+    // part (empty, or "-fPIC " plus the semantic-interposition flag), see generate_makefile_with_lookup.
     std::string get_compiler_flags(const Configuration& config, const Project& project,
-                                   const std::filesystem::path& makefile_dir, bool c_flags);
+                                   const std::filesystem::path& makefile_dir, bool c_flags,
+                                   const std::string& pic_flags = {});
     std::string get_linker_flags(const Configuration& config, const std::filesystem::path& makefile_dir,
                                  bool android);
     std::string get_linker_libs(const Configuration& config, const std::filesystem::path& makefile_dir = {});
