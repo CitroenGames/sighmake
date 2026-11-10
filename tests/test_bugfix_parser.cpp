@@ -63,3 +63,52 @@ TEST_CASE("Wildcard sources expand when the buildscript is given by a relative p
     CHECK(find_parser_source(sol.projects[0], "a.cpp") != nullptr);
     CHECK(find_parser_source(sol.projects[0], "b.cpp") != nullptr);
 }
+
+TEST_CASE("A commented-out brace list does not swallow the following lines", "[bugfix_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+# sources = {
+#     old.cpp
+# }
+sources = main.cpp
+defines = KEEP_ME
+)");
+    REQUIRE(sol.projects.size() == 1);
+    const Project& app = sol.projects[0];
+    CHECK(find_parser_source(app, "main.cpp") != nullptr);
+    CHECK(find_parser_source(app, "old.cpp") == nullptr);
+    CHECK(parser_contains(app.configurations.at("Debug|Linux").cl_compile.preprocessor_definitions, "KEEP_ME"));
+}
+
+TEST_CASE("A brace list entry ending in a ${VAR} reference does not close the list", "[bugfix_parser]") {
+    BuildscriptParser parser;
+    parser.set_variables({{"EXTRA_DEF", "FROM_VAR"}});
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+if(Android) {
+    defines = ANDROID_ONLY
+}
+defines = {
+    FIRST
+    ${EXTRA_DEF}
+}
+defines = AFTER
+)");
+    REQUIRE(sol.projects.size() == 1);
+    const auto& defines = sol.projects[0].configurations.at("Debug|Linux").cl_compile.preprocessor_definitions;
+    CHECK(parser_contains(defines, "FIRST"));
+    CHECK(parser_contains(defines, "FROM_VAR"));
+    CHECK(parser_contains(defines, "AFTER"));
+    CHECK_FALSE(parser_contains(defines, "ANDROID_ONLY"));
+}

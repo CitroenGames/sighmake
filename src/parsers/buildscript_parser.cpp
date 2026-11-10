@@ -236,6 +236,21 @@ static std::string rebase_library_entries(const std::string& value, const std::s
     return result;
 }
 
+// True when the final '}' of `text` closes a ${VARIABLE} reference rather than a brace list.
+static bool ends_with_variable_reference(const std::string& text) {
+    int depth = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '$' && i + 1 < text.size() && text[i + 1] == '{') {
+            ++depth;
+            ++i;
+        } else if (text[i] == '}' && depth > 0) {
+            --depth;
+            if (i + 1 == text.size()) return true;
+        }
+    }
+    return false;
+}
+
 std::string preprocess_multiline(const std::string& content) {
     std::string processed_content;
     std::istringstream preprocess_stream(content);
@@ -288,7 +303,8 @@ std::string preprocess_multiline(const std::string& content) {
             
             // Check for closing brace
             // We assume } is the last significant char or the only one
-            if (trimmed == "}" || (trimmed.size() > 0 && trimmed.back() == '}')) {
+            if (trimmed == "}" || (trimmed.size() > 0 && trimmed.back() == '}' &&
+                                   !ends_with_variable_reference(trimmed))) {
                  // If line is "file.cpp }", we should capture "file.cpp"
                  if (trimmed != "}") {
                      std::string item = trimmed.substr(0, trimmed.size() - 1);
@@ -315,9 +331,11 @@ std::string preprocess_multiline(const std::string& content) {
             continue;
         }
 
-        // Check for start of multiline value or brace block
+        // Check for start of multiline value or brace block (a comment line never starts one)
+        const std::string line_start = trim(line);
+        const bool is_comment = !line_start.empty() && (line_start[0] == '#' || line_start[0] == ';');
         size_t eq_pos = line.find('=');
-        if (eq_pos != std::string::npos) {
+        if (eq_pos != std::string::npos && !is_comment) {
             std::string value_part = line.substr(eq_pos + 1);
             size_t first_nonspace = value_part.find_first_not_of(" \t");
             
