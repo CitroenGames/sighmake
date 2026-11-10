@@ -303,6 +303,31 @@ std::string make_escape_spaces(const std::string& path) {
     return result;
 }
 
+// A source file written as a prerequisite: besides spaces, `#` (comment) and `$` (variable
+// reference) are special to make.
+std::string make_escape_source(const std::string& path) {
+    std::string result;
+    for (char c : path) {
+        if (c == ' ' || c == '#') result += '\\';
+        if (c == '$') result += '$';
+        result += c;
+    }
+    return result;
+}
+
+// The source file as a recipe argument. "$<" holds the name make parsed, but make expands a `$` in
+// it into the recipe text where the shell would treat it as a variable: such names are written out.
+std::string recipe_source_arg(const std::string& path) {
+    if (path.find('$') == std::string::npos) return "\"$<\"";
+    std::string result = "\"";
+    for (char c : path) {
+        if (c == '"' || c == '`' || c == '\\') result += '\\';
+        if (c == '$') result += "\\$$";
+        else result += c;
+    }
+    return result + "\"";
+}
+
 // Escapes the characters that stay special inside double quotes.
 std::string shell_escape_in_quotes(const std::string& text) {
     std::string result;
@@ -2042,12 +2067,12 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                 const bool macho_linker = false;
 #endif
                 if (macho_linker) {
-                    ldlibs = "-Wl,-force_load," + archive_it->path + " " + ldlibs;
+                    ldlibs = shell_quote_if_needed("-Wl,-force_load," + archive_it->path) + " " + ldlibs;
                 } else {
-                    ldlibs = "-Wl,--whole-archive " + archive_it->path + " -Wl,--no-whole-archive " + ldlibs;
+                    ldlibs = "-Wl,--whole-archive " + shell_quote_if_needed(archive_it->path) + " -Wl,--no-whole-archive " + ldlibs;
                 }
             } else {
-                ldlibs = archive_it->path + " " + ldlibs;
+                ldlibs = shell_quote_if_needed(archive_it->path) + " " + ldlibs;
             }
         }
     }
@@ -2126,7 +2151,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     if (!dep_archives.empty()) {
         out << "PROJECT_DEPS =";
         for (const auto& archive : dep_archives) {
-            out << " \\\n  " << archive.path;
+            out << " \\\n  " << make_escape_spaces(archive.path);
         }
         out << "\n";
     }
@@ -2135,8 +2160,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
     // Output paths
     out << "# Output\n";
-    out << "TARGET = " << target << "\n";
-    out << "OBJ_DIR = " << int_dir << "\n";
+    out << "TARGET = " << make_escape_spaces(target) << "\n";
+    out << "OBJ_DIR = " << make_escape_spaces(int_dir) << "\n";
     if (emits_target_receipt) {
         out << "SIGHMAKE_TARGET_RECEIPT = " << out_dir << project.name << ".targetreceipt.json\n";
         out << "SIGHMAKE_RECEIPT_ARCHITECTURE ?= "
@@ -2162,8 +2187,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
         // Write PCH variables
         out << "# Precompiled header\n";
-        out << "PCH_HEADER = " << make_escape_spaces(pch_header_path) << "\n";
-        out << "PCH_OUTPUT = " << pch_output_path << "\n\n";
+        out << "PCH_HEADER = " << make_escape_source(pch_header_path) << "\n";
+        out << "PCH_OUTPUT = " << make_escape_spaces(pch_output_path) << "\n\n";
     }
 
     // Collect source files and generate object file list
@@ -2221,11 +2246,22 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         }
     }
 
+    // Targets, prerequisites and recipe arguments are quoted only when a path holds a space, so
+    // makefiles of ordinary projects stay as plain as before.
+    const auto has_space = [](const std::string& text) { return text.find(' ') != std::string::npos; };
+    const bool spaced = has_space(target) || has_space(out_dir) || has_space(int_dir) ||
+        has_space(pch_output_path) ||
+        std::any_of(obj_files.begin(), obj_files.end(), has_space) ||
+        std::any_of(dep_archives.begin(), dep_archives.end(),
+                    [&](const ArchiveEntry& archive) { return has_space(archive.path); });
+    const std::string at_arg = spaced ? "\"$@\"" : "$@";
+    const std::string mkdir_target_dir = spaced ? "mkdir -p \"$$(dirname \"$@\")\"" : "mkdir -p $(dir $@)";
+
     // Object files list
     out << "# Object files\n";
     out << "OBJS =";
     for (const auto& obj : obj_files) {
-        out << " \\\n  " << obj;
+        out << " \\\n  " << make_escape_spaces(obj);
     }
     out << "\n\n";
 
@@ -2364,7 +2400,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     if (!stamps.empty()) {
         for (const auto& st : stamps) {
             out << "$(" << st.var << "):\n";
-            out << "\t@mkdir -p $(dir $@) && touch $@\n\n";
+            out << "\t@" << mkdir_target_dir << " && touch " << at_arg << "\n\n";
         }
         if (link_stamped) {
             out << "$(TARGET): $(SIGHMAKE_LINK_STAMP)\n\n";
@@ -2375,8 +2411,9 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     if (has_pch && !pch_header_path.empty()) {
         out << "# Precompiled header compilation\n";
         out << "$(PCH_OUTPUT): $(PCH_HEADER)" << (cxx_stamped ? " $(SIGHMAKE_CXX_STAMP)" : "") << "\n";
-        out << "\t@mkdir -p $(dir $@)\n";
-        out << "\t$(CXX) $(CXXFLAGS) -x c++-header -MMD -MP -MF $@.d -o $@ \"$<\"\n\n";
+        out << "\t@" << mkdir_target_dir << "\n";
+        out << "\t$(CXX) $(CXXFLAGS) -x c++-header -MMD -MP -MF " << (spaced ? "\"$@.d\"" : "$@.d")
+            << " -o " << at_arg << " \"$<\"\n\n";
     }
 
     // Link rule
@@ -2398,7 +2435,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         }
         out << "\n";
     }
-    out << "\t@mkdir -p $(dir $@)\n";
+    out << "\t@" << mkdir_target_dir << "\n";
 
     // Pre-link event
     if (!pre_link_command.empty()) {
@@ -2433,14 +2470,14 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             }
             out << "\t@rm -f $@.rsp\n";
         } else if (config.config_type == "DynamicLibrary") {
-            out << "\t" << compiler << " " << shared_link_flags << " $(LDFLAGS) -o $@ $(OBJS) " << ldlibs << "\n";
+            out << "\t" << compiler << " " << shared_link_flags << " $(LDFLAGS) -o " << at_arg << " $(OBJS) " << ldlibs << "\n";
         } else {
-            out << "\t" << compiler << " $(LDFLAGS) -o $@ $(OBJS) " << ldlibs << "\n";
+            out << "\t" << compiler << " $(LDFLAGS) -o " << at_arg << " $(OBJS) " << ldlibs << "\n";
         }
     } else if (config.config_type == "StaticLibrary") {
         // Create static library (Android uses the NDK's llvm-ar via $(AR))
         // ar replaces listed members but retains removed source objects unless recreated.
-        out << "\trm -f $@\n";
+        out << "\trm -f " << at_arg << "\n";
         if (android) {
             // Long object lists overflow the Windows command-line limit when cross-compiling from a
             // Windows host; pass them through a response file written by GNU make.
@@ -2450,7 +2487,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             out << "\t$(AR) rcs $@ @$@.rsp\n";
             out << "\t@rm -f $@.rsp\n";
         } else {
-            out << "\tar rcs $@ $(OBJS)\n";
+            out << "\tar rcs " << at_arg << " $(OBJS)\n";
         }
     }
 
@@ -2460,16 +2497,16 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         if (makefile_strips_outputs(config, parse_config_key(config_key).first)) {
             if (android) {
                 // Host strip can't handle Android ELF binaries; use the NDK's llvm-strip
-                out << "\t$(STRIP) --strip-unneeded $@\n";
+                out << "\t$(STRIP) --strip-unneeded " << at_arg << "\n";
             } else {
 #ifdef __APPLE__
                 if (config.config_type == "DynamicLibrary") {
-                    out << "\tstrip -x $@\n";
+                    out << "\tstrip -x " << at_arg << "\n";
                 } else {
-                    out << "\tstrip $@\n";
+                    out << "\tstrip " << at_arg << "\n";
                 }
 #else
-                out << "\tstrip $@\n";
+                out << "\tstrip " << at_arg << "\n";
 #endif
             }
         }
@@ -2510,7 +2547,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             << "--platform \"" << receipt_platform << "\" "
             << "--architecture \"$(SIGHMAKE_RECEIPT_ARCHITECTURE)\" "
             << "--configuration \"" << config_name << "\" "
-            << "--primary-artifact \"$(TARGET)\" "
+            << "--primary-artifact \"" << (spaced ? "$<" : "$(TARGET)") << "\" "
             << "--output \"$(SIGHMAKE_TARGET_RECEIPT)\"\n";
     }
 
@@ -2544,17 +2581,17 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         }
 
         // Write dependency line - add PCH dependency if file uses it
-        out << obj << ": " << make_escape_spaces(src);
+        out << make_escape_spaces(obj) << ": " << make_escape_source(src);
         if (!is_nasm && uses_pch && has_pch) {
             out << " $(PCH_OUTPUT)";
         }
         if (const std::string sv = stamp_var_for(ext); !sv.empty()) out << " " << sv;
         out << "\n";
 
-        out << "\t@mkdir -p $(dir $@)\n";
+        out << "\t@" << mkdir_target_dir << "\n";
 
         if (is_nasm) {
-            out << "\t" << compiler << " " << flags << " -o $@ \"$<\"\n\n";
+            out << "\t" << compiler << " " << flags << " -o " << at_arg << " " << recipe_source_arg(src) << "\n\n";
         } else {
             out << "\t" << compiler << " " << flags << source_extra_flags[i];
 
@@ -2563,7 +2600,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                 out << " -include \"" << pch_include_base << "\"";
             }
 
-            out << " -MMD -MP -c -o $@ \"$<\"\n\n";
+            out << " -MMD -MP -c -o " << at_arg << " " << recipe_source_arg(src) << "\n\n";
         }
     }
 
@@ -2574,7 +2611,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     } else {
         out << "\trm -rf $(OBJ_DIR) $(TARGET)";
     }
-    if (emits_target_receipt) out << " $(SIGHMAKE_TARGET_RECEIPT)";
+    if (emits_target_receipt) out << (has_space(out_dir) ? " \"$(SIGHMAKE_TARGET_RECEIPT)\"" : " $(SIGHMAKE_TARGET_RECEIPT)");
     out << "\n\n";
 
     // Include dependency files
