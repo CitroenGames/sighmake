@@ -49,6 +49,9 @@ private:
         // without a section of its own stays in the solution and gets its defaults.
         std::set<std::string> discovered_configs;
         std::set<std::string> discovered_platforms;
+        // "<project index>|<Config|Platform>" cells whose type was set config-specifically (platform
+        // block, selector or [config:] section); a later unconditional `type` leaves them alone.
+        std::set<std::string> config_specific_type_cells;
         std::set<std::string> explicitly_defined_config_keys;  // Full "Config|Platform" keys with explicit [config:] sections
 
         // Template inheritance tracking
