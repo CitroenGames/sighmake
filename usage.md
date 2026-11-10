@@ -499,6 +499,18 @@ defines = NDEBUG, ENABLE_PROFILER
 generate_debug_info = true
 ```
 
+### Default `NDEBUG` / `_DEBUG`
+
+Every generator (Visual Studio, Makefile, CMake) applies the same industry-standard default
+to configurations named `Release` and `Debug`: `Release` compiles with `NDEBUG` (asserts off)
+and `Debug` with `_DEBUG`. The default is skipped when the project already lists `_DEBUG` or
+`NDEBUG` for that configuration (in any spelling of the `defines` setting that reaches it), so
+a project can keep asserts live in Release by defining `_DEBUG`, or define `NDEBUG` itself.
+Other configuration names (`Profile`, `Retail`, ...) get no default. Because the define is part
+of the compiler flags, the Makefile per-target flag stamps change and stale objects rebuild
+when upgrading sighmake. Custom spellings such as `-UNDEBUG` in `cflags` are not detected;
+define `_DEBUG` instead.
+
 For readability, define the base before the derived section. Use full
 `Config|Platform` section names for predictable inheritance.
 

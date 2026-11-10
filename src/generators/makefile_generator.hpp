@@ -44,10 +44,12 @@ private:
                                        const std::string& config_key, const std::string& output_path,
                                        const ProjectLookup& project_lookup, const Solution& solution);
 
-    // Helper functions for assembling flag strings. `pic_flags` is the position-independent-code
+    // Helper functions for assembling flag strings. `config_name` selects the default build
+    // defines (NDEBUG / _DEBUG). `pic_flags` is the position-independent-code
     // part (empty, or "-fPIC " plus the semantic-interposition flag), see generate_makefile_with_lookup.
     std::string get_compiler_flags(const Configuration& config, const Project& project,
                                    const std::filesystem::path& makefile_dir, bool c_flags,
+                                   const std::string& config_name = {},
                                    const std::string& pic_flags = {});
     std::string get_linker_flags(const Configuration& config, const std::filesystem::path& makefile_dir,
                                  bool android);

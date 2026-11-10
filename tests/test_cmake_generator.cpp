@@ -236,6 +236,34 @@ defines = MY_FLAG, RELEASE_MODE
     CHECK(result.project_content.find("RELEASE_MODE") != std::string::npos);
 }
 
+TEST_CASE("CMakeGenerator defaults NDEBUG/_DEBUG per config unless explicit", "[cmake_generator][ndebug]") {
+    auto result = generate_cmake(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp
+)");
+    CHECK(result.project_content.find("$<$<CONFIG:Debug>:_DEBUG>") != std::string::npos);
+    CHECK(result.project_content.find("$<$<CONFIG:Release>:NDEBUG>") != std::string::npos);
+
+    auto explicit_result = generate_cmake(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp
+defines[Release|x64] = _DEBUG
+)");
+    CHECK(explicit_result.project_content.find("NDEBUG") == std::string::npos);
+}
+
 TEST_CASE("CMakeGenerator per-config defines use generator expressions", "[cmake_generator]") {
     auto result = generate_cmake(R"(
 [solution]
