@@ -2906,6 +2906,9 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             diff_bool("treat_warning_as_error", ccl.treat_warning_as_error, fcl.treat_warning_as_error);
             diff_bool("safe_seh", clk.image_has_safe_exception_handlers, flk.image_has_safe_exception_handlers);
             diff_str("target_machine", clk.target_machine, flk.target_machine);
+            diff_bool("large_address_aware", clk.large_address_aware, flk.large_address_aware);
+            if (!ccl.disable_specific_warnings.empty() && ccl.disable_specific_warnings != fcl.disable_specific_warnings)
+                out << "disable_warnings = " << join_vector(ccl.disable_specific_warnings, ", ") << "\n";
         }
         if (!cfg.executable_path.empty())
             out << "executable_path = " << cfg.executable_path << "\n";

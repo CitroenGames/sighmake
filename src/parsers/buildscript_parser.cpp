@@ -3867,6 +3867,10 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.link.randomized_base_address = (value == "true" || value == "yes" || value == "1");
     } else if (key == "strip") {
         cfg.link.strip = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "disable_warnings" || key == "disable_specific_warnings") {
+        cfg.cl_compile.disable_specific_warnings = split(value, ',');
+    } else if (key == "large_address_aware") {
+        cfg.link.large_address_aware = (value == "true" || value == "yes" || value == "1");
     } else {
         return parse_config_setting_aux(key, value, config_key, state);
     }
