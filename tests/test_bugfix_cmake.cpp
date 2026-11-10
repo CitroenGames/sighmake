@@ -165,3 +165,52 @@ target_compile_definitions(App PRIVATE "QUOTED=\"x\"" "D=${DIR}")
     CHECK(contains(p->project_level_preprocessor_definitions, "QUOTED=\"x\""));
     CHECK(contains(p->project_level_preprocessor_definitions, "D=C:\\sdk\\"));
 }
+
+// ============================================================================
+// CMake reader: variable references and lists
+// ============================================================================
+
+TEST_CASE("bugfix_cmake: an unquoted list variable expands to separate arguments", "[bugfix_cmake]") {
+    CMakeParser parser;
+    auto sol = parser.parse_string(R"(
+project(T)
+add_executable(App main.cpp)
+set(LIBS m dl)
+set(DEFS ONE TWO)
+target_link_libraries(App PRIVATE ${LIBS})
+target_compile_definitions(App PRIVATE ${DEFS} "QUOTED;LIST")
+)");
+    auto* p = find_project(sol, "App");
+    REQUIRE(p != nullptr);
+    const auto& libs = p->configurations.at("Debug|x64").link.additional_dependencies;
+    CHECK(contains(libs, "m.lib"));
+    CHECK(contains(libs, "dl.lib"));
+    CHECK_FALSE(contains(libs, "m;dl.lib"));
+    CHECK(contains(p->project_level_preprocessor_definitions, "ONE"));
+    CHECK(contains(p->project_level_preprocessor_definitions, "TWO"));
+    // A quoted argument stays one argument
+    CHECK(contains(p->project_level_preprocessor_definitions, "QUOTED;LIST"));
+}
+
+TEST_CASE("bugfix_cmake: nested variable references are evaluated inside-out", "[bugfix_cmake]") {
+    CMakeParser parser;
+    auto sol = parser.parse_string(R"(
+project(T)
+set(NAME Lib)
+set(Lib_ROOT /opt/lib)
+add_executable(App main.cpp)
+target_compile_definitions(App PRIVATE "ROOT=${${NAME}_ROOT}" "PAIR=${NAME}-${Lib_ROOT}")
+)");
+    auto* p = find_project(sol, "App");
+    REQUIRE(p != nullptr);
+    CHECK(contains(p->project_level_preprocessor_definitions, "ROOT=/opt/lib"));
+    CHECK(contains(p->project_level_preprocessor_definitions, "PAIR=Lib-/opt/lib"));
+}
+
+TEST_CASE("bugfix_cmake: a self-referencing value inside a nested reference terminates", "[bugfix_cmake]") {
+    CMakeParser parser;
+    REQUIRE_NOTHROW(parser.parse_string(R"(
+set(b [[${b}]])
+project(${a${b}})
+)"));
+}

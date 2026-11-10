@@ -31,6 +31,24 @@ namespace {
         return result;
     }
 
+    // An unquoted argument whose value is a list becomes one argument per non-empty element.
+    void append_unquoted_argument(std::vector<std::string>& args, const std::string& value) {
+        if (value.find(';') == std::string::npos) {
+            args.push_back(value);
+            return;
+        }
+        std::string item;
+        for (size_t k = 0; k < value.size(); ++k) {
+            if (value[k] == ';' && (k == 0 || value[k - 1] != '\\')) {
+                if (!item.empty()) args.push_back(item);
+                item.clear();
+            } else {
+                item += value[k];
+            }
+        }
+        if (!item.empty()) args.push_back(item);
+    }
+
     void append_option(std::string& options, const std::string& option) {
         if (option.empty()) return;
         if (!options.empty()) options += " ";
@@ -391,11 +409,14 @@ std::vector<CMakeParser::Token> CMakeParser::tokenize(const std::string& content
 std::string CMakeParser::resolve_variables(const std::string& str, const ParseState& state) {
     std::string result = str;
     size_t pos = 0;
-    while ((pos = result.find("${", pos)) != std::string::npos) {
+    size_t replacements = 0;
+    while ((pos = result.find("${", pos)) != std::string::npos && ++replacements < 10000) {
         size_t end = result.find('}', pos);
         if (end == std::string::npos) break; // Unclosed variable
+        // Nested references (${${NAME}_DIR}) are evaluated innermost first
+        size_t start = result.rfind("${", end);
         
-        std::string var_name = result.substr(pos + 2, end - (pos + 2));
+        std::string var_name = result.substr(start + 2, end - (start + 2));
         
         std::string var_value;
         auto it = state.variables.find(var_name);
@@ -403,8 +424,9 @@ std::string CMakeParser::resolve_variables(const std::string& str, const ParseSt
             var_value = it->second;
         }
         
-        result.replace(pos, end - pos + 1, var_value);
-        pos += var_value.length();
+        result.replace(start, end - start + 1, var_value);
+        // An inner reference completes the enclosing one: rescan it from pos
+        if (start == pos) pos += var_value.length();
     }
     pos = 0;
     while ((pos = result.find("$ENV{", pos)) != std::string::npos) {
@@ -1820,10 +1842,11 @@ void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, Pa
                 
                 std::vector<std::string> args;
                 while (i < tokens.size() && tokens[i].type != TokenType::CloseParen) {
-                    if (tokens[i].type == TokenType::String || tokens[i].type == TokenType::Identifier) {
+                    if (tokens[i].type == TokenType::String) {
                         // Resolve variables in arguments
-                        std::string arg = resolve_variables(tokens[i].value, state);
-                        args.push_back(arg);
+                        args.push_back(resolve_variables(tokens[i].value, state));
+                    } else if (tokens[i].type == TokenType::Identifier) {
+                        append_unquoted_argument(args, resolve_variables(tokens[i].value, state));
                     } else if (tokens[i].type == TokenType::Bracket) {
                         args.push_back(tokens[i].value);
                     }
@@ -2064,8 +2087,10 @@ void CMakeParser::handle_if(const std::vector<std::string>& args, size_t& i, con
                      if (i < tokens.size() && tokens[i].type == TokenType::OpenParen) {
                          i++;
                          while (i < tokens.size() && tokens[i].type != TokenType::CloseParen) {
-                            if (tokens[i].type == TokenType::String || tokens[i].type == TokenType::Identifier) {
+                            if (tokens[i].type == TokenType::String) {
                                 elseif_args.push_back(resolve_variables(tokens[i].value, state));
+                            } else if (tokens[i].type == TokenType::Identifier) {
+                                append_unquoted_argument(elseif_args, resolve_variables(tokens[i].value, state));
                             } else if (tokens[i].type == TokenType::Bracket) {
                                 elseif_args.push_back(tokens[i].value);
                             }
