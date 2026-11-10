@@ -139,3 +139,112 @@ c_standard = 17
     CHECK(bugfix_vs_item_definition(gen.doc, "ClCompile", "LanguageStandard_C", "Debug|x64") == "stdc17");
 }
 
+TEST_CASE("vcxproj reader: WindowsTargetPlatformVersion in Globals is imported", "[bugfix_vs]") {
+    // Visual Studio writes the SDK version in the Globals group, which is also where the generator puts it.
+    BugfixVsTempDir dir("globals_sdk");
+    bugfix_vs_write_file(dir.path / "App.vcxproj", R"(<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{11111111-2222-3333-4444-555555555555}</ProjectGuid>
+    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+</Project>
+)");
+    VcxprojReader reader;
+    Project project = reader.read_vcxproj((dir.path / "App.vcxproj").string());
+    REQUIRE(project.configurations.count("Debug|x64"));
+    CHECK(project.configurations.at("Debug|x64").windows_target_platform_version == "10.0.22621.0");
+}
+
+TEST_CASE("vcxproj reader: conditions with spaces around == are understood", "[bugfix_vs]") {
+    BugfixVsTempDir dir("cond_spaces");
+    bugfix_vs_write_file(dir.path / "App.vcxproj", R"(<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{11111111-2222-3333-4444-555555555555}</ProjectGuid>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'" Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
+    <ClCompile><PreprocessorDefinitions>FOO;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+</Project>
+)");
+    VcxprojReader reader;
+    Project project = reader.read_vcxproj((dir.path / "App.vcxproj").string());
+    REQUIRE(project.configurations.count("Release|x64"));
+    const auto& cfg = project.configurations.at("Release|x64");
+    CHECK(cfg.config_type == "StaticLibrary");
+    CHECK(cfg.cl_compile.preprocessor_definitions == std::vector<std::string>{"FOO"});
+}
+
+TEST_CASE("vcxproj reader: per-file %(AdditionalOptions) is not imported as an option", "[bugfix_vs]") {
+    BugfixVsTempDir dir("file_opts");
+    bugfix_vs_write_file(dir.path / "App.vcxproj", R"(<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{11111111-2222-3333-4444-555555555555}</ProjectGuid>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ClCompile Include="big.cpp">
+      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">/bigobj %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemGroup>
+</Project>
+)");
+    VcxprojReader reader;
+    Project project = reader.read_vcxproj((dir.path / "App.vcxproj").string());
+    const SourceFile* src = bugfix_vs_find_source(project, "big.cpp");
+    REQUIRE(src);
+    REQUIRE(src->settings.additional_options.count("Debug|x64"));
+    CHECK(src->settings.additional_options.at("Debug|x64") == std::vector<std::string>{"/bigobj"});
+}
+
+TEST_CASE("buildscript writer: per-file optimization and custom build inputs survive conversion", "[bugfix_vs]") {
+    BugfixVsTempDir dir("writer_file_settings");
+    Project project;
+    project.name = "App";
+    project.configurations["Debug|x64"].config_type = "Application";
+    SourceFile slow;
+    slow.path = "slow.cpp";
+    slow.type = FileType::ClCompile;
+    slow.settings.optimization["Debug|x64"] = "MaxSpeed";
+    project.sources.push_back(slow);
+    SourceFile gen;
+    gen.path = "shader.hlsl";
+    gen.type = FileType::CustomBuild;
+    gen.custom_command["Debug|x64"] = "fxc shader.hlsl";
+    gen.custom_outputs["Debug|x64"] = "shader.h";
+    gen.custom_inputs["Debug|x64"] = "common.hlsli";
+    project.sources.push_back(gen);
+
+    const fs::path script = dir.path / "App.buildscript";
+    BuildscriptWriter writer;
+    REQUIRE(writer.write_buildscript(project, script.string()));
+
+    BuildscriptParser parser;
+    Solution solution = parser.parse(script.string());
+    REQUIRE(solution.projects.size() == 1);
+    const SourceFile* reparsed_slow = bugfix_vs_find_source(solution.projects[0], "slow.cpp");
+    REQUIRE(reparsed_slow);
+    CHECK(reparsed_slow->settings.optimization.count("Debug|x64"));
+    if (reparsed_slow->settings.optimization.count("Debug|x64"))
+        CHECK(reparsed_slow->settings.optimization.at("Debug|x64") == "MaxSpeed");
+    const SourceFile* reparsed_gen = bugfix_vs_find_source(solution.projects[0], "shader.hlsl");
+    REQUIRE(reparsed_gen);
+    CHECK(reparsed_gen->custom_inputs.count("Debug|x64"));
+    if (reparsed_gen->custom_inputs.count("Debug|x64"))
+        CHECK(reparsed_gen->custom_inputs.at("Debug|x64") == "common.hlsli");
+}
+

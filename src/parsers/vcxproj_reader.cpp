@@ -15,7 +15,7 @@ namespace vcxproj {
 
 std::string VcxprojReader::parse_condition(const std::string& condition) {
     // Parse condition like "'$(Configuration)|$(Platform)'=='Debug|Win32'"
-    std::regex re(R"('==\s*'([^']+)')");
+    std::regex re(R"('\s*==\s*'([^']+)')");
     std::smatch match;
     if (std::regex_search(condition, match, re) && match.size() > 1) {
         return match[1].str();
@@ -560,6 +560,7 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
     }
 
     // Parse Globals
+    std::string globals_windows_target_platform_version;
     for (auto prop_group : root.children("PropertyGroup")) {
         std::string label = prop_group.attribute("Label").as_string();
         if (label == "Globals") {
@@ -573,6 +574,7 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             project.root_namespace = prop_group.child_value("RootNamespace");
             project.ignore_warn_compile_duplicated_filename =
                 prop_group.child("IgnoreWarnCompileDuplicatedFilename").text().as_bool();
+            globals_windows_target_platform_version = prop_group.child_value("WindowsTargetPlatformVersion");
             break;
         }
     }
@@ -597,6 +599,12 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
             if (auto node = prop_group.child("TargetName"))
                 cfg.target_name = node.text().as_string();
         }
+    }
+
+    // Visual Studio (and our generator) usually store the SDK version once, in Globals.
+    for (auto& [config_key, cfg] : project.configurations) {
+        if (cfg.windows_target_platform_version.empty())
+            cfg.windows_target_platform_version = globals_windows_target_platform_version;
     }
 
     // Parse PropertyGroup settings (OutDir, IntDir, LinkIncremental, etc.)
@@ -1303,7 +1311,9 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
                     std::istringstream ss(val);
                     std::string item;
                     while (std::getline(ss, item, ' ')) {
-                        if (!item.empty()) src.settings.additional_options[config_key].push_back(item);
+                        // %(AdditionalOptions) inherits the project options; the generator appends it itself.
+                        if (!item.empty() && item != "%(AdditionalOptions)")
+                            src.settings.additional_options[config_key].push_back(item);
                     }
                 } else if (name == "PrecompiledHeader") {
                     src.settings.pch[config_key].mode = child.text().as_string();
@@ -2220,6 +2230,12 @@ static std::string create_file_settings_signature(const SourceFile* src,
     for (const auto& kv : src->custom_message) {
         sig << "msg[" << kv.first << "]:" << kv.second << "|";
     }
+    for (const auto& kv : src->custom_inputs) {
+        sig << "in[" << kv.first << "]:" << kv.second << "|";
+    }
+    for (const auto& kv : src->settings.optimization) {
+        sig << "optz[" << kv.first << "]:" << kv.second << "|";
+    }
 
     // Add PCH settings that differ from defaults
     for (const auto& pch_kv : src->settings.pch) {
@@ -3069,6 +3085,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
                                  !src.settings.excluded.empty() ||
                                  !src.settings.compile_as.empty() ||
                                  !src.settings.object_file.empty() ||
+                                 !src.settings.optimization.empty() ||
                                  !src.custom_command.empty();
 
         // Collect the PCH settings that differ from defaults per-config
@@ -3218,6 +3235,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
                                  !first_src->settings.excluded.empty() ||
                                  !first_src->settings.compile_as.empty() ||
                                  !first_src->settings.object_file.empty() ||
+                                 !first_src->settings.optimization.empty() ||
                                  !first_src->custom_command.empty();
 
         // Recalculate PCH settings for this file
@@ -3387,6 +3405,18 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
                 }
             }
 
+            // Write optimization - consolidate if same across all configs
+            std::string common_optimization;
+            if (all_configs_have_same_value(first_src->settings.optimization, config_keys, common_optimization)) {
+                if (!common_optimization.empty())
+                    out << indent << "optimization[*] = " << common_optimization << "\n";
+            } else {
+                for (const auto& kv : first_src->settings.optimization) {
+                    if (!kv.second.empty())
+                        out << indent << "optimization[" << kv.first << "] = " << kv.second << "\n";
+                }
+            }
+
             // Write custom_command - consolidate if same across all configs
             std::string common_cmd;
             if (all_configs_have_same_value(first_src->custom_command, config_keys, common_cmd)) {
@@ -3401,6 +3431,10 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
                     if (all_configs_have_same_value(first_src->custom_message, config_keys, common_message) && !common_message.empty()) {
                         out << indent << "custom_message[*] = " << format_value(common_message) << "\n";
                     }
+                    std::string common_inputs;
+                    if (all_configs_have_same_value(first_src->custom_inputs, config_keys, common_inputs) && !common_inputs.empty()) {
+                        out << indent << "custom_inputs[*] = " << common_inputs << "\n";
+                    }
                 }
             } else {
                 for (const auto& kv : first_src->custom_command) {
@@ -3410,6 +3444,8 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
                             out << indent << "custom_outputs[" << kv.first << "] = " << first_src->custom_outputs.at(kv.first) << "\n";
                         if (first_src->custom_message.count(kv.first))
                             out << indent << "custom_message[" << kv.first << "] = " << format_value(first_src->custom_message.at(kv.first)) << "\n";
+                        if (first_src->custom_inputs.count(kv.first))
+                            out << indent << "custom_inputs[" << kv.first << "] = " << first_src->custom_inputs.at(kv.first) << "\n";
                     }
                 }
             }
