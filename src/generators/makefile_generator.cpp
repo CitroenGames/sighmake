@@ -1697,6 +1697,18 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     }
     out << "PYTHON ?= python3\n\n";
 
+    // Language a C/C++ source is compiled as: its extension unless `compile_as` (per file, else the
+    // configuration's) asks for the other language. Returned as a representative extension.
+    auto compile_language_ext = [&](const SourceFile& src) {
+        std::string ext = file_types::lowercase_extension(src.path);
+        if (src.type != FileType::ClCompile) return ext;
+        const std::string* compile_as = find_config_setting(src.settings.compile_as, config_key);
+        if (!compile_as || compile_as->empty()) compile_as = &config.cl_compile.compile_as;
+        if (*compile_as == "CompileAsCpp" && file_types::is_c_source(ext)) return std::string(".cpp");
+        if (*compile_as == "CompileAsC" && file_types::is_cpp_source(ext)) return std::string(".c");
+        return ext;
+    };
+
     // Determine compiler
     bool has_cpp_files = false;
     bool has_c_files = false;
@@ -1705,7 +1717,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     for (const auto& src : project.sources) {
         if (!source_applies_to_platform(src, parse_config_key(config_key).second)) continue;
         if (src.type == FileType::ClCompile) {
-            std::string ext = file_types::lowercase_extension(src.path);
+            std::string ext = compile_language_ext(src);
             if (file_types::is_cpp_source(ext)) {
                 has_cpp_files = true;
             } else if (file_types::is_c_source(ext)) {
@@ -2075,6 +2087,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     std::vector<std::string> obj_files;
     std::vector<std::pair<std::string, std::string>> source_to_obj; // (source, object)
     std::vector<bool> source_uses_pch; // Track which files use PCH
+    std::vector<std::string> source_lang_ext; // Language the file compiles as (see compile_language_ext)
+    std::vector<std::string> source_extra_flags; // Per-file flags: -x for compile_as, per-file defines
 
     for (const auto& src : project.sources) {
         if (!source_applies_to_platform(src, parse_config_key(config_key).second)) continue;
@@ -2101,9 +2115,22 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             // Determine if this file uses PCH
             bool uses_pch = has_pch && (mode == "Use" || (mode.empty() && !header.empty()));
 
+            const std::string lang_ext = compile_language_ext(src);
+            std::string extra_flags;
+            if (lang_ext != file_types::lowercase_extension(src.path)) {
+                extra_flags += file_types::is_c_source(lang_ext) ? " -x c" : " -x c++";
+            }
+            if (const auto* defines = find_config_setting(src.settings.preprocessor_defines, config_key)) {
+                for (const auto& def : *defines) {
+                    if (!def.empty()) extra_flags += " -D" + def;
+                }
+            }
+
             obj_files.push_back(obj_path);
             source_to_obj.push_back({src_relative, obj_path});
             source_uses_pch.push_back(uses_pch);
+            source_lang_ext.push_back(lang_ext);
+            source_extra_flags.push_back(extra_flags);
         }
     }
 
@@ -2123,11 +2150,15 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     // extra runs at make time. Changes made only on the make command line or in the environment
     // (make CXXFLAGS+=...) are not tracked; buildscript changes always go through regeneration.
     bool stamp_cxx = false, stamp_c = false, stamp_objcxx = false, stamp_nasm = false;
-    for (const auto& so : source_to_obj) {
-        std::string e = file_types::lowercase_extension(so.first);
-        if (file_types::is_cpp_source(e)) stamp_cxx = true;
-        else if (file_types::is_c_source(e)) stamp_c = true;
-        else if (file_types::is_objcxx_source(e)) stamp_objcxx = true;
+    // Per-file flags are recorded in the stamp of the file's language, so changing them rebuilds.
+    std::string per_file_cxx, per_file_c, per_file_objcxx;
+    for (size_t i = 0; i < source_to_obj.size(); ++i) {
+        const std::string& e = source_lang_ext[i];
+        const std::string per_file = source_extra_flags[i].empty()
+            ? "" : " [" + source_to_obj[i].second + ":" + source_extra_flags[i] + "]";
+        if (file_types::is_cpp_source(e)) { stamp_cxx = true; per_file_cxx += per_file; }
+        else if (file_types::is_c_source(e)) { stamp_c = true; per_file_c += per_file; }
+        else if (file_types::is_objcxx_source(e)) { stamp_objcxx = true; per_file_objcxx += per_file; }
         else if (e == ".asm" || e == ".nasm") stamp_nasm = true;
     }
     const bool stamp_link = config.config_type == "Application" || config.config_type == "DynamicLibrary" ||
@@ -2143,9 +2174,9 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         for (char ch : config_key) cfg_tag += std::isalnum(static_cast<unsigned char>(ch)) ? ch : '-';
         auto stamp_file = [&](const char* lang) { return std::string("sighmake-") + lang + "." + cfg_tag + ".flags"; };
         std::string objcxx_extra = config.cl_compile.objcxx_flags.empty() ? "" : " " + config.cl_compile.objcxx_flags;
-        if (stamp_cxx) stamps.push_back({"SIGHMAKE_CXX_STAMP", stamp_file("cxx"), cxx_cmd + " " + cxxflags + pch_stamp_suffix});
-        if (stamp_c) stamps.push_back({"SIGHMAKE_C_STAMP", stamp_file("c"), cc_cmd + " " + cflags + pch_stamp_suffix});
-        if (stamp_objcxx) stamps.push_back({"SIGHMAKE_OBJCXX_STAMP", stamp_file("objcxx"), cxx_cmd + " " + cxxflags + objcxx_extra + pch_stamp_suffix});
+        if (stamp_cxx) stamps.push_back({"SIGHMAKE_CXX_STAMP", stamp_file("cxx"), cxx_cmd + " " + cxxflags + pch_stamp_suffix + per_file_cxx});
+        if (stamp_c) stamps.push_back({"SIGHMAKE_C_STAMP", stamp_file("c"), cc_cmd + " " + cflags + pch_stamp_suffix + per_file_c});
+        if (stamp_objcxx) stamps.push_back({"SIGHMAKE_OBJCXX_STAMP", stamp_file("objcxx"), cxx_cmd + " " + cxxflags + objcxx_extra + pch_stamp_suffix + per_file_objcxx});
         if (stamp_nasm) stamps.push_back({"SIGHMAKE_NASM_STAMP", stamp_file("nasm"), nasm_cmd + " " + nasmflags_text});
         if (stamp_link) {
             std::string link_text;
@@ -2388,7 +2419,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         const auto& [src, obj] = source_to_obj[i];
         bool uses_pch = source_uses_pch[i];
 
-        std::string ext = file_types::lowercase_extension(src);
+        const std::string& ext = source_lang_ext[i];
 
         std::string compiler;
         std::string flags;
@@ -2423,7 +2454,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         if (is_nasm) {
             out << "\t" << compiler << " " << flags << " -o $@ $<\n\n";
         } else {
-            out << "\t" << compiler << " " << flags;
+            out << "\t" << compiler << " " << flags << source_extra_flags[i];
 
             // Add -include flag to force PCH inclusion for files that use it
             if (uses_pch && has_pch && !pch_include_base.empty()) {
