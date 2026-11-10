@@ -1531,6 +1531,16 @@ static std::vector<std::string> expand_config_selector(const std::string& spec,
     return keys;
 }
 
+// Normalize the platform of a `[Config|Platform]` or `[Platform]` selector the way the solution matrix
+// normalizes its platforms (x86 -> Win32, android -> Android), so the selector names an existing cell.
+static std::string normalize_selector(const std::string& selector) {
+    const size_t pipe = selector.find('|');
+    if (pipe == std::string::npos) {
+        return selector == ALL_CONFIGS ? selector : normalize_platform(selector);
+    }
+    return selector.substr(0, pipe + 1) + normalize_platform(selector.substr(pipe + 1));
+}
+
 bool BuildscriptParser::parse_section(const std::string& line, ParseState& state) {
     // Extract content between [ and ], handling template suffix outside brackets
     // e.g., "[config:Release|x64] : Template:BankRelease" -> "config:Release|x64 : Template:BankRelease"
@@ -1707,7 +1717,7 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
         std::string setting = rest;
         
         if (bracket_start != std::string::npos && bracket_end != std::string::npos) {
-            config_key = rest.substr(bracket_start + 1, bracket_end - bracket_start - 1);
+            config_key = normalize_selector(rest.substr(bracket_start + 1, bracket_end - bracket_start - 1));
             setting = trim(rest.substr(0, bracket_start));
         }
         
@@ -1720,7 +1730,7 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
     size_t bracket_start = key.find('[');
     size_t bracket_end = key.find(']');
     if (bracket_start != std::string::npos && bracket_end != std::string::npos) {
-        std::string config_key = key.substr(bracket_start + 1, bracket_end - bracket_start - 1);
+        std::string config_key = normalize_selector(key.substr(bracket_start + 1, bracket_end - bracket_start - 1));
         std::string setting = trim(key.substr(0, bracket_start));
 
         // Build list of config keys to apply setting to

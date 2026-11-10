@@ -207,3 +207,49 @@ target_link_libraries(INTERFACE Base)
     REQUIRE(app);
     CHECK(parser_contains(app->configurations.at("Debug|Linux").cl_compile.preprocessor_definitions, "BASE_API"));
 }
+
+TEST_CASE("Platform selectors normalize x86 and android like the solution matrix", "[bugfix_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug, Release
+platforms = x86, x64, Android
+
+[project:App]
+type = exe
+defines[x86] = ON_X86
+defines[android] = ON_ANDROID
+optimization[Release|x86] = MinSpace
+src/a.cpp:defines[Debug|android] = FILE_ANDROID
+)");
+    REQUIRE(sol.projects.size() == 1);
+    const Project& app = sol.projects[0];
+    CHECK(parser_contains(app.configurations.at("Debug|Win32").cl_compile.preprocessor_definitions, "ON_X86"));
+    CHECK(parser_contains(app.configurations.at("Release|Win32").cl_compile.preprocessor_definitions, "ON_X86"));
+    CHECK(parser_contains(app.configurations.at("Debug|Android").cl_compile.preprocessor_definitions, "ON_ANDROID"));
+    CHECK_FALSE(parser_contains(app.configurations.at("Debug|x64").cl_compile.preprocessor_definitions, "ON_X86"));
+    CHECK(app.configurations.at("Release|Win32").cl_compile.optimization == "MinSpace");
+    CHECK(app.configurations.count("Debug|x86") == 0);
+    CHECK(app.configurations.count("Debug|android") == 0);
+    const SourceFile* file = find_parser_source(app, "a.cpp");
+    REQUIRE(file);
+    CHECK(file->settings.preprocessor_defines.count("Debug|Android") == 1);
+}
+
+TEST_CASE("masm[x86] keeps the files for Win32", "[bugfix_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug
+platforms = x86, x64
+
+[project:App]
+type = exe
+masm[x86] = asm/fast32.asm
+)");
+    REQUIRE(sol.projects.size() == 1);
+    const SourceFile* file = find_parser_source(sol.projects[0], "fast32.asm");
+    REQUIRE(file);
+    CHECK_FALSE(file->settings.excluded.count("Debug|Win32"));
+    CHECK(file->settings.excluded.count("Debug|x64"));
+}
