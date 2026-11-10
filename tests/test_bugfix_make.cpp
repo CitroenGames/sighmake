@@ -152,3 +152,61 @@ pch.cpp:pch = Create
     CHECK(p.make("App.Debug") == 0);
 #endif
 }
+
+TEST_CASE("Makefile writes every line of a multi-line build event as a recipe line", "[bugfix_make]") {
+    BugfixMakeProject p("multiline_event", R"(
+[solution]
+name = Ev
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+outdir = bin
+intdir = obj/App
+sources = main.cpp
+prebuild = """
+touch pre1.txt
+touch pre2.txt"""
+postbuild = """
+touch post1.txt
+touch post2.txt
+"""
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    REQUIRE(p.generated);
+    const std::string mk = p.makefile("App.Debug");
+    CHECK(mk.find("\ttouch pre1.txt\n\ttouch pre2.txt\n") != std::string::npos);
+    CHECK(mk.find("\ttouch post1.txt\n\ttouch post2.txt\n") != std::string::npos);
+#ifndef _WIN32
+    CHECK(p.make("App.Debug") == 0);
+    CHECK(fs::exists(p.dir / "build" / "pre2.txt"));
+    CHECK(fs::exists(p.dir / "build" / "post2.txt"));
+#endif
+}
+
+TEST_CASE("Makefile does not run build events with use_in_build = false", "[bugfix_make]") {
+    BugfixMakeProject p("event_use_in_build", R"(
+[solution]
+name = Ev
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+outdir = bin
+intdir = obj/App
+sources = main.cpp
+prebuild = echo PREBUILD_RUNS
+prebuild_use_in_build = false
+prelink = echo PRELINK_RUNS
+prelink_use_in_build = false
+postbuild = echo POSTBUILD_RUNS
+postbuild_use_in_build = false
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    REQUIRE(p.generated);
+    const std::string mk = p.makefile("App.Debug");
+    CHECK(mk.find("PREBUILD_RUNS") == std::string::npos);
+    CHECK(mk.find("PRELINK_RUNS") == std::string::npos);
+    CHECK(mk.find("POSTBUILD_RUNS") == std::string::npos);
+    CHECK(mk.find("prebuild") == std::string::npos);
+}

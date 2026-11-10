@@ -2262,19 +2262,34 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "\n";
     }
 
+    // Build events. A command may span several lines; each becomes its own recipe line. An event
+    // with use_in_build = false is not run.
+    const std::string pre_build_command = config.pre_build_event.use_in_build ? config.pre_build_event.command : "";
+    const std::string pre_link_command = config.pre_link_event.use_in_build ? config.pre_link_event.command : "";
+    const std::string post_build_command = config.post_build_event.use_in_build ? config.post_build_event.command : "";
+    auto write_event_command = [&out](const std::string& command) {
+        std::istringstream lines(command);
+        for (std::string line; std::getline(lines, line);) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.find_first_not_of(" \t") == std::string::npos) continue;
+            out << "\t" << line << "\n";
+        }
+    };
+
     // Phony targets
     out << ".PHONY: all clean";
-    if (!config.pre_build_event.command.empty()) out << " prebuild";
+    if (!pre_build_command.empty()) out << " prebuild";
     if (emits_target_receipt) out << " sighmake-target-receipt";
     out << "\n\n";
 
     out << ".DEFAULT_GOAL := all\n\n";
 
     // Pre-build event
-    if (!config.pre_build_event.command.empty()) {
+    if (!pre_build_command.empty()) {
         out << "# Pre-build event\n";
         out << "prebuild:\n";
-        out << "\t" << config.pre_build_event.command << "\n\n";
+        write_event_command(pre_build_command);
+        out << "\n";
     }
 
     // Default target
@@ -2302,7 +2317,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     }
 
     // Link rule
-    if (!config.pre_build_event.command.empty()) {
+    if (!pre_build_command.empty()) {
         out << "$(OBJS)";
         if (has_pch && !pch_header_path.empty()) {
             out << " $(PCH_OUTPUT)";
@@ -2323,8 +2338,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     out << "\t@mkdir -p $(dir $@)\n";
 
     // Pre-link event
-    if (!config.pre_link_event.command.empty()) {
-        out << "\t" << config.pre_link_event.command << "\n";
+    if (!pre_link_command.empty()) {
+        write_event_command(pre_link_command);
     }
 
     if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
@@ -2377,8 +2392,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     }
 
     // Post-build event
-    if (!config.post_build_event.command.empty()) {
-        out << "\t" << config.post_build_event.command << "\n";
+    if (!post_build_command.empty()) {
+        write_event_command(post_build_command);
     }
 
     // Strip symbols from executables and shared libraries (`strip`, default Release only).
