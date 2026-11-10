@@ -46,6 +46,7 @@ struct StaleOutputReport {
     std::vector<std::string> kept;              // stale manifest entries kept (--keep-stale)
     std::vector<std::string> unlisted;          // probable stale outputs in no manifest, listed only
     std::vector<std::string> unlisted_removed;  // probable stale outputs deleted (--prune-unlisted)
+    std::vector<std::string> modified;          // stale manifest entries kept: no longer what sighmake wrote
     std::vector<std::string> failed;            // deletions that failed
     bool manifest_written = false;
 };

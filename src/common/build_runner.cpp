@@ -152,6 +152,13 @@ std::optional<fs::path> resolve_msbuild_project(
     return std::nullopt;
 }
 
+std::string msbuild_target_switch(const BuildOptions& options) {
+    if (options.clean_only) return "/t:Clean";
+    if (!options.target.empty()) return std::string(options.clean_first ? "/t:Clean;" : "/t:") + options.target;
+    if (options.clean_first) return "/t:Rebuild";
+    return "";
+}
+
 std::string BuildRunner::find_msbuild(const std::string& vs_installation_path) {
     // Standard MSBuild location for VS 2017+
     fs::path msbuild = fs::path(vs_installation_path) / "MSBuild" / "Current" / "Bin" / "MSBuild.exe";
@@ -261,13 +268,8 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
         cmd += " /restore";
     }
 
-    // Handle target
-    if (options.clean_only) {
-        cmd += " /t:Clean";
-    } else if (!options.target.empty()) {
-        cmd += " /t:" + options.target;
-    } else if (options.clean_first) {
-        cmd += " /t:Rebuild";
+    if (const std::string target_switch = msbuild_target_switch(options); !target_switch.empty()) {
+        cmd += " " + target_switch;
     }
 
     if (building_project && !options.build_project_references) {
@@ -360,17 +362,15 @@ static void ensure_posix_shell_on_path() {
 
 int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
                            const std::string& cache_dir) {
+    if (!options.project.empty() && !options.target.empty()) {
+        std::cerr << "Error: --project and --target cannot be combined for a Makefile build.\n"
+                  << "  --project builds <project>.<Config>; use one of them (or --target <project>.<Config>).\n";
+        return 1;
+    }
     if (!options.platform.empty()) {
         // Makefile caches have one build per OS family; --platform only picks between the
-        // desktop and Android builds that the cache contains.
-        bool known = cache.platforms.empty();
-        for (const auto& available : cache.platforms) {
-            if (to_lower(available) == to_lower(options.platform)) known = true;
-        }
-        if (!known && !is_android_platform(options.platform)) {
-            std::cerr << "Error: Platform '" << options.platform << "' is not part of this Makefile build.\n";
-            return 1;
-        }
+        // desktop and Android builds that the cache contains. Any desktop platform name selects
+        // the host build.
         if (is_android_platform(options.platform) &&
             std::none_of(cache.platforms.begin(), cache.platforms.end(), is_android_platform) &&
             !cache.platforms.empty()) {
@@ -419,6 +419,10 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
         }
     }
 
+    if (!options.config.empty() && !options.target.empty()) {
+        std::cerr << "Warning: --config has no effect with --target for a Makefile build; "
+                  << "the target names the configuration (for example Release).\n";
+    }
     const std::string requested_target = resolve_make_build_target(cache, options, config);
     const bool android_build = make_build_targets_android(cache, options);
 
@@ -522,6 +526,11 @@ int BuildRunner::run_make(const BuildCache& cache, const BuildOptions& options,
 
 int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,
                             const std::string& cache_dir) {
+    if (!options.project.empty() && !options.target.empty()) {
+        std::cerr << "Error: --project and --target cannot be combined for a CMake build.\n"
+                  << "  --project names the CMake target to build; use one of them.\n";
+        return 1;
+    }
     if (!options.platform.empty()) {
         std::cerr << "Error: --platform is not supported by the CMake build backend.\n";
         std::cerr << "  Select the target platform when configuring CMake instead.\n";

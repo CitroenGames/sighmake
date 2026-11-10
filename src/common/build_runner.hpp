@@ -47,6 +47,10 @@ std::string resolve_make_build_target(
     const BuildOptions& options,
     const std::string& config);
 
+// The /t: switch of an MSBuild build ("" when the default target builds). Empty-string switches
+// mean MSBuild runs its default target.
+std::string msbuild_target_switch(const BuildOptions& options);
+
 // Generated project file that --project names for an MSBuild build: a path (relative to the cache
 // directory), a project or target name, or a generated project file name. std::nullopt when unknown.
 std::optional<std::filesystem::path> resolve_msbuild_project(

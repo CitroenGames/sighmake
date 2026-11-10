@@ -179,7 +179,12 @@ void write_dependency_matrix(std::ofstream& out, const Solution& solution) {
 
 } // anonymous namespace
 
-bool export_dependencies_html(const Solution& solution, const std::string& output_dir) {
+bool export_dependencies_html(const Solution& full_solution, const std::string& output_dir) {
+    // Edges declared for Android only (`if(Android) { ... }`) are not part of the report, like in the
+    // Visual Studio and CMake outputs; the Makefile generator keeps them in the solution it builds.
+    Solution solution = full_solution;
+    prune_platform_scoped_declarations(solution, [](const std::string& platform) { return !is_android_platform(platform); });
+
     fs::path out_path = fs::path(output_dir) / (solution.name + "_dependencies.html");
 
     std::ofstream out(out_path);
