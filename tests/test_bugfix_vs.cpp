@@ -273,3 +273,62 @@ TEST_CASE("vcproj reader: MIDL TargetEnvironment maps to valid MSBuild values", 
     CHECK(project.configurations.at("Debug|Itanium").midl.target_environment == "Itanium");
 }
 
+TEST_CASE("VPC: -$File removes a file instead of adding it", "[bugfix_vs]") {
+    VpcParser parser;
+    auto sol = parser.parse_string(R"(
+$Project "App"
+{
+    $Folder "Source"
+    {
+        $File "main.cpp"
+        $File "unwanted.cpp"
+    }
+    -$File "unwanted.cpp"
+    -$File "never_added.cpp"
+}
+)");
+    REQUIRE(sol.projects.size() == 1);
+    const auto& project = sol.projects[0];
+    CHECK(bugfix_vs_find_source(project, "main.cpp") != nullptr);
+    CHECK(bugfix_vs_find_source(project, "unwanted.cpp") == nullptr);
+    CHECK(bugfix_vs_find_source(project, "never_added.cpp") == nullptr);
+}
+
+TEST_CASE("VPC: build events inside $Configuration apply to that configuration only", "[bugfix_vs]") {
+    VpcParser parser;
+    auto sol = parser.parse_string(R"(
+$Project "App"
+{
+    $Configuration "Release"
+    {
+        $Compiler
+        {
+            $Optimization "MaxSpeed"
+        }
+    }
+    $Configuration "Debug"
+    {
+        $PreBuildEvent
+        {
+            $CommandLine "echo debug-pre"
+        }
+        $PostBuildEvent
+        {
+            $CommandLine "echo debug-post"
+        }
+    }
+}
+)");
+    REQUIRE(sol.projects.size() == 1);
+    const auto& cfgs = sol.projects[0].configurations;
+    for (const char* key : {"Debug|Win32", "Debug|x64"}) {
+        REQUIRE(cfgs.count(key));
+        CHECK(cfgs.at(key).pre_build_event.command == "echo debug-pre");
+        CHECK(cfgs.at(key).post_build_event.command == "echo debug-post");
+    }
+    for (const char* key : {"Release|Win32", "Release|x64"}) {
+        REQUIRE(cfgs.count(key));
+        CHECK(cfgs.at(key).pre_build_event.command.empty());
+        CHECK(cfgs.at(key).post_build_event.command.empty());
+    }
+}
