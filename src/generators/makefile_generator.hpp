@@ -21,6 +21,9 @@ public:
         return "GNU Makefile generator for Linux/macOS (GCC/Clang) and Android (NDK)";
     }
 
+    // Manifest in <output_dir>/build, keyed "makefile <target-os>".
+    std::optional<OutputManifestScope> output_manifest_scope(const std::string& output_dir) const override;
+
     // Generate a Makefile for a specific project and configuration
     bool generate_makefile(const Project& project, const Solution& solution,
                           const std::string& config_key, const std::string& output_path);

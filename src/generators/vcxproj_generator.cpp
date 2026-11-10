@@ -11,6 +11,7 @@
 #include "common/defaults.hpp"
 #include "common/language_standards.hpp"
 #include "common/debug_log.hpp"
+#include "common/output_manifest.hpp"
 #define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"
 
@@ -37,6 +38,10 @@ static std::string generated_project_filename(const Project& project) {
 
 std::string VcxprojGenerator::csproj_filename(const Project& project) {
     return generated_project_filename(project);
+}
+
+std::string VcxprojGenerator::csproj_suffix() {
+    return GENERATED_CSPROJ;
 }
 
 // Adjust relative file paths in a custom build command
@@ -179,6 +184,7 @@ static bool write_target_receipt_support(
     {
         std::ofstream script(script_path, std::ios::binary | std::ios::trunc);
         if (!script) return false;
+        record_generated_output(script_path);
         script << R"PS([CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$Metadata,
@@ -269,10 +275,10 @@ try {
         return std::tie(left.stage_path, left.name, left.source) <
             std::tie(right.stage_path, right.name, right.source);
     });
-    std::ofstream metadata(
-        directory / (project.name + ".runtime-dependencies.txt"),
-        std::ios::binary | std::ios::trunc);
+    const fs::path metadata_path = directory / (project.name + ".runtime-dependencies.txt");
+    std::ofstream metadata(metadata_path, std::ios::binary | std::ios::trunc);
     if (!metadata) return false;
+    record_generated_output(metadata_path);
     for (const RuntimeDependency& dependency : dependencies) {
         if (dependency.name.find('|') != std::string::npos ||
             dependency.source.find('|') != std::string::npos ||
@@ -617,6 +623,7 @@ bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& s
     sdk_targets.append_attribute("Sdk") = "Microsoft.NET.Sdk";
     const bool saved = doc.save_file(output_path.c_str(), "  ");
     if (saved) {
+        record_generated_output(output_path);
         std::cout << "Note: " << fs::path(output_path).filename().string()
                   << " lists its source files as of this run; re-run sighmake after adding or removing files "
                      "under the `sources` globs. `dotnet build` applies the per-configuration settings (defines, "
@@ -1906,6 +1913,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
     if (!saved) {
         return false;
     }
+    record_generated_output(output_path);
     return generate_vcxproj_filters(project, output_path);
 }
 
@@ -1960,7 +1968,11 @@ bool VcxprojGenerator::generate_vcxproj_filters(const Project& project, const st
 
     fs::path filters_path = vcxproj_path;
     filters_path += ".filters";
-    return doc.save_file(filters_path.string().c_str(), "  ", pugi::format_default | pugi::format_write_bom);
+    if (!doc.save_file(filters_path.string().c_str(), "  ", pugi::format_default | pugi::format_write_bom)) {
+        return false;
+    }
+    record_generated_output(filters_path);
+    return true;
 }
 
 bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string& output_path) {
@@ -1968,6 +1980,7 @@ bool VcxprojGenerator::generate_sln(const Solution& solution, const std::string&
     if (!file.is_open()) {
         return false;
     }
+    record_generated_output(output_path);
 
     // Header - version-appropriate for the target toolset
     std::string toolset = resolve_solution_toolset(solution);
@@ -2201,7 +2214,11 @@ bool VcxprojGenerator::generate_slnx(const Solution& solution, const std::string
     }
 
     // Save to file with tab indentation
-    return doc.save_file(output_path.c_str(), "\t", pugi::format_default);
+    if (!doc.save_file(output_path.c_str(), "\t", pugi::format_default)) {
+        return false;
+    }
+    record_generated_output(output_path);
+    return true;
 }
 
 // Projects whose platform filter leaves no Visual Studio platform are not part of the generated
@@ -2565,6 +2582,24 @@ std::string VcxprojGenerator::resolve_solution_toolset(const Solution& solution)
         }
     }
     return defaults::kFallbackToolset;
+}
+
+std::optional<OutputManifestScope> VcxprojGenerator::output_manifest_scope(const std::string& output_dir) const {
+    const fs::path root(output_dir.empty() ? "." : output_dir);
+    OutputManifestScope scope;
+    scope.directory = build_dir_.empty() ? root : root / build_dir_;
+    scope.key = "vcxproj " + target_os_manifest_name();
+    scope.probable_search_depth = 0;
+    scope.probable_output = [](const fs::path&, const std::string& relative) {
+        auto ends_with = [&](const std::string& suffix) {
+            return relative.size() >= suffix.size() &&
+                relative.compare(relative.size() - suffix.size(), suffix.size(), suffix) == 0;
+        };
+        return ends_with(GENERATED_VCXPROJ) || ends_with(std::string(GENERATED_VCXPROJ) + ".filters") ||
+            ends_with(GENERATED_CSPROJ) || ends_with(GENERATED_SLNX) || ends_with(GENERATED_SLN) ||
+            ends_with(".runtime-dependencies.txt") || relative == "Write-SighmakeTargetReceipt.ps1";
+    };
+    return scope;
 }
 
 // Register the vcxproj generator

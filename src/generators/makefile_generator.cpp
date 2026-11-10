@@ -9,6 +9,7 @@
 #include "common/file_types.hpp"
 #include "common/compiler_flags.hpp"
 #include "common/language_standards.hpp"
+#include "common/output_manifest.hpp"
 
 namespace vcxproj {
 
@@ -301,6 +302,7 @@ static bool write_target_receipt_support(
     {
         std::ofstream script(py_script_path, std::ios::binary | std::ios::trunc);
         if (!script) return false;
+        record_generated_output(py_script_path);
         script << R"PY(import argparse
 import hashlib
 import json
@@ -428,6 +430,7 @@ if __name__ == "__main__":
     {
         std::ofstream script(ps_script_path, std::ios::binary | std::ios::trunc);
         if (!script) return false;
+        record_generated_output(ps_script_path);
         script << R"PS([CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][string]$Metadata,
@@ -518,10 +521,10 @@ try {
         return std::tie(left.stage_path, left.name, left.source) <
             std::tie(right.stage_path, right.name, right.source);
     });
-    std::ofstream metadata(
-        directory / (project.name + ".runtime-dependencies.txt"),
-        std::ios::binary | std::ios::trunc);
+    const fs::path metadata_path = directory / (project.name + ".runtime-dependencies.txt");
+    std::ofstream metadata(metadata_path, std::ios::binary | std::ios::trunc);
     if (!metadata) return false;
+    record_generated_output(metadata_path);
     for (const RuntimeDependency& dependency : dependencies) {
         if (dependency.name.find('|') != std::string::npos ||
             dependency.source.find('|') != std::string::npos ||
@@ -1251,6 +1254,7 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
             }
             manifest << expand_variables(text, solution.variables);
             manifest.close();
+            record_generated_output(makefile_dir / manifest_name);
             manifest_path = manifest_name;
         }
     } else {
@@ -1262,6 +1266,7 @@ bool MakefileGenerator::generate_android_apk_makefile(const Project& project, co
         }
         manifest << generate_android_manifest(project, has_code);
         manifest.close();
+        record_generated_output(makefile_dir / manifest_name);
         manifest_path = manifest_name;
     }
 
@@ -1791,6 +1796,14 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         pic_flags = "-fPIC ";
         if (no_semantic_interposition) pic_flags += "$(SIGHMAKE_NO_SEMANTIC_INTERPOSITION) ";
     }
+    // ELF shared libraries also link with -Wl,-Bsymbolic-functions: calls between functions of the
+    // library bind inside it at link time instead of through the PLT. Like -fno-semantic-interposition
+    // this gives up replacing the library's functions from outside (LD_PRELOAD), so the same
+    // `semantic_interposition = true` opts out. Data symbols keep default binding (copy relocations).
+    const bool bsymbolic_functions = config.config_type == "DynamicLibrary" && elf_target &&
+                                     !project.semantic_interposition;
+    const std::string shared_link_flags =
+        bsymbolic_functions ? "-shared $(SIGHMAKE_BSYMBOLIC_FUNCTIONS)" : "-shared";
 
     // Compiler flags
     std::string cxxflags = get_compiler_flags(config, project, makefile_dir, false, config_name, pic_flags);
@@ -1954,6 +1967,18 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         } else {
             out << "SIGHMAKE_NO_SEMANTIC_INTERPOSITION ?= -fno-semantic-interposition\n";
         }
+    }
+    if (bsymbolic_functions) {
+        // The linker is asked once when make reads this file (GNU ld, gold, lld and mold accept the
+        // flag; anything else leaves the variable empty). Setting the variable on the make command
+        // line (empty to disable) overrides the probe.
+        const std::string& link_cmd = links_with_cxx ? cxx_cmd : cc_cmd;
+        out << "# Shared library calls bind locally (semantic_interposition = true opts out)\n";
+        out << "ifeq ($(origin SIGHMAKE_BSYMBOLIC_FUNCTIONS),undefined)\n";
+        out << "  SIGHMAKE_BSYMBOLIC_FUNCTIONS := $(shell echo | " << link_cmd
+            << " -x c - -shared -nostdlib -Wl,-Bsymbolic-functions -o /dev/null 2>/dev/null"
+            << " && echo -Wl,-Bsymbolic-functions)\n";
+        out << "endif\n";
     }
     if (has_cpp_files || has_objcxx_files) {
         out << "CXXFLAGS = " << cxxflags << "\n";
@@ -2120,7 +2145,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                 link_text = ar_cmd + " rcs";
             } else {
                 link_text = (links_with_cxx ? cxx_cmd : cc_cmd) +
-                    (config.config_type == "DynamicLibrary" ? " -shared" : "") + " " + ldflags +
+                    (config.config_type == "DynamicLibrary" ? " " + shared_link_flags : "") + " " + ldflags +
                     (android ? " $(ANDROID_LINK_FLAGS)" : "") + " " + ldlibs;
             }
             stamps.push_back({"SIGHMAKE_LINK_STAMP", stamp_file("link"), link_text});
@@ -2260,13 +2285,14 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             // packager (lib<name>.so) expect; ANDROID_LINK_FLAGS carries the page-size alignment.
             out << "\t$(shell mkdir -p $(dir $@))$(file >$@.rsp,$(OBJS) " << ldlibs << ")\n";
             if (config.config_type == "DynamicLibrary") {
-                out << "\t" << compiler << " -shared -Wl,-soname,$(notdir $@) $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp\n";
+                out << "\t" << compiler << " " << shared_link_flags
+                    << " -Wl,-soname,$(notdir $@) $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp\n";
             } else {
                 out << "\t" << compiler << " $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp\n";
             }
             out << "\t@rm -f $@.rsp\n";
         } else if (config.config_type == "DynamicLibrary") {
-            out << "\t" << compiler << " -shared $(LDFLAGS) -o $@ $(OBJS) " << ldlibs << "\n";
+            out << "\t" << compiler << " " << shared_link_flags << " $(LDFLAGS) -o $@ $(OBJS) " << ldlibs << "\n";
         } else {
             out << "\t" << compiler << " $(LDFLAGS) -o $@ $(OBJS) " << ldlibs << "\n";
         }
@@ -2518,6 +2544,7 @@ bool MakefileGenerator::generate(Solution& solution, const std::string& output_d
             if (!generate_makefile_with_lookup(project, solution, config_key, makefile_path.string(), project_lookup)) {
                 return false;
             }
+            record_generated_output(makefile_path);
         }
     }
 
@@ -2557,6 +2584,7 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
         std::cerr << "Error: Failed to create master Makefile: " << makefile_path << "\n";
         return false;
     }
+    record_generated_output(makefile_path);
 
     // Collect unique config names (without platform), skipping Windows platforms.
     // Android configs are tracked separately - they build through the NDK and get
@@ -2836,6 +2864,28 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
 
     std::cout << "Generated master Makefile: " << makefile_path << "\n";
     return true;
+}
+
+std::optional<OutputManifestScope> MakefileGenerator::output_manifest_scope(const std::string& output_dir) const {
+    namespace fs = std::filesystem;
+    OutputManifestScope scope;
+    scope.directory = fs::path(output_dir.empty() ? "." : output_dir) / "build";
+    scope.key = "makefile " + target_os_manifest_name();
+    scope.probable_search_depth = 0;
+    scope.probable_output = [](const fs::path& absolute, const std::string& relative) {
+        auto ends_with = [&](const std::string& suffix) {
+            return relative.size() >= suffix.size() &&
+                relative.compare(relative.size() - suffix.size(), suffix.size(), suffix) == 0;
+        };
+        // Per-project Makefiles (<Project>.<Config>[.Android]) carry the sighmake header.
+        if (ends_with(".AndroidManifest.xml") || ends_with(".runtime-dependencies.txt") ||
+            relative == "write-sighmake-target-receipt.py" || relative == "Write-SighmakeTargetReceipt.ps1") {
+            return true;
+        }
+        if (ends_with(VcxprojGenerator::csproj_suffix())) return true;
+        return has_sighmake_header(absolute);
+    };
+    return scope;
 }
 
 // Register this generator with the factory

@@ -21,6 +21,9 @@ public:
         return "CMake project generator (cross-platform)";
     }
 
+    // Manifest in <output_dir> (next to the root CMakeLists.txt), keyed "cmake <target-os>".
+    std::optional<OutputManifestScope> output_manifest_scope(const std::string& output_dir) const override;
+
 private:
     // Generate root CMakeLists.txt
     bool generate_root_cmakelists(const Solution& solution, const std::string& output_dir);

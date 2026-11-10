@@ -2722,7 +2722,8 @@ bool BuildscriptParser::parse_project_compiler_setting(const std::string& key, c
         }
     } else if (key == "semantic_interposition") {
         // true: keep the default ELF interposition model (LD_PRELOAD-replaceable symbols) instead
-        // of compiling position-independent code with -fno-semantic-interposition.
+        // of compiling position-independent code with -fno-semantic-interposition and linking
+        // shared libraries with -Wl,-Bsymbolic-functions.
         const std::string v = to_lower(trim(value));
         proj.semantic_interposition = (v == "true" || v == "yes" || v == "on" || v == "1");
     } else if (key == "allow_unsafe") {

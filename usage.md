@@ -104,6 +104,8 @@ an input file produces an "Unexpected argument" error.
 | `--target-os <os>` | Evaluate `if(...)` blocks and `[tag]` conditions for this OS instead of the machine running sighmake: `windows`, `linux`, `macos` (`osx`, `darwin`), `ios`, or `android`. See [Cross-generating for another OS](#cross-generating-for-another-os). |
 | `--cxx <compiler>`, `--cc <compiler>` | Makefile generator: the C++ / C compiler driver written as `CXX` / `CC` (default `g++` / `gcc`, `clang++` / `clang` on macOS). Overrides the `cxx` / `cc` solution keys. `make CXX=...` still overrides the generated value. |
 | `--export-deps` | Write `<Solution>_dependencies.html` in the output root. |
+| `--keep-stale` | Keep generated files of earlier runs that this run no longer writes, instead of removing them. See [Stale outputs](#stale-outputs). |
+| `--prune-unlisted` | Also remove files that look like sighmake outputs but are in no generation manifest (outputs of a sighmake version without manifests). See [Stale outputs](#stale-outputs). |
 | `-l`, `--list` | List registered generators. |
 | `--list-toolsets` | List recognized `msvcYYYY` toolset aliases. |
 | `-h`, `--help` | Show command help. |
@@ -1558,11 +1560,27 @@ the variable on the make command line overrides both, e.g.
 with an old Clang through `CXX=`. Apple targets do not use the flag; Mach-O has
 no such interposition model.
 
+ELF shared libraries (`dll`/`shared` on Linux and Android) also link with
+`-Wl,-Bsymbolic-functions`: calls from the library to its own exported functions
+bind inside the library at link time instead of going through the PLT, which
+saves an indirect call and lets the dynamic loader resolve fewer symbols. Data
+symbols keep the default binding, so copy relocations from executables still
+work. The flag is the link-time half of the same trade-off as
+`-fno-semantic-interposition` (a function of the library can no longer be
+replaced from outside), so the same `semantic_interposition = true` turns both
+off; there is no separate key. The generated Makefile asks the linker once, when
+make reads it, and sets `SIGHMAKE_BSYMBOLIC_FUNCTIONS` to the flag only when the
+link succeeds (GNU ld, gold, lld and mold accept it); `make
+SIGHMAKE_BSYMBOLIC_FUNCTIONS=` turns it off for one build. Executables and
+static libraries do not get the flag, and neither do Apple or Windows targets.
+
 The CMake generator makes the same decision: `POSITION_INDEPENDENT_CODE ON` for
 the targets above (a static library is PIC when any of its configurations needs
 it), `POSITION_INDEPENDENT_CODE OFF` for `position_independent = false`, and
 `-fno-semantic-interposition` behind a GCC / Clang 10+ check on non-Apple,
-non-Windows hosts.
+non-Windows hosts. Shared libraries get `-Wl,-Bsymbolic-functions` through
+`target_link_options` on non-Apple, non-Windows hosts when
+`check_linker_flag` accepts it.
 
 ### CMake
 
@@ -1608,6 +1626,49 @@ solution matrix. The cache records the generator, configurations, platforms,
 and backend paths. Only the Visual Studio cache records project entries, which
 is why `--project` resolves project names only for MSBuild builds; the Make and
 CMake backends pass the value through as a raw target name.
+
+### Stale outputs
+
+Every generation records the files it writes in a manifest,
+`.sighmake-manifest`, next to its outputs:
+
+| Generator | Manifest | Tracked files |
+| --- | --- | --- |
+| `vcxproj` | `build/.sighmake-manifest` (the `-B` directory) | `.vcxproj`, `.vcxproj.filters`, `.csproj`, `.sln` / `.slnx`, runtime dependency receipts |
+| `makefile` (desktop and Android) | `build/.sighmake-manifest` | project Makefiles (`App.Release`, `App.Release.Android`), the master `Makefile`, `.csproj`, generated `AndroidManifest.xml` copies, runtime dependency receipts |
+| `cmake` | `.sighmake-manifest` beside the root `CMakeLists.txt` | root and per-project `CMakeLists.txt` |
+
+The manifest has one section per generator and target OS (for example
+`[makefile linux]` and `[makefile android]`), so generating for several targets
+or with several generators into one directory keeps each generation's files.
+
+On the next generation with the same generator and target OS, a file listed in
+the previous manifest that is not written again is deleted: the project was
+removed or renamed, or it no longer applies to the target (a `platforms` filter,
+a condition). This keeps `make -f build/<Project>.<Config>` and scripts that
+glob `build/*.Release` from picking up outdated files. Each run prints a summary
+line such as `Stale outputs: 2 removed, 0 listed`.
+
+- Files in no manifest (hand-written files, other tools' files, `.vcxproj.user`)
+  are never deleted, and a file listed by another section stays.
+- `--keep-stale` deletes nothing. It lists the stale files and keeps them in the
+  manifest, so a later run without the option still removes them.
+- The first generation in a directory without a manifest (for example the first
+  run of this sighmake version in an existing `build/`) cannot know which files
+  it wrote earlier. It lists the probable stale outputs as a warning and deletes
+  nothing: files named like sighmake's outputs (`*_.vcxproj`, `*_.csproj`,
+  `*_.slnx`, `*.runtime-dependencies.txt`, ...) or carrying the
+  `# Generated by sighmake` header (Makefiles, project `CMakeLists.txt`) that
+  this run did not write. Later runs only count them.
+- `--prune-unlisted` deletes those probable stale outputs too.
+
+```text
+sighmake app.buildscript --keep-stale       # list, delete nothing
+sighmake app.buildscript --prune-unlisted   # also remove pre-manifest leftovers
+```
+
+Only generated project files are tracked. Build products and intermediate
+directories (`bin/`, `obj/`, flag stamps) are not touched.
 
 ### Cross-generating for another OS
 
@@ -1934,7 +1995,7 @@ the primary names shown here in hand-written buildscripts.
 | `compile_as` | `Default`, `CompileAsC`, or `CompileAsCpp`. |
 | `pch`, `pch_header`, `pch_output` | Precompiled-header policy. |
 | `position_independent` (`pic`) | Project-level, Make and CMake only: `auto` (default), `true`, or `false`. See [Position-independent code](#position-independent-code). |
-| `semantic_interposition` | Project-level, Make and CMake only. `true` keeps the compiler's default ELF interposition model for position-independent code (no `-fno-semantic-interposition`). Default `false`. |
+| `semantic_interposition` | Project-level, Make and CMake only. `true` keeps the default ELF interposition model: no `-fno-semantic-interposition` on position-independent code and no `-Wl,-Bsymbolic-functions` on shared libraries. Default `false`. |
 
 For Visual Studio C/C++ projects, use `support_just_my_code` instead of adding
 `/JMC-` to `cflags`. It emits `<SupportJustMyCode>false</SupportJustMyCode>`

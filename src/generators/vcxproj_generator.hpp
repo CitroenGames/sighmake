@@ -28,6 +28,9 @@ public:
         return "Visual Studio project and solution generator";
     }
 
+    // Manifest in the build directory (<output_dir>/build by default), keyed "vcxproj <target-os>".
+    std::optional<OutputManifestScope> output_manifest_scope(const std::string& output_dir) const override;
+
     // Generate a .vcxproj file from a Project
     bool generate_vcxproj(const Project& project, const Solution& solution,
                           const std::string& output_path);
@@ -35,6 +38,8 @@ public:
                          const std::string& output_path);
     // File name generate() gives the project file of a C# project (the Makefile generator builds it with dotnet).
     static std::string csproj_filename(const Project& project);
+    // Suffix of generated C# project files ("_.csproj").
+    static std::string csproj_suffix();
 
     // Generate a .vcxproj.filters file from project file filter metadata
     bool generate_vcxproj_filters(const Project& project, const std::string& vcxproj_path);
