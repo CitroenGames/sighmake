@@ -67,7 +67,8 @@ private:
     // Build a unique object path under OBJ_DIR for a source file
     std::string make_object_path(const SourceFile& src, const std::string& src_relative,
                                  const std::string& config_key, const std::string& int_dir,
-                                 const std::filesystem::path& makefile_dir);
+                                 const std::filesystem::path& makefile_dir,
+                                 const std::string& buildscript_dir = "");
 
     // Strip .lib or .dll extension from library names
     std::string strip_lib_extension(const std::string& lib);

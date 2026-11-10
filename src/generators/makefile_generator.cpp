@@ -303,6 +303,30 @@ std::string make_escape_spaces(const std::string& path) {
     return result;
 }
 
+// Escapes the characters that stay special inside double quotes.
+std::string shell_escape_in_quotes(const std::string& text) {
+    std::string result;
+    for (char c : text) {
+        if (c == '"' || c == '`' || c == '\\') result += '\\';
+        result += c;
+    }
+    return result;
+}
+
+// A path written into a recipe or a variable that ends up on a shell command line: quoted when it
+// holds characters the shell would split or interpret. Make variable references stay intact.
+std::string shell_quote_if_needed(const std::string& path) {
+    if (path.find_first_of(" \t\"'`&;|<>()*?[]#~!{}\\") == std::string::npos) return path;
+    if (path.size() >= 2 && path.front() == '"' && path.back() == '"') return path;
+    std::string result = "\"";
+    for (size_t i = 0; i < path.size(); ++i) {
+        const char c = path[i];
+        if (c == '"' || c == '`' || c == '\\') result += '\\';
+        result += c;
+    }
+    return result + "\"";
+}
+
 bool has_extension_case_insensitive(const std::string& path, const std::string& ext) {
     if (path.size() < ext.size()) {
         return false;
@@ -618,10 +642,13 @@ std::string MakefileGenerator::compute_relative_path(const std::string& path, co
 
 std::string MakefileGenerator::make_object_path(const SourceFile& src, const std::string& src_relative,
                                                 const std::string& config_key, const std::string& int_dir,
-                                                const std::filesystem::path& makefile_dir) {
+                                                const std::filesystem::path& makefile_dir,
+                                                const std::string& buildscript_dir) {
     if (const auto* object_file = find_config_setting(src.settings.object_file, config_key);
         object_file && !object_file->empty()) {
         std::string obj_path = to_unix_path(*object_file);
+        // $(IntDir) already expands to a path relative to the makefile directory.
+        const bool relative_to_makefile = obj_path.find("$(IntDir)") != std::string::npos;
         // MSBuild-style macros (object_file = $(IntDir)name.obj) name the configuration's
         // intermediate directory; make has no such variables.
         const auto [config_name, platform_name] = parse_config_key(config_key);
@@ -639,6 +666,11 @@ std::string MakefileGenerator::make_object_path(const SourceFile& src, const std
         std::filesystem::path path(obj_path);
         if (path.is_absolute()) {
             return compute_relative_path(obj_path, makefile_dir);
+        }
+
+        // Other relative paths are relative to the buildscript, like every other path setting.
+        if (!relative_to_makefile && !buildscript_dir.empty() && obj_path.rfind("$(", 0) != 0) {
+            return compute_relative_path((std::filesystem::path(buildscript_dir) / obj_path).string(), makefile_dir);
         }
 
         return obj_path;
@@ -857,9 +889,9 @@ std::string MakefileGenerator::get_linker_flags(const Configuration& config, con
     if (!config.link.module_definition_file.empty()) {
         std::string def_path = compute_relative_path(config.link.module_definition_file, makefile_dir);
         if (macho_linker) {
-            ss << "-Wl,-exported_symbols_list," << def_path << " ";
+            ss << shell_quote_if_needed("-Wl,-exported_symbols_list," + def_path) << " ";
         } else {
-            ss << "-Wl,--version-script=" << def_path << " ";
+            ss << shell_quote_if_needed("-Wl,--version-script=" + def_path) << " ";
         }
     }
 
@@ -895,7 +927,7 @@ std::string MakefileGenerator::get_linker_libs(const Configuration& config, cons
                 // A path: the parser rebases buildscript-relative entries to absolute paths, which are
                 // written relative to the makefile like library directories are.
                 const bool absolute = std::filesystem::path(part).is_absolute() && part.find("$(") == std::string::npos;
-                ss << to_unix_path(absolute && !makefile_dir.empty() ? compute_relative_path(part, makefile_dir) : part) << " ";
+                ss << shell_quote_if_needed(to_unix_path(absolute && !makefile_dir.empty() ? compute_relative_path(part, makefile_dir) : part)) << " ";
             } else {
                 // It's a library name, use -l flag
                 ss << "-l" << libname << " ";
@@ -2161,14 +2193,16 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             // Generate object file path
             // Convert source path to relative (using the same logic as output dirs)
             std::string src_relative = compute_relative_path(src.path, makefile_dir);
-            std::string obj_path = make_object_path(src, src_relative, config_key, int_dir, makefile_dir);
+            std::string obj_path = make_object_path(src, src_relative, config_key, int_dir, makefile_dir,
+                                                  project.buildscript_path);
 
             const std::string lang_ext = compile_language_ext(src);
 
-            // Determine if this file uses PCH. The header is precompiled as C++, which a C
-            // translation unit cannot use: C files compile without it.
+            // Determine if this file uses PCH. The header is precompiled as C++, which a C or
+            // Objective-C(++) translation unit cannot use (the languages differ): those files
+            // compile without it.
             bool uses_pch = has_pch && (mode == "Use" || (mode.empty() && !header.empty())) &&
-                            !file_types::is_c_source(lang_ext);
+                            !file_types::is_c_source(lang_ext) && !file_types::is_objcxx_source(lang_ext);
             std::string extra_flags;
             if (lang_ext != file_types::lowercase_extension(src.path)) {
                 extra_flags += file_types::is_c_source(lang_ext) ? " -x c" : " -x c++";
@@ -2229,7 +2263,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         std::string objcxx_extra = config.cl_compile.objcxx_flags.empty() ? "" : " " + config.cl_compile.objcxx_flags;
         if (stamp_cxx) stamps.push_back({"SIGHMAKE_CXX_STAMP", stamp_file("cxx"), cxx_cmd + " " + cxxflags + pch_stamp_suffix + per_file_cxx});
         if (stamp_c) stamps.push_back({"SIGHMAKE_C_STAMP", stamp_file("c"), cc_cmd + " " + cflags + pch_stamp_suffix + per_file_c});
-        if (stamp_objcxx) stamps.push_back({"SIGHMAKE_OBJCXX_STAMP", stamp_file("objcxx"), cxx_cmd + " " + cxxflags + objcxx_extra + pch_stamp_suffix + per_file_objcxx});
+        if (stamp_objcxx) stamps.push_back({"SIGHMAKE_OBJCXX_STAMP", stamp_file("objcxx"), cxx_cmd + " " + cxxflags + objcxx_extra + per_file_objcxx});
         if (stamp_nasm) stamps.push_back({"SIGHMAKE_NASM_STAMP", stamp_file("nasm"), nasm_cmd + " " + nasmflags_text});
         if (stamp_link) {
             std::string link_text;
@@ -2940,25 +2974,27 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
         if (!exe_targets.empty() || !lib_targets.empty()) {
             out << "install: " << install_config << "\n";
             if (!exe_targets.empty()) {
-                out << "\tinstall -d $(DESTDIR)$(PREFIX)/bin\n";
+                out << "\tinstall -d \"$(DESTDIR)$(PREFIX)/bin\"\n";
                 for (const auto& t : exe_targets) {
-                    out << "\tinstall -m 755 " << t.binary_path << " $(DESTDIR)$(PREFIX)/bin/" << t.name << "\n";
+                    out << "\tinstall -m 755 " << shell_quote_if_needed(t.binary_path)
+                        << " \"$(DESTDIR)$(PREFIX)/bin/" << shell_escape_in_quotes(t.name) << "\"\n";
                 }
             }
             if (!lib_targets.empty()) {
-                out << "\tinstall -d $(DESTDIR)$(PREFIX)/lib\n";
+                out << "\tinstall -d \"$(DESTDIR)$(PREFIX)/lib\"\n";
                 for (const auto& t : lib_targets) {
-                    out << "\tinstall -m 755 " << t.binary_path << " $(DESTDIR)$(PREFIX)/lib/" << t.name << "\n";
+                    out << "\tinstall -m 755 " << shell_quote_if_needed(t.binary_path)
+                        << " \"$(DESTDIR)$(PREFIX)/lib/" << shell_escape_in_quotes(t.name) << "\"\n";
                 }
             }
             out << "\n";
 
             out << "uninstall:\n";
             for (const auto& t : exe_targets) {
-                out << "\trm -f $(DESTDIR)$(PREFIX)/bin/" << t.name << "\n";
+                out << "\trm -f \"$(DESTDIR)$(PREFIX)/bin/" << shell_escape_in_quotes(t.name) << "\"\n";
             }
             for (const auto& t : lib_targets) {
-                out << "\trm -f $(DESTDIR)$(PREFIX)/lib/" << t.name << "\n";
+                out << "\trm -f \"$(DESTDIR)$(PREFIX)/lib/" << shell_escape_in_quotes(t.name) << "\"\n";
             }
             out << "\n";
         }
