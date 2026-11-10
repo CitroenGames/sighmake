@@ -315,3 +315,30 @@ libs = libm.so, dl.so, libfoo.dylib
     CHECK(mk.find(".so ") == std::string::npos);
     CHECK(mk.find(".dylib") == std::string::npos);
 }
+
+TEST_CASE("Makefile post-build event runs on the stripped binary", "[bugfix_make]") {
+    BugfixMakeProject p("postbuild_after_strip", R"(
+[solution]
+name = Ev
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = exe
+outdir = bin
+intdir = obj/App
+sources = main.cpp
+postbuild = cp $@ App.copy
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    REQUIRE(p.generated);
+    const std::string mk = p.makefile("App.Release");
+    const size_t strip_pos = mk.find("\tstrip $@");
+    const size_t post_pos = mk.find("\tcp $@ App.copy");
+    REQUIRE(strip_pos != std::string::npos);
+    REQUIRE(post_pos != std::string::npos);
+    CHECK(strip_pos < post_pos);
+#ifndef _WIN32
+    REQUIRE(p.make("App.Release") == 0);
+    CHECK(fs::file_size(p.dir / "build" / "App.copy") == fs::file_size(p.dir / "bin" / "App"));
+#endif
+}

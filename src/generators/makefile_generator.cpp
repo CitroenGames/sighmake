@@ -2410,11 +2410,6 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         }
     }
 
-    // Post-build event
-    if (!post_build_command.empty()) {
-        write_event_command(post_build_command);
-    }
-
     // Strip symbols from executables and shared libraries (`strip`, default Release only).
     // On Linux, debug symbols are embedded in the binary unlike Windows .pdb files
     if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
@@ -2434,6 +2429,11 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 #endif
             }
         }
+    }
+
+    // Post-build event (sees the finished binary, after stripping)
+    if (!post_build_command.empty()) {
+        write_event_command(post_build_command);
     }
 
     if (emits_target_receipt) {
