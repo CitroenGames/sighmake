@@ -141,7 +141,7 @@ explicit fallback (see [Variables](#variables)). Values discovered later by
 | `--abi <abi>` | Makefile builds for Android: set `ANDROID_ABI` (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`). |
 | `--api <level>` | Makefile builds for Android: set `ANDROID_API`. |
 | `--aab` | Makefile builds for Android: also build the `.aab` app bundle of `apk` projects (`ANDROID_AAB=1`), see [Android packages](#android-packages-apk). |
-| `--target <name>` | Pass a target to the active backend. |
+| `--target <name>` | Pass a target to the active backend. With MSBuild it combines with `--project` and `--clean-first` (`/t:Clean;<name>`). For Make and CMake it cannot be combined with `--project` (error); with Make the target names the configuration itself, so `--config` has no effect (a warning is printed). |
 | `--project <name-or-file>` | Build one generated project instead of the complete solution/graph. |
 | `--no-project-references`, `--no-deps` | With an MSBuild project build, set `BuildProjectReferences=false`. |
 | `--clean` | Clean without building. |
@@ -677,7 +677,7 @@ configuration settings:
 
 | Inside `if(Android) { ... }` | Effect |
 | --- | --- |
-| `target_link_libraries(...)`, `dependencies`, `depends`, `project_references` | The edge exists for Android configurations only. The other platforms neither link the project, nor receive its `public_*` settings, nor order the build after it. The Visual Studio, CMake and `--export-deps` outputs omit the edge, so a desktop project file is byte-identical to one whose Android-only blocks were never written. |
+| `target_link_libraries(...)`, `dependencies`, `depends`, `project_references` | The edge exists for Android configurations only. The other platforms neither link the project, nor receive its `public_*` settings, nor order the build after it. The Visual Studio, CMake and `--export-deps` outputs omit the edge (the Makefile build keeps it), so a desktop project file is byte-identical to one whose Android-only blocks were never written. |
 | `sources`, `src`, `files` | The files are compiled for Android only (same as an `[android]` tag per file). |
 | `type = dll` | Sets the project type for that platform's cells only; other platforms keep the type declared outside the block. |
 | `libs`, `libdirs`, `defines`, `includes`, `outdir`, ... | Configuration settings of the Android cells (as before). |
@@ -1669,8 +1669,10 @@ sighmake --build .
 Regenerate after moving the output tree, changing generators, or editing the
 solution matrix. The cache records the generator, configurations, platforms,
 and backend paths. Only the Visual Studio cache records project entries, which
-is why `--project` resolves project names only for MSBuild builds; the Make and
-CMake backends pass the value through as a raw target name.
+is why `--project` resolves project names only for MSBuild builds. The CMake
+backend passes the value through as a raw target name; the Make backend builds the
+configuration-specific target `<project>.<Config>` (`<project>.<Config>.Android`
+for the Android build), so `--project App --config Release` runs `make App.Release`.
 
 ### Stale outputs
 
