@@ -364,6 +364,10 @@ std::string preprocess_multiline(const std::string& content) {
                     in_multiline_quote = false;
                     multiline_accumulator.clear();
                     multiline_prefix.clear();
+                } else {
+                    // Text after the opening quotes on the same line is the start of the value
+                    const std::string first_line = value_part.substr(first_nonspace + 3);
+                    if (!trim(first_line).empty()) multiline_accumulator = first_line + "\n";
                 }
                 continue;
             }

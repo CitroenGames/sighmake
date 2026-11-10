@@ -131,3 +131,14 @@ main.cpp:defines = ONLY_DEBUG
     CHECK(defs.count("Release|Linux") == 0);
 }
 
+TEST_CASE("Text after an opening triple quote is part of the multi-line value", "[bugfix2_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(
+        "[solution]\nconfigurations = Debug\nplatforms = Linux\n\n"
+        "[project:App]\ntype = exe\nprebuild = \"\"\"touch a\ntouch b\"\"\"\n");
+    REQUIRE(sol.projects.size() == 1);
+    const std::string& cmd = sol.projects[0].configurations.at("Debug|Linux").pre_build_event.command;
+    CHECK(cmd.find("touch a") != std::string::npos);
+    CHECK(cmd.find("touch b") != std::string::npos);
+}
+
