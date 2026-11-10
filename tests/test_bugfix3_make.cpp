@@ -426,3 +426,31 @@ add_executable(Rel ${REL})
     CHECK(rel->sources[0].path.find("src/a.cpp") != std::string::npos);
     fs::remove_all(dir, ec);
 }
+
+TEST_CASE("CMake generator finds a pch_header written relative to the buildscript", "[bugfix3_make]") {
+    const fs::path dir = fs::temp_directory_path() / "sighmake bugfix3 cmake pch";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir / "src");
+    std::ofstream(dir / "src" / "pch.h") << "#pragma once\n";
+    std::ofstream(dir / "src" / "core.cpp") << "int core() { return 1; }\n";
+    BuildscriptParser parser;
+    Solution solution = parser.parse_string(R"(
+[solution]
+name = Pch
+configurations = Debug
+platforms = Linux
+
+[project:Core]
+type = static
+sources = src/core.cpp
+pch = Use
+pch_header = src/pch.h
+)", dir.string());
+    CMakeGenerator generator;
+    REQUIRE(generator.generate(solution, dir.string()));
+    const std::string content = bugfix3_make_read(dir / "Core" / "CMakeLists.txt");
+    CHECK(content.find("target_precompile_headers(Core PRIVATE ../src/pch.h)") != std::string::npos);
+    CHECK(content.find("<src/pch.h>") == std::string::npos);
+    fs::remove_all(dir, ec);
+}

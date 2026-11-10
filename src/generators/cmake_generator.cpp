@@ -1233,6 +1233,8 @@ void CMakeGenerator::write_pch_settings(std::ostream& out, const Project& projec
     std::string pch_arg;
     std::vector<fs::path> search_dirs;
     if (fs::path(pch_header).is_absolute()) search_dirs.emplace_back();
+    // A path written relative to the buildscript (the Makefile generator resolves it there first)
+    if (!project.buildscript_path.empty()) search_dirs.emplace_back(project.buildscript_path);
     for (const auto& src : project.sources) search_dirs.push_back(fs::path(src.path).parent_path());
     for (const auto& [key, config] : project.configurations) {
         for (const auto& inc : config.cl_compile.additional_include_directories) {
