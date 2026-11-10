@@ -41,6 +41,16 @@ std::optional<std::string> resolve_build_platform(
     return std::string("x64");
 }
 
+std::optional<int> parse_parallel_jobs(const std::string& value) {
+    if (value.empty() || value.size() > 9 ||
+        !std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+        return std::nullopt;
+    }
+    const int jobs = std::stoi(value);
+    if (jobs <= 0) return std::nullopt;
+    return jobs;
+}
+
 std::vector<std::string> split_abi_list(const std::string& abi_list) {
     std::vector<std::string> abis;
     std::string current;
@@ -97,7 +107,7 @@ static std::optional<fs::path> existing_path(const fs::path& path) {
     return std::nullopt;
 }
 
-static std::optional<fs::path> resolve_msbuild_project(
+std::optional<fs::path> resolve_msbuild_project(
     const BuildCache& cache,
     const std::string& cache_dir,
     const std::string& requested_project)
@@ -120,7 +130,8 @@ static std::optional<fs::path> resolve_msbuild_project(
     for (const auto& project : cache.projects) {
         fs::path project_file(project.file);
         if (to_lower(project.name) == requested_lower ||
-            to_lower(project_file.stem().string()) == requested_lower) {
+            to_lower(project_file.stem().string()) == requested_lower ||
+            to_lower(project_file.filename().string()) == requested_lower) {
             return fs::path(cache_dir) / project_file;
         }
     }
@@ -242,7 +253,7 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
 
     // Build MSBuild command
     std::string cmd = "\"\"" + msbuild_path + "\" \"" + build_path.string() + "\"";
-    cmd += " /p:Configuration=" + config;
+    cmd += " /p:Configuration=\"" + config + "\"";
     cmd += " /p:Platform=\"" + platform + "\"";
 
     if (!options.clean_only && std::any_of(cache.projects.begin(), cache.projects.end(),
@@ -519,7 +530,9 @@ int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,
 
     // Verify build directory exists
     fs::path build_dir = fs::path(cache_dir) / cache.build_dir;
-    if (!fs::exists(build_dir)) {
+    // The directory may exist without being a CMake build tree (makefile or vcxproj output of an
+    // earlier generation into the same root): configure whenever CMakeCache.txt is missing.
+    if (!fs::exists(build_dir / "CMakeCache.txt")) {
         // Create build directory and run cmake configure first
         try {
             fs::create_directories(build_dir);
@@ -571,7 +584,7 @@ int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,
     const std::string requested_target = options.project.empty() ? options.target : options.project;
 
     // Build cmake --build command
-    std::string cmd = "cmake --build \"" + build_dir.string() + "\" --config " + config;
+    std::string cmd = "cmake --build \"" + build_dir.string() + "\" --config \"" + config + "\"";
 
     if (options.clean_only) {
         cmd += " --target clean";

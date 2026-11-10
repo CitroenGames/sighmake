@@ -30,6 +30,9 @@ std::optional<std::string> resolve_build_platform(
     const std::vector<std::string>& available_platforms,
     const std::string& requested_platform);
 
+// Parse a -j / --parallel value: a positive integer, otherwise std::nullopt.
+std::optional<int> parse_parallel_jobs(const std::string& value);
+
 // Split an --abi value ("arm64-v8a,x86_64" or space separated) into ABI names.
 std::vector<std::string> split_abi_list(const std::string& abi_list);
 
@@ -43,6 +46,13 @@ std::string resolve_make_build_target(
     const BuildCache& cache,
     const BuildOptions& options,
     const std::string& config);
+
+// Generated project file that --project names for an MSBuild build: a path (relative to the cache
+// directory), a project or target name, or a generated project file name. std::nullopt when unknown.
+std::optional<std::filesystem::path> resolve_msbuild_project(
+    const BuildCache& cache,
+    const std::string& cache_dir,
+    const std::string& requested_project);
 
 // Message printed when --build finds no cache in `directory`. Names the directory that was searched and,
 // when the cache is in `cwd` instead, hints at `--build .`.

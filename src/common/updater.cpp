@@ -235,6 +235,52 @@ int compare_numeric_component(const std::string& lhs, const std::string& rhs) {
     return lhs < rhs ? -1 : 1;
 }
 
+// Pre-release part of a version ("rc.1" in "1.2.0-rc.1+build"); empty for a final release.
+std::string parse_prerelease(const std::string& version) {
+    std::string normalized = normalize_version(version);
+    size_t end = normalized.find_first_not_of("0123456789.");
+    if (end == std::string::npos || normalized[end] != '-') {
+        return "";
+    }
+    return normalized.substr(end + 1, normalized.find('+', end) - end - 1);
+}
+
+// Semantic Versioning precedence of two pre-release parts: a final release (empty) ranks above any
+// pre-release, numeric identifiers compare numerically and rank below alphanumeric ones.
+int compare_prerelease(const std::string& lhs, const std::string& rhs) {
+    if (lhs.empty() || rhs.empty()) {
+        return lhs.empty() == rhs.empty() ? 0 : (lhs.empty() ? 1 : -1);
+    }
+    auto is_numeric = [](const std::string& value) {
+        return !value.empty() && std::all_of(value.begin(), value.end(), [](unsigned char c) {
+            return std::isdigit(c) != 0;
+        });
+    };
+    std::istringstream left(lhs);
+    std::istringstream right(rhs);
+    std::string a;
+    std::string b;
+    for (;;) {
+        bool has_a = static_cast<bool>(std::getline(left, a, '.'));
+        bool has_b = static_cast<bool>(std::getline(right, b, '.'));
+        if (!has_a || !has_b) {
+            return has_a == has_b ? 0 : (has_a ? 1 : -1);
+        }
+        bool numeric_a = is_numeric(a);
+        bool numeric_b = is_numeric(b);
+        int comparison = 0;
+        if (numeric_a && numeric_b) {
+            comparison = compare_numeric_component(normalize_numeric_component(a),
+                                                   normalize_numeric_component(b));
+        } else if (numeric_a != numeric_b) {
+            comparison = numeric_a ? -1 : 1;
+        } else if (a != b) {
+            comparison = a < b ? -1 : 1;
+        }
+        if (comparison != 0) return comparison;
+    }
+}
+
 bool is_valid_repository(const std::string& repository) {
     if (repository.empty() || repository.size() > 200 || contains_control_character(repository)) {
         return false;
@@ -1571,7 +1617,7 @@ int compare_versions(const std::string& lhs, const std::string& rhs) {
         int comparison = compare_numeric_component(left[i], right[i]);
         if (comparison != 0) return comparison;
     }
-    return 0;
+    return compare_prerelease(parse_prerelease(lhs), parse_prerelease(rhs));
 }
 
 std::optional<ReleaseManifest> parse_release_manifest(const std::string& text,
