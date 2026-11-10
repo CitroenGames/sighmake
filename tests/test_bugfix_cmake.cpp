@@ -448,3 +448,43 @@ prebuild = echo rel > out.txt
                  "    COMMAND $<$<CONFIG:Release>:echo> $<$<CONFIG:Release>:rel> "
                  "$<$<CONFIG:Release>:$<ANGLE-R>> $<$<CONFIG:Release>:out.txt>\n") != std::string::npos);
 }
+
+// ============================================================================
+// CMake generator: per-file settings
+// ============================================================================
+
+TEST_CASE("bugfix_cmake: configuration-specific per-file defines apply to that configuration only",
+          "[bugfix_cmake]") {
+    auto result = generate_cmake(R"(
+[solution]
+name = T
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp, util.cpp
+main.cpp:defines = ALWAYS
+main.cpp:defines[Debug|x64] = DEBUG_FILE
+)", {{"main.cpp", "int main() { return 0; }\n"}, {"util.cpp", "void util() {}\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("COMPILE_DEFINITIONS \"ALWAYS;$<$<CONFIG:Debug>:DEBUG_FILE>\"") != std::string::npos);
+}
+
+TEST_CASE("bugfix_cmake: a source excluded in every configuration is not compiled", "[bugfix_cmake]") {
+    auto result = generate_cmake(R"(
+[solution]
+name = T
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp, util.cpp
+util.cpp:exclude = true
+)", {{"main.cpp", "int main() { return 0; }\n"}, {"util.cpp", "#error excluded\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("set_source_files_properties(../util.cpp PROPERTIES\n    HEADER_FILE_ONLY TRUE") != std::string::npos);
+}

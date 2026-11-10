@@ -1113,16 +1113,27 @@ void CMakeGenerator::write_per_file_settings(std::ostream& out, const Project& p
         // Per-file defines
         std::vector<std::string> file_defines;
         for (const auto& [cfg_key, defs] : src.settings.preprocessor_defines) {
+            const bool all_configs = cfg_key == ALL_CONFIGS || cfg_key == "ALL_CONFIGS";
             for (const auto& d : defs) {
-                file_defines.push_back(d);
+                std::string entry = all_configs ? d : "$<$<CONFIG:" + parse_config_key(cfg_key).first + ">:" + d + ">";
+                if (std::find(file_defines.begin(), file_defines.end(), entry) == file_defines.end()) {
+                    file_defines.push_back(entry);
+                }
             }
         }
 
-        // Per-file excluded
-        bool excluded_all = false;
-        for (const auto& [cfg_key, excluded] : src.settings.excluded) {
-            if (excluded && cfg_key == "ALL_CONFIGS") {
-                excluded_all = true;
+        // Per-file excluded (in every configuration)
+        auto excluded_in = [&](const std::string& config_key) {
+            for (const char* key : {config_key.c_str(), ALL_CONFIGS, "ALL_CONFIGS"}) {
+                auto it = src.settings.excluded.find(key);
+                if (it != src.settings.excluded.end()) return it->second;
+            }
+            return false;
+        };
+        bool excluded_all = !project.configurations.empty();
+        for (const auto& [cfg_key, config] : project.configurations) {
+            if (!excluded_in(cfg_key)) {
+                excluded_all = false;
                 break;
             }
         }
