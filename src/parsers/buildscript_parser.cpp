@@ -11,6 +11,80 @@ namespace fs = std::filesystem;
 
 namespace vcxproj {
 
+namespace {
+
+struct BoolSettingDef {
+    const char* id;
+    std::vector<std::string> keys;
+    bool& (*ref)(Configuration&);
+    bool merge_from_template;  // false: the template merge keeps its own special rule
+};
+
+const std::vector<BoolSettingDef>& bool_setting_table() {
+    static const std::vector<BoolSettingDef> table = {
+        {"link_incremental", {"link_incremental"}, [](Configuration& c) -> bool& { return c.link_incremental; }, true},
+        {"whole_program_optimization", {"whole_program_optimization", "wpo", "ltcg"}, [](Configuration& c) -> bool& { return c.whole_program_optimization; }, true},
+        {"generate_manifest", {"generate_manifest"}, [](Configuration& c) -> bool& { return c.generate_manifest; }, false},
+        {"ignore_import_library", {"ignore_import_library"}, [](Configuration& c) -> bool& { return c.ignore_import_library; }, true},
+        {"cl.string_pooling", {"string_pooling"}, [](Configuration& c) -> bool& { return c.cl_compile.string_pooling; }, true},
+        {"cl.minimal_rebuild", {"minimal_rebuild"}, [](Configuration& c) -> bool& { return c.cl_compile.minimal_rebuild; }, true},
+        {"cl.buffer_security_check", {"buffer_security_check", "buffer_security"}, [](Configuration& c) -> bool& { return c.cl_compile.buffer_security_check; }, true},
+        {"cl.force_conformance", {"force_conformance_in_for_loop_scope", "force_conformance"}, [](Configuration& c) -> bool& { return c.cl_compile.force_conformance_in_for_loop_scope; }, true},
+        {"cl.runtime_type_info", {"runtime_type_info", "rtti"}, [](Configuration& c) -> bool& { return c.cl_compile.runtime_type_info; }, true},
+        {"cl.multi_processor_compilation", {"multi_processor_compilation", "multiprocessor", "mp"}, [](Configuration& c) -> bool& { return c.cl_compile.multi_processor_compilation; }, true},
+        {"cl.generate_xml_documentation_files", {"generate_xml_documentation_files", "xml_docs"}, [](Configuration& c) -> bool& { return c.cl_compile.generate_xml_documentation_files; }, true},
+        {"cl.browse_information", {"browse_information"}, [](Configuration& c) -> bool& { return c.cl_compile.browse_information; }, true},
+        {"cl.treat_wchar_t", {"treat_wchar_t_as_builtin", "treat_wchar_t_as_built_in_type"}, [](Configuration& c) -> bool& { return c.cl_compile.treat_wchar_t_as_built_in_type; }, true},
+        {"cl.expand_attributed_source", {"expand_attributed_source"}, [](Configuration& c) -> bool& { return c.cl_compile.expand_attributed_source; }, true},
+        {"cl.openmp_support", {"openmp", "openmp_support"}, [](Configuration& c) -> bool& { return c.cl_compile.openmp_support; }, true},
+        {"cl.treat_warning_as_error", {"treat_warning_as_error"}, [](Configuration& c) -> bool& { return c.cl_compile.treat_warning_as_error; }, true},
+        {"link.suppress_startup_banner", {"suppress_startup_banner", "link_suppress_startup_banner"}, [](Configuration& c) -> bool& { return c.link.suppress_startup_banner; }, true},
+        {"link.generate_debug_info", {"generate_debug_info"}, [](Configuration& c) -> bool& { return c.link.generate_debug_info; }, true},
+        {"link.image_has_safe_exception_handlers", {"image_has_safe_exception_handlers", "safe_seh"}, [](Configuration& c) -> bool& { return c.link.image_has_safe_exception_handlers; }, true},
+        {"link.generate_map_file", {"generate_map_file"}, [](Configuration& c) -> bool& { return c.link.generate_map_file; }, true},
+        {"link.ignore_all_default_libraries", {"ignore_all_default_libraries", "no_default_libs"}, [](Configuration& c) -> bool& { return c.link.ignore_all_default_libraries; }, true},
+        {"link.fixed_base_address", {"fixed_base_address"}, [](Configuration& c) -> bool& { return c.link.fixed_base_address; }, true},
+        {"lib.suppress_startup_banner", {"lib_suppress_startup_banner"}, [](Configuration& c) -> bool& { return c.lib.suppress_startup_banner; }, true},
+        {"lib.use_unicode_response_files", {"lib_use_unicode_response_files"}, [](Configuration& c) -> bool& { return c.lib.use_unicode_response_files; }, true},
+        {"manifest.suppress_startup_banner", {"manifest_suppress_startup_banner"}, [](Configuration& c) -> bool& { return c.manifest.suppress_startup_banner; }, true},
+        {"xdcmake.suppress_startup_banner", {"xdcmake_suppress_startup_banner"}, [](Configuration& c) -> bool& { return c.xdcmake.suppress_startup_banner; }, true},
+        {"bscmake.suppress_startup_banner", {"bscmake_suppress_startup_banner"}, [](Configuration& c) -> bool& { return c.bscmake.suppress_startup_banner; }, true},
+    };
+    return table;
+}
+
+const BoolSettingDef* find_bool_setting(const std::string& key) {
+    for (const auto& def : bool_setting_table()) {
+        if (std::find(def.keys.begin(), def.keys.end(), key) != def.keys.end()) return &def;
+    }
+    return nullptr;
+}
+
+void mark_explicit_bool(Configuration& cfg, const std::string& key) {
+    if (const auto* def = find_bool_setting(key)) cfg.explicit_bools.insert(def->id);
+}
+
+// Merges bool settings from `src` into `dst`. A value the destination set explicitly always wins
+// (including false); otherwise an explicit source value is copied, true or false. Without any explicit
+// marks the former "copy a true over a false" rule applies when `legacy_true_wins` is set.
+void merge_bool_settings(Configuration& dst, const Configuration& src, bool legacy_true_wins) {
+    Configuration& src_mut = const_cast<Configuration&>(src);
+    for (const auto& def : bool_setting_table()) {
+        if (!def.merge_from_template) continue;
+        if (dst.explicit_bools.count(def.id)) continue;
+        bool& d = def.ref(dst);
+        const bool s = def.ref(src_mut);
+        if (src.explicit_bools.count(def.id)) {
+            d = s;
+            dst.explicit_bools.insert(def.id);
+        } else if (legacy_true_wins && !d && s) {
+            d = s;
+        }
+    }
+}
+
+}  // namespace
+
 static bool parse_support_just_my_code(const std::string& value) {
     if (value == "true" || value == "yes" || value == "1") return true;
     if (value == "false" || value == "no" || value == "0") return false;
@@ -859,14 +933,11 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 cl.additional_options = d.additional_options;
             if (cl.objcxx_flags.empty() && !d.objcxx_flags.empty())
                 cl.objcxx_flags = d.objcxx_flags;
-            if (!cl.runtime_type_info && d.runtime_type_info)
-                cl.runtime_type_info = d.runtime_type_info;
+            merge_bool_settings(cfg, defs, false);
             if (!cl.support_just_my_code.has_value())
                 cl.support_just_my_code = d.support_just_my_code;
             if (!cl.utf8_source.has_value() && d.utf8_source.has_value())
                 cl.utf8_source = d.utf8_source;
-            if (!cl.multi_processor_compilation && d.multi_processor_compilation)
-                cl.multi_processor_compilation = d.multi_processor_compilation;
 
             // Vector settings: copy if empty. Lists that accumulate (includes, libs, libdirs) get the
             // project-level entries they are missing in front, so a [config:...] section that adds its
@@ -881,8 +952,6 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
             merge_missing_entries_front(cfg.link.additional_library_directories, defs.link.additional_library_directories);
             if (cfg.link.additional_options.empty() && !defs.link.additional_options.empty())
                 cfg.link.additional_options = defs.link.additional_options;
-            if (!cfg.link.fixed_base_address && defs.link.fixed_base_address)
-                cfg.link.fixed_base_address = defs.link.fixed_base_address;
             if (!cfg.link.randomized_base_address.has_value() && defs.link.randomized_base_address.has_value())
                 cfg.link.randomized_base_address = defs.link.randomized_base_address;
             if (!cfg.link.strip.has_value() && defs.link.strip.has_value())
@@ -910,8 +979,10 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                         cfg.cl_compile.debug_information_format =
                             defaults::debug_information_format(true, platform);
                     }
-                    cfg.link.generate_debug_info = true;
-                    cfg.link_incremental = true;
+                    if (!cfg.explicit_bools.count("link.generate_debug_info"))
+                        cfg.link.generate_debug_info = true;
+                    if (!cfg.explicit_bools.count("link_incremental"))
+                        cfg.link_incremental = true;
                 } else if (config == "Release") {
                     // Release configuration defaults
                     if (cfg.cl_compile.optimization.empty()) {
@@ -932,7 +1003,8 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                         cfg.link.enable_comdat_folding = true;
                     if (!cfg.link.optimize_references.has_value())
                         cfg.link.optimize_references = true;
-                    cfg.link.generate_debug_info = true;  // Even Release should have debug symbols
+                    if (!cfg.explicit_bools.count("link.generate_debug_info"))
+                        cfg.link.generate_debug_info = true;  // Even Release should have debug symbols
                 }
             }
         }
@@ -975,7 +1047,8 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
             }
 
             if (config == "Debug") {
-                cfg.link.generate_debug_info = true;
+                if (!cfg.explicit_bools.count("link.generate_debug_info"))
+                    cfg.link.generate_debug_info = true;
             } else {
                 if (!cfg.cl_compile.function_level_linking.has_value())
                     cfg.cl_compile.function_level_linking = true;
@@ -2944,12 +3017,14 @@ bool BuildscriptParser::parse_project_compiler_setting(const std::string& key, c
             proj.configurations[config_key].cl_compile.runtime_type_info = rtti;
         }
         proj.project_level_defaults.cl_compile.runtime_type_info = rtti;
+        proj.project_level_defaults.explicit_bools.insert("cl.runtime_type_info");
     } else if (key == "multiprocessor" || key == "mp" || key == "multi_processor_compilation") {
         bool mp = (value == "true" || value == "yes" || value == "1");
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.multi_processor_compilation = mp;
         }
         proj.project_level_defaults.cl_compile.multi_processor_compilation = mp;
+        proj.project_level_defaults.explicit_bools.insert("cl.multi_processor_compilation");
     } else if (key == "simd" || key == "enhanced_instruction_set") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.enhanced_instruction_set = value;
@@ -3218,6 +3293,7 @@ bool BuildscriptParser::parse_project_linker_setting(const std::string& key, con
             proj.configurations[config_key].link.fixed_base_address = val;
         }
         proj.project_level_defaults.link.fixed_base_address = val;
+        proj.project_level_defaults.explicit_bools.insert("link.fixed_base_address");
     } else if (key == "randomized_base_address" || key == "dynamic_base") {
         bool val = (value == "true" || value == "yes" || value == "1");
         for (const auto& config_key : state.solution->get_config_keys()) {
@@ -3589,6 +3665,7 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
     if (!state.current_project) return false;
     
     auto& cfg = state.current_project->configurations[config_key];
+    mark_explicit_bool(cfg, key);
     
     // Configuration-specific settings
     if (key == "type" || key == "configuration_type") {
@@ -4040,21 +4117,21 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
     if (derived.character_set.empty()) derived.character_set = tmpl.character_set;
     if (!derived.use_debug_libraries && tmpl.use_debug_libraries)
         derived.use_debug_libraries = tmpl.use_debug_libraries;
-    if (!derived.whole_program_optimization && tmpl.whole_program_optimization)
-        derived.whole_program_optimization = tmpl.whole_program_optimization;
+    if (!derived.link.large_address_aware && tmpl.link.large_address_aware)
+        derived.link.large_address_aware = tmpl.link.large_address_aware;
+    merge_bool_settings(derived, tmpl, true);
     if (derived.use_of_mfc.empty()) derived.use_of_mfc = tmpl.use_of_mfc;
     if (derived.use_of_atl.empty()) derived.use_of_atl = tmpl.use_of_atl;
     if (derived.out_dir.empty()) derived.out_dir = tmpl.out_dir;
     if (derived.int_dir.empty()) derived.int_dir = tmpl.int_dir;
     if (derived.target_name.empty()) derived.target_name = tmpl.target_name;
     if (derived.target_ext.empty()) derived.target_ext = tmpl.target_ext;
-    if (!derived.link_incremental && tmpl.link_incremental)
-        derived.link_incremental = tmpl.link_incremental;
     if (derived.executable_path.empty()) derived.executable_path = tmpl.executable_path;
-    if (derived.generate_manifest == true && tmpl.generate_manifest == false)
+    if (!derived.explicit_bools.count("generate_manifest") &&
+        (tmpl.explicit_bools.count("generate_manifest") || (derived.generate_manifest && !tmpl.generate_manifest))) {
         derived.generate_manifest = tmpl.generate_manifest;
-    if (!derived.ignore_import_library && tmpl.ignore_import_library)
-        derived.ignore_import_library = tmpl.ignore_import_library;
+        if (tmpl.explicit_bools.count("generate_manifest")) derived.explicit_bools.insert("generate_manifest");
+    }
     if (derived.import_library.empty()) derived.import_library = tmpl.import_library;
 
     // Compiler settings - copy if derived hasn't set them
@@ -4078,32 +4155,16 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
     if (d_cl.disable_specific_warnings.empty())
         d_cl.disable_specific_warnings = t_cl.disable_specific_warnings;
 
-    if (!d_cl.string_pooling && t_cl.string_pooling) d_cl.string_pooling = t_cl.string_pooling;
-    if (!d_cl.minimal_rebuild && t_cl.minimal_rebuild) d_cl.minimal_rebuild = t_cl.minimal_rebuild;
     if (d_cl.exception_handling.empty()) d_cl.exception_handling = t_cl.exception_handling;
     if (d_cl.basic_runtime_checks.empty()) d_cl.basic_runtime_checks = t_cl.basic_runtime_checks;
     if (d_cl.runtime_library.empty()) d_cl.runtime_library = t_cl.runtime_library;
-    if (!d_cl.buffer_security_check && t_cl.buffer_security_check)
-        d_cl.buffer_security_check = t_cl.buffer_security_check;
     if (!d_cl.function_level_linking.has_value() && t_cl.function_level_linking.has_value())
         d_cl.function_level_linking = t_cl.function_level_linking;
     if (d_cl.enhanced_instruction_set.empty())
         d_cl.enhanced_instruction_set = t_cl.enhanced_instruction_set;
     if (d_cl.floating_point_model.empty()) d_cl.floating_point_model = t_cl.floating_point_model;
-    if (!d_cl.force_conformance_in_for_loop_scope && t_cl.force_conformance_in_for_loop_scope)
-        d_cl.force_conformance_in_for_loop_scope = t_cl.force_conformance_in_for_loop_scope;
-    if (!d_cl.runtime_type_info && t_cl.runtime_type_info)
-        d_cl.runtime_type_info = t_cl.runtime_type_info;
     if (!d_cl.support_just_my_code.has_value())
         d_cl.support_just_my_code = t_cl.support_just_my_code;
-    if (!d_cl.openmp_support && t_cl.openmp_support)
-        d_cl.openmp_support = t_cl.openmp_support;
-    if (!d_cl.treat_wchar_t_as_built_in_type && t_cl.treat_wchar_t_as_built_in_type)
-        d_cl.treat_wchar_t_as_built_in_type = t_cl.treat_wchar_t_as_built_in_type;
-    if (!d_cl.expand_attributed_source && t_cl.expand_attributed_source)
-        d_cl.expand_attributed_source = t_cl.expand_attributed_source;
-    if (!d_cl.treat_warning_as_error && t_cl.treat_warning_as_error)
-        d_cl.treat_warning_as_error = t_cl.treat_warning_as_error;
     if (!d_cl.utf8_source.has_value() && t_cl.utf8_source.has_value())
         d_cl.utf8_source = t_cl.utf8_source;
 
@@ -4115,18 +4176,12 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
     if (d_cl.object_file_name.empty()) d_cl.object_file_name = t_cl.object_file_name;
     if (d_cl.program_database_file_name.empty())
         d_cl.program_database_file_name = t_cl.program_database_file_name;
-    if (!d_cl.generate_xml_documentation_files && t_cl.generate_xml_documentation_files)
-        d_cl.generate_xml_documentation_files = t_cl.generate_xml_documentation_files;
-    if (!d_cl.browse_information && t_cl.browse_information)
-        d_cl.browse_information = t_cl.browse_information;
     if (d_cl.browse_information_file.empty())
         d_cl.browse_information_file = t_cl.browse_information_file;
     if (d_cl.warning_level.empty()) d_cl.warning_level = t_cl.warning_level;
     if (d_cl.debug_information_format.empty())
         d_cl.debug_information_format = t_cl.debug_information_format;
     if (d_cl.compile_as.empty()) d_cl.compile_as = t_cl.compile_as;
-    if (!d_cl.multi_processor_compilation && t_cl.multi_processor_compilation)
-        d_cl.multi_processor_compilation = t_cl.multi_processor_compilation;
     if (d_cl.error_reporting.empty()) d_cl.error_reporting = t_cl.error_reporting;
     if (d_cl.additional_options.empty()) d_cl.additional_options = t_cl.additional_options;
     if (d_cl.language_standard.empty()) d_cl.language_standard = t_cl.language_standard;
@@ -4138,16 +4193,12 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
 
     if (d_link.show_progress.empty()) d_link.show_progress = t_link.show_progress;
     if (d_link.output_file.empty()) d_link.output_file = t_link.output_file;
-    if (!d_link.suppress_startup_banner && t_link.suppress_startup_banner)
-        d_link.suppress_startup_banner = t_link.suppress_startup_banner;
     if (d_link.additional_dependencies.empty())
         d_link.additional_dependencies = t_link.additional_dependencies;
     if (d_link.additional_library_directories.empty())
         d_link.additional_library_directories = t_link.additional_library_directories;
     if (d_link.ignore_specific_default_libraries.empty())
         d_link.ignore_specific_default_libraries = t_link.ignore_specific_default_libraries;
-    if (!d_link.generate_debug_info && t_link.generate_debug_info)
-        d_link.generate_debug_info = t_link.generate_debug_info;
     if (d_link.program_database_file.empty())
         d_link.program_database_file = t_link.program_database_file;
     if (d_link.sub_system.empty()) d_link.sub_system = t_link.sub_system;
@@ -4158,24 +4209,14 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
     if (d_link.base_address.empty()) d_link.base_address = t_link.base_address;
     if (d_link.target_machine.empty()) d_link.target_machine = t_link.target_machine;
     if (d_link.error_reporting.empty()) d_link.error_reporting = t_link.error_reporting;
-    if (!d_link.image_has_safe_exception_handlers && t_link.image_has_safe_exception_handlers)
-        d_link.image_has_safe_exception_handlers = t_link.image_has_safe_exception_handlers;
     if (d_link.additional_options.empty()) d_link.additional_options = t_link.additional_options;
     if (d_link.entry_point_symbol.empty()) d_link.entry_point_symbol = t_link.entry_point_symbol;
     if (d_link.version.empty()) d_link.version = t_link.version;
-    if (!d_link.generate_map_file && t_link.generate_map_file)
-        d_link.generate_map_file = t_link.generate_map_file;
     if (d_link.map_file_name.empty()) d_link.map_file_name = t_link.map_file_name;
-    if (!d_link.fixed_base_address && t_link.fixed_base_address)
-        d_link.fixed_base_address = t_link.fixed_base_address;
     if (!d_link.randomized_base_address.has_value() && t_link.randomized_base_address.has_value())
         d_link.randomized_base_address = t_link.randomized_base_address;
     if (!d_link.strip.has_value() && t_link.strip.has_value())
         d_link.strip = t_link.strip;
-    if (!d_link.large_address_aware && t_link.large_address_aware)
-        d_link.large_address_aware = t_link.large_address_aware;
-    if (!d_link.ignore_all_default_libraries && t_link.ignore_all_default_libraries)
-        d_link.ignore_all_default_libraries = t_link.ignore_all_default_libraries;
     if (d_link.module_definition_file.empty())
         d_link.module_definition_file = t_link.module_definition_file;
 
@@ -4184,10 +4225,6 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
     const auto& t_lib = tmpl.lib;
 
     if (d_lib.output_file.empty()) d_lib.output_file = t_lib.output_file;
-    if (!d_lib.suppress_startup_banner && t_lib.suppress_startup_banner)
-        d_lib.suppress_startup_banner = t_lib.suppress_startup_banner;
-    if (!d_lib.use_unicode_response_files && t_lib.use_unicode_response_files)
-        d_lib.use_unicode_response_files = t_lib.use_unicode_response_files;
     if (d_lib.additional_options.empty()) d_lib.additional_options = t_lib.additional_options;
     if (d_lib.additional_dependencies.empty())
         d_lib.additional_dependencies = t_lib.additional_dependencies;
@@ -4235,20 +4272,14 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
         derived.post_build_event = tmpl.post_build_event;
 
     // Manifest settings
-    if (!derived.manifest.suppress_startup_banner && tmpl.manifest.suppress_startup_banner)
-        derived.manifest.suppress_startup_banner = tmpl.manifest.suppress_startup_banner;
     if (derived.manifest.additional_manifest_files.empty())
         derived.manifest.additional_manifest_files = tmpl.manifest.additional_manifest_files;
 
     // XDC settings
-    if (!derived.xdcmake.suppress_startup_banner && tmpl.xdcmake.suppress_startup_banner)
-        derived.xdcmake.suppress_startup_banner = tmpl.xdcmake.suppress_startup_banner;
 
     // BSC settings
     if (derived.bscmake.output_file.empty())
         derived.bscmake.output_file = tmpl.bscmake.output_file;
-    if (!derived.bscmake.suppress_startup_banner && tmpl.bscmake.suppress_startup_banner)
-        derived.bscmake.suppress_startup_banner = tmpl.bscmake.suppress_startup_banner;
 }
 
 void BuildscriptParser::parse_uses_pch(const std::string& line, ParseState& state) {
