@@ -295,3 +295,194 @@ TEST_CASE("Makefile install-strip installs stripped copies of a configuration th
     CHECK(size_of(p.dir / "out" / "App") == size_of(plain / "usr/local/bin/App"));
 #endif
 }
+
+namespace {
+
+std::string symbols_script(const std::string& extra, const std::string& type = "exe") {
+    return "\n[solution]\nname = Sym\nconfigurations = Debug, Release\nplatforms = Linux\n\n"
+           "[project:App]\ntype = " + type + "\nsources = main.cpp\noutdir = out\nintdir = obj\n" + extra;
+}
+
+const std::map<std::string, std::string> kSymFiles = {
+    {"main.cpp", "#include <cstdio>\nint helper(int v) { return v * 2; }\nint main() { std::printf(\"%d\\n\", helper(21)); return 0; }\n"}};
+
+bool has_flag_token(const std::string& line, const std::string& flag) {
+    return (" " + line + " ").find(" " + flag + " ") != std::string::npos;
+}
+
+std::string var_line(const std::string& mk, const std::string& name) {
+    const size_t start = mk.find("\n" + name + " = ");
+    if (start == std::string::npos) return {};
+    return mk.substr(start + 1, mk.find('\n', start + 1) - start - 1);
+}
+
+} // namespace
+
+TEST_CASE("debug_symbols picks embedded, separate or no symbols; the strip key stays the fallback", "[bugfix4_makeconv]") {
+    // defaults: Debug embedded, Release none + strip (unchanged)
+    {
+        Bugfix4Project p("sym defaults", symbols_script(""), kSymFiles);
+        REQUIRE(p.generated);
+        const std::string dbg = p.makefile("App.Debug"), rel = p.makefile("App.Release");
+        CHECK(has_flag_token(var_line(dbg, "SIGHMAKE_CXXFLAGS"), "-g"));
+        CHECK(dbg.find("$(STRIP)") == std::string::npos);
+        CHECK(dbg.find("STRIP ?=") == std::string::npos);
+        CHECK_FALSE(has_flag_token(var_line(rel, "SIGHMAKE_CXXFLAGS"), "-g"));
+        CHECK(rel.find("\t$(STRIP) $@\n") != std::string::npos);
+        CHECK(rel.find("$(OBJCOPY)") == std::string::npos);
+    }
+    // an explicit debug_symbols wins over strip
+    {
+        Bugfix4Project p("sym explicit", symbols_script("debug_symbols = embedded\nstrip = true\n"), kSymFiles);
+        REQUIRE(p.generated);
+        const std::string rel = p.makefile("App.Release");
+        CHECK(has_flag_token(var_line(rel, "SIGHMAKE_CXXFLAGS"), "-g"));
+        CHECK(rel.find("$(STRIP)") == std::string::npos);
+        CHECK(rel.find("\t$(OBJCOPY)") == std::string::npos);
+    }
+    {
+        Bugfix4Project p("sym none", symbols_script("debug_symbols = none\nstrip = false\n"), kSymFiles);
+        REQUIRE(p.generated);
+        const std::string dbg = p.makefile("App.Debug");
+        CHECK_FALSE(has_flag_token(var_line(dbg, "SIGHMAKE_CXXFLAGS"), "-g"));
+        CHECK(dbg.find("\t$(STRIP) $@\n") != std::string::npos);
+    }
+    // only strip given: exactly the former behaviour
+    {
+        Bugfix4Project p("sym strip only", symbols_script("strip = false\n"), kSymFiles);
+        REQUIRE(p.generated);
+        const std::string rel = p.makefile("App.Release");
+        CHECK(has_flag_token(var_line(rel, "SIGHMAKE_CXXFLAGS"), "-g"));
+        CHECK(rel.find("$(STRIP)") == std::string::npos);
+    }
+    // aliases, a config section and an unknown value (ignored: strip decides)
+    {
+        Bugfix4Project p("sym alias", symbols_script("debug_symbols = split\n\n[config:Debug|Linux]\ndebug_symbols = off\n"), kSymFiles);
+        REQUIRE(p.generated);
+        const std::string split = p.makefile("App.Release");
+        const bool splits = split.find("--add-gnu-debuglink=") != std::string::npos ||
+                            split.find("$(DSYMUTIL)") != std::string::npos;
+        CHECK(splits);
+        CHECK_FALSE(has_flag_token(var_line(p.makefile("App.Debug"), "SIGHMAKE_CXXFLAGS"), "-g"));
+        Bugfix4Project q("sym unknown", symbols_script("debug_symbols = banana\n"), kSymFiles);
+        REQUIRE(q.generated);
+        CHECK_FALSE(has_flag_token(var_line(q.makefile("App.Release"), "SIGHMAKE_CXXFLAGS"), "-g"));
+        CHECK(q.makefile("App.Release").find("\t$(STRIP) $@\n") != std::string::npos);
+    }
+}
+
+TEST_CASE("debug_symbols = separate splits the symbols into a file next to the binary", "[bugfix4_makeconv]") {
+    Bugfix4Project p("sym separate", symbols_script("debug_symbols = separate\n"), kSymFiles);
+    REQUIRE(p.generated);
+    const std::string rel = p.makefile("App.Release");
+    CHECK(has_flag_token(var_line(rel, "SIGHMAKE_CXXFLAGS"), "-g"));
+    CHECK(rel.find("\nSTRIP ?= strip\n") != std::string::npos);
+#ifdef __APPLE__
+    CHECK(rel.find("\nDSYMUTIL ?= dsymutil\n") != std::string::npos);
+    CHECK(rel.find("\t$(DSYMUTIL) $@ -o $@.dSYM\n\t$(STRIP) $@\n") != std::string::npos);
+#else
+    CHECK(rel.find("\nOBJCOPY ?= objcopy\n") != std::string::npos);
+    CHECK(rel.find("\t$(OBJCOPY) --only-keep-debug $@ $@.debug\n\t$(STRIP) --strip-unneeded $@\n"
+                   "\t$(OBJCOPY) --add-gnu-debuglink=$@.debug $@\n") != std::string::npos);
+#endif
+    CHECK(rel.find("$(TARGET).debug $(TARGET).dSYM") != std::string::npos);  // clean
+    // the link stamp records the mode so switching it relinks
+    bool found = false;
+    for (const auto& entry : fs::recursive_directory_iterator(p.dir)) {
+        if (entry.path().filename().string().rfind("sighmake-link.Release", 0) == 0) {
+            found = bugfix4_read(entry.path()).find("[debug_symbols=separate]") != std::string::npos;
+        }
+    }
+    CHECK(found);
+#ifndef _WIN32
+    if (!bugfix4_toolchain()) {
+        WARN("make/compiler/ar/strip not available: skipping the real build");
+        return;
+    }
+    const fs::path app = p.dir / "out" / "App";
+#ifdef __linux__
+    if (bugfix4_tool("objcopy") && bugfix4_tool("readelf")) {
+        REQUIRE(bugfix4_ok(p.make("Release")));
+        REQUIRE(fs::exists(app));
+        REQUIRE(fs::exists(p.dir / "out" / "App.debug"));
+        const std::string sections = p.dir.string() + "/sections.txt";
+        const auto readelf = [&](const std::string& args, const fs::path& file) {
+            const std::string cmd = "readelf " + args + " \"" + file.string() + "\" > \"" + sections + "\" 2>&1";
+            const int status = std::system(cmd.c_str());
+            REQUIRE(status == 0);
+            return bugfix4_read(sections);
+        };
+        CHECK(readelf("-S", app).find(".debug_info") == std::string::npos);
+        CHECK(readelf("-S", p.dir / "out" / "App.debug").find(".debug_info") != std::string::npos);
+        // a debugger finds the file through the .gnu_debuglink section
+        CHECK(readelf("--string-dump=.gnu_debuglink", app).find("App.debug") != std::string::npos);
+        CHECK(p.run("\"" + app.string() + "\"") == 0);
+        CHECK(bugfix4_ok(p.make("clean")));
+        CHECK_FALSE(fs::exists(p.dir / "out" / "App.debug"));
+    } else {
+        WARN("objcopy/readelf not available: skipping the separate debug file check");
+    }
+#endif
+#ifdef __APPLE__
+    if (bugfix4_tool("dsymutil")) {
+        REQUIRE(bugfix4_ok(p.make("Release")));
+        CHECK(fs::exists(p.dir / "out" / "App.dSYM"));
+        CHECK(p.run("\"" + app.string() + "\"") == 0);
+    } else {
+        WARN("dsymutil not available: skipping the dSYM check");
+    }
+#endif
+#endif
+}
+
+#if !defined(_WIN32) && defined(__linux__)
+TEST_CASE("debug_symbols embedded keeps symbols in the binary; none and the Release default strip it", "[bugfix4_makeconv]") {
+    if (!bugfix4_toolchain() || !bugfix4_tool("readelf")) {
+        WARN("make/compiler/ar/strip/readelf not available: skipping the real build");
+        return;
+    }
+    const auto sections_of = [](const Bugfix4Project& p) {
+        const std::string out = (p.dir / "sections.txt").string();
+        const std::string cmd = "readelf -S \"" + (p.dir / "out" / "App").string() + "\" > \"" + out + "\" 2>&1";
+        const int status = std::system(cmd.c_str());
+        REQUIRE(status == 0);
+        return bugfix4_read(out);
+    };
+    {
+        Bugfix4Project p("sym embedded", symbols_script("debug_symbols = embedded\n"), kSymFiles);
+        REQUIRE(p.generated);
+        REQUIRE(bugfix4_ok(p.make("Release")));
+        const std::string sections = sections_of(p);
+        CHECK(sections.find(".debug_info") != std::string::npos);
+        CHECK(sections.find(".symtab") != std::string::npos);
+        CHECK_FALSE(fs::exists(p.dir / "out" / "App.debug"));
+    }
+    {
+        Bugfix4Project p("sym release default", symbols_script(""), kSymFiles);
+        REQUIRE(p.generated);
+        REQUIRE(bugfix4_ok(p.make("Release")));
+        const std::string sections = sections_of(p);
+        CHECK(sections.find(".debug_info") == std::string::npos);
+        CHECK(sections.find(".symtab") == std::string::npos);
+    }
+    {
+        Bugfix4Project p("sym debug none", symbols_script("debug_symbols = none\n"), kSymFiles);
+        REQUIRE(p.generated);
+        REQUIRE(bugfix4_ok(p.make("Debug")));
+        const std::string sections = sections_of(p);
+        CHECK(sections.find(".debug_info") == std::string::npos);
+        CHECK(sections.find(".symtab") == std::string::npos);
+    }
+}
+#endif
+
+TEST_CASE("debug_symbols on a static library only affects -g, nothing is split", "[bugfix4_makeconv]") {
+    Bugfix4Project p("sym static", symbols_script("debug_symbols = separate\n", "static"), kSymFiles);
+    REQUIRE(p.generated);
+    const std::string rel = p.makefile("App.Release");
+    CHECK(has_flag_token(var_line(rel, "SIGHMAKE_CXXFLAGS"), "-g"));
+    CHECK(rel.find("--only-keep-debug") == std::string::npos);
+    CHECK(rel.find("dsymutil") == std::string::npos);
+    CHECK(rel.find("$(STRIP)") == std::string::npos);
+    CHECK(rel.find(".debug") == std::string::npos);
+}
