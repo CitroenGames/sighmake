@@ -803,19 +803,19 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
             if (first_cfg->link.large_address_aware) {
                 msvc_link_opts.push_back("/LARGEADDRESSAWARE");
             }
-
-            // Link-time code generation (per-config)
-            for (const auto& cfg_name : config_names) {
-                const Configuration* cfg = find_config(project, cfg_name);
-                if (cfg && (cfg->link.optimize_references.value_or(false) || cfg->link.enable_comdat_folding.value_or(false))) {
-                    // GCC equivalent per-config
-                    // We'll handle this outside the opts collection
-                }
-            }
         }
     }
 
-    if (!msvc_link_opts.empty() || !gcc_link_opts.empty()) {
+    // Per-config gc-sections for release-type configs
+    std::vector<std::string> gc_configs;
+    for (const auto& cfg_name : config_names) {
+        const Configuration* cfg = find_config(project, cfg_name);
+        if (cfg && (cfg->link.optimize_references.value_or(false) || cfg->link.enable_comdat_folding.value_or(false))) {
+            gc_configs.push_back(cfg_name);
+        }
+    }
+
+    if (!msvc_link_opts.empty() || !gcc_link_opts.empty() || !gc_configs.empty()) {
         out << "\ntarget_link_options(" << project.name << " " << default_vis << "\n";
         for (const auto& opt : msvc_link_opts) {
             out << "    $<$<CXX_COMPILER_ID:MSVC>:" << opt << ">\n";
@@ -824,14 +824,10 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
             out << "    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:" << opt << ">\n";
         }
 
-        // Per-config gc-sections for release-type configs
-        for (const auto& cfg_name : config_names) {
-            const Configuration* cfg = find_config(project, cfg_name);
-            if (cfg && (cfg->link.optimize_references.value_or(false) || cfg->link.enable_comdat_folding.value_or(false))) {
-                out << "    $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:" << cfg_name << ">>:-Wl,--gc-sections>\n";
-                out << "    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:" << cfg_name << ">>:/OPT:REF>\n";
-                out << "    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:" << cfg_name << ">>:/OPT:ICF>\n";
-            }
+        for (const auto& cfg_name : gc_configs) {
+            out << "    $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:" << cfg_name << ">>:-Wl,--gc-sections>\n";
+            out << "    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:" << cfg_name << ">>:/OPT:REF>\n";
+            out << "    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:" << cfg_name << ">>:/OPT:ICF>\n";
         }
 
         out << ")\n";

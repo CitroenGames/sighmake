@@ -139,3 +139,27 @@ target_link_libraries(App PRIVATE debug dbgonly optimized optonly general both p
     CHECK(contains(rel, "plain.lib"));
 }
 
+// ============================================================================
+// Release-only link optimisation flags
+// ============================================================================
+
+TEST_CASE("bugfix2_cmake: gc-sections is written even without other linker options", "[bugfix2_cmake]") {
+    auto result = generate_cmake(R"(
+[solution]
+name = T
+configurations = Final
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp
+
+[config:Final|x64]
+optimize_references = true
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("-Wl,--gc-sections") != std::string::npos);
+    CHECK(c.find("/OPT:REF") != std::string::npos);
+}
+
