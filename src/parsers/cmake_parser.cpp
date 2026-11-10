@@ -1492,8 +1492,17 @@ std::string CMakeParser::evaluate_generator_expression(const std::string& expr, 
 }
 
 std::string CMakeParser::evaluate_simple_gen_expr(const std::string& expr, const GenExprContext& ctx) {
-    // Parse expression type and arguments
-    size_t colon = expr.find(':');
+    // Parse expression type and arguments; the separating ':' is the first one outside nested $<...>
+    size_t colon = std::string::npos;
+    int nest = 0;
+    for (size_t k = 0; k < expr.size(); ++k) {
+        if (expr[k] == '<' && k > 0 && expr[k - 1] == '$') nest++;
+        else if (expr[k] == '>' && nest > 0) nest--;
+        else if (expr[k] == ':' && nest == 0) {
+            colon = k;
+            break;
+        }
+    }
 
     // Boolean expressions without colon
     if (colon == std::string::npos) {
@@ -1517,7 +1526,13 @@ std::string CMakeParser::evaluate_simple_gen_expr(const std::string& expr, const
 
     // CONFIG expression: $<CONFIG:Debug>
     if (type == "CONFIG") {
-        return (args == ctx.current_config) ? "1" : "0";
+        // Case-insensitive; CMake 3.19+ accepts a comma-separated list
+        std::stringstream cfgs(args);
+        std::string cfg;
+        while (std::getline(cfgs, cfg, ',')) {
+            if (to_lower(cfg) == to_lower(ctx.current_config)) return "1";
+        }
+        return "0";
     }
 
     // Platform/architecture checks
@@ -1566,7 +1581,7 @@ std::string CMakeParser::evaluate_simple_gen_expr(const std::string& expr, const
         std::string current;
         int depth = 0;
         for (char c : args) {
-            if (c == '$' && current.size() > 0 && current.back() == '<') depth++;
+            if (c == '<' && current.size() > 0 && current.back() == '$') depth++;
             if (c == '>') depth--;
             if (c == ',' && depth == 0) {
                 parts.push_back(current);
@@ -1590,7 +1605,7 @@ std::string CMakeParser::evaluate_simple_gen_expr(const std::string& expr, const
         std::string current;
         int depth = 0;
         for (char c : args) {
-            if (c == '$' && current.size() > 0 && current.back() == '<') depth++;
+            if (c == '<' && current.size() > 0 && current.back() == '$') depth++;
             if (c == '>') depth--;
             if (c == ',' && depth == 0) {
                 parts.push_back(current);
