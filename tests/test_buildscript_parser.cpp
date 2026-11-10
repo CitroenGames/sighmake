@@ -2880,6 +2880,82 @@ module_def = ../EngineCode/C4Module.def
     std::filesystem::remove_all(temp_dir, ec);
 }
 
+TEST_CASE("Parser applies a settings-only fragment to every project that includes it", "[buildscript_parser]") {
+    auto temp_dir = std::filesystem::temp_directory_path() / "sighmake_test_shared_fragment";
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+    std::filesystem::create_directories(temp_dir / "lib", ec);
+    std::ofstream(temp_dir / "lib" / "a.cpp") << "int a() { return 1; }\n";
+    std::ofstream(temp_dir / "lib" / "settings.buildscript") << R"(
+type = lib
+std = 17
+sources = a.cpp
+defines = SHARED_SETTING
+
+[config:Release|x64]
+optimization = MaxSpeed
+)";
+    std::ofstream(temp_dir / "root.buildscript") << R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64
+
+[project:WithHooks]
+include = lib/settings.buildscript
+defines = HOOKS
+
+[project:NoHooks]
+include = lib/settings.buildscript
+)";
+
+    BuildscriptParser parser;
+    auto sol = parser.parse((temp_dir / "root.buildscript").string());
+    REQUIRE(sol.projects.size() == 2);
+    for (const auto& proj : sol.projects) {
+        INFO(proj.name);
+        const auto& cfg = proj.configurations.at("Release|x64");
+        CHECK(cfg.config_type == "StaticLibrary");
+        CHECK(cfg.cl_compile.optimization == "MaxSpeed");
+        CHECK(proj.sources.size() == 1);
+        const auto& defs = cfg.cl_compile.preprocessor_definitions;
+        CHECK(std::find(defs.begin(), defs.end(), "SHARED_SETTING") != defs.end());
+        CHECK((std::find(defs.begin(), defs.end(), "HOOKS") != defs.end()) == (proj.name == "WithHooks"));
+    }
+    std::filesystem::remove_all(temp_dir, ec);
+}
+
+TEST_CASE("Parser includes a file that declares projects only once", "[buildscript_parser]") {
+    auto temp_dir = std::filesystem::temp_directory_path() / "sighmake_test_include_once";
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+    std::filesystem::create_directories(temp_dir, ec);
+    std::ofstream(temp_dir / "core.buildscript") << R"(
+[project:Core]
+type = lib
+)";
+    std::ofstream(temp_dir / "self.buildscript") << R"(
+[project:Self]
+type = lib
+include = self.buildscript
+)";
+    std::ofstream(temp_dir / "root.buildscript") << R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64
+
+include = core.buildscript
+include = core.buildscript
+include = self.buildscript
+)";
+
+    BuildscriptParser parser;
+    auto sol = parser.parse((temp_dir / "root.buildscript").string());
+    CHECK(sol.projects.size() == 2);  // Core once, and the self-including file does not loop
+    std::filesystem::remove_all(temp_dir, ec);
+}
+
 TEST_CASE("Parser handles sys_lib type", "[buildscript_parser]") {
     BuildscriptParser parser;
     auto sol = parser.parse_string(R"(

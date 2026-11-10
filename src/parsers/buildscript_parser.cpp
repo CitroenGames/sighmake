@@ -1887,12 +1887,10 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
         canonical_path = fs::absolute(full_path).string();
     }
 
-    // Check for circular includes
-    for (const auto& included : state.included_files) {
-        if (included == canonical_path) {
-            std::cerr << "Warning: Circular include detected: " << include_path << "\n";
-            return;
-        }
+    // A file that is including itself, directly or through other files, is a real cycle.
+    if (std::find(state.include_stack.begin(), state.include_stack.end(), canonical_path) != state.include_stack.end()) {
+        std::cerr << "Warning: Circular include detected: " << include_path << "\n";
+        return;
     }
 
     // Check if file exists
@@ -1900,9 +1898,6 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
         std::cerr << "Warning: Include file not found: " << include_path << "\n";
         return;
     }
-
-    // Mark as included
-    state.included_files.push_back(canonical_path);
 
     // Read and parse the included file
     std::ifstream file(canonical_path);
@@ -1916,6 +1911,31 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
 
     // Pre-process content to handle multiline values (""")
     std::string processed_content = preprocess_multiline(buffer.str());
+
+    // A file that declares projects (or the solution) is included once: a second include would
+    // declare its projects again. A settings-only fragment (keys, [config:...] sections, if()
+    // blocks) is applied again every time, so several projects can share one fragment.
+    const bool already_included = std::find(state.included_files.begin(), state.included_files.end(),
+                                            canonical_path) != state.included_files.end();
+    if (already_included) {
+        bool declares_projects = false;
+        std::istringstream scan(processed_content);
+        std::string scan_line;
+        while (std::getline(scan, scan_line)) {
+            const std::string t = trim(scan_line);
+            if (t.rfind("[project:", 0) == 0 || t.rfind("[solution", 0) == 0) {
+                declares_projects = true;
+                break;
+            }
+        }
+        if (declares_projects) {
+            std::cerr << "Warning: Circular include detected: " << include_path << "\n";
+            return;
+        }
+    } else {
+        state.included_files.push_back(canonical_path);
+    }
+    state.include_stack.push_back(canonical_path);
 
     // Parse the included content with the same state
     std::istringstream stream(processed_content);
@@ -1941,6 +1961,7 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
     }
 
     // Restore original state
+    state.include_stack.pop_back();
     state.line_number = saved_line_number;
     state.base_path = saved_base_path;
     state.current_project = saved_current_project;

@@ -300,6 +300,22 @@ are restored. Circular includes and missing files produce warnings. Settings-onl
 fragments are the safest use because project declarations inside an include can
 make ownership and ordering difficult to follow.
 
+A settings-only fragment (keys, `[config:...]` sections and conditional blocks,
+no `[project:...]` or `[solution]` section) is applied every time it is
+included, so several projects can share one: two library variants that must
+compile with identical flags each include the same fragment and add only what
+differs. A file that declares projects is included once; a repeated include of
+it is skipped with a warning.
+
+```ini
+[project:Widgets]
+include = widgets_settings.buildscript
+defines = WIDGETS_TEST_HOOKS
+
+[project:WidgetsNoHooks]
+include = widgets_settings.buildscript
+```
+
 ### Variables
 
 Buildscript substitution uses `${NAME}`:

@@ -32,7 +32,8 @@ private:
         std::vector<std::string> current_config_targets;  // Expanded cells of a wildcard [config:*|...] section
         std::string base_path;
         int line_number = 0;
-        std::vector<std::string> included_files;  // Track included files to prevent circular includes
+        std::vector<std::string> included_files;  // Every file included so far (files declaring projects are included once)
+        std::vector<std::string> include_stack;   // Files being included right now (circular include detection)
         std::string uses_pch_accumulator;  // Accumulate multi-line uses_pch() calls
         bool in_uses_pch = false;  // Track if we're inside a uses_pch() call
         std::string target_link_libraries_accumulator;  // Accumulate multi-line target_link_libraries() calls
