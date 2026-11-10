@@ -418,6 +418,7 @@ void CMakeGenerator::write_compile_options(std::ostream& out, const Project& pro
     if (config_type == "Utility") return;
 
     auto config_names = get_config_names(solution);
+    const std::string cid = detect_project_language(project) == "C" ? "C_COMPILER_ID" : "CXX_COMPILER_ID";
 
     // Collect MSVC and GCC/Clang options per config
     struct ConfigOpts {
@@ -571,24 +572,24 @@ void CMakeGenerator::write_compile_options(std::ostream& out, const Project& pro
     // Shared MSVC options
     if (!shared_msvc.empty()) {
         for (const auto& opt : shared_msvc) {
-            out << "    $<$<CXX_COMPILER_ID:MSVC>:" << opt << ">\n";
+            out << "    $<$<" << cid << ":MSVC>:" << opt << ">\n";
         }
     }
 
     // Shared GCC/Clang options
     if (!shared_gcc.empty()) {
         for (const auto& opt : shared_gcc) {
-            out << "    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:" << opt << ">\n";
+            out << "    $<$<NOT:$<" << cid << ":MSVC>>:" << opt << ">\n";
         }
     }
 
     // Per-config options
     for (const auto& pc : per_config) {
         for (const auto& opt : pc.msvc_opts) {
-            out << "    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:" << pc.name << ">>:" << opt << ">\n";
+            out << "    $<$<AND:$<" << cid << ":MSVC>,$<CONFIG:" << pc.name << ">>:" << opt << ">\n";
         }
         for (const auto& opt : pc.gcc_opts) {
-            out << "    $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:" << pc.name << ">>:" << opt << ">\n";
+            out << "    $<$<AND:$<NOT:$<" << cid << ":MSVC>>,$<CONFIG:" << pc.name << ">>:" << opt << ">\n";
         }
     }
 
@@ -653,6 +654,7 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
 
     // Per-config libs
     auto config_names = get_config_names(solution);
+    const std::string cid = detect_project_language(project) == "C" ? "C_COMPILER_ID" : "CXX_COMPILER_ID";
     struct ConfigLibs {
         std::string name;
         std::vector<std::string> libs;
@@ -818,16 +820,16 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
     if (!msvc_link_opts.empty() || !gcc_link_opts.empty() || !gc_configs.empty()) {
         out << "\ntarget_link_options(" << project.name << " " << default_vis << "\n";
         for (const auto& opt : msvc_link_opts) {
-            out << "    $<$<CXX_COMPILER_ID:MSVC>:" << opt << ">\n";
+            out << "    $<$<" << cid << ":MSVC>:" << opt << ">\n";
         }
         for (const auto& opt : gcc_link_opts) {
-            out << "    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:" << opt << ">\n";
+            out << "    $<$<NOT:$<" << cid << ":MSVC>>:" << opt << ">\n";
         }
 
         for (const auto& cfg_name : gc_configs) {
-            out << "    $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:" << cfg_name << ">>:-Wl,--gc-sections>\n";
-            out << "    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:" << cfg_name << ">>:/OPT:REF>\n";
-            out << "    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:" << cfg_name << ">>:/OPT:ICF>\n";
+            out << "    $<$<AND:$<NOT:$<" << cid << ":MSVC>>,$<CONFIG:" << cfg_name << ">>:-Wl,--gc-sections>\n";
+            out << "    $<$<AND:$<" << cid << ":MSVC>,$<CONFIG:" << cfg_name << ">>:/OPT:REF>\n";
+            out << "    $<$<AND:$<" << cid << ":MSVC>,$<CONFIG:" << cfg_name << ">>:/OPT:ICF>\n";
         }
 
         out << ")\n";

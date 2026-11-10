@@ -163,3 +163,26 @@ optimize_references = true
     CHECK(c.find("/OPT:REF") != std::string::npos);
 }
 
+// ============================================================================
+// C-only projects
+// ============================================================================
+
+TEST_CASE("bugfix2_cmake: C-only projects guard flags with the C compiler id", "[bugfix2_cmake]") {
+    auto result = generate_cmake(R"(
+[solution]
+name = T
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.c
+warning_level = Level3
+subsystem = Console
+)", {{"main.c", "int main(void) { return 0; }\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("$<C_COMPILER_ID:MSVC>") != std::string::npos);
+    CHECK(c.find("CXX_COMPILER_ID") == std::string::npos);
+}
+
