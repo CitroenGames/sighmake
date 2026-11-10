@@ -1103,8 +1103,29 @@ void CMakeParser::handle_target_link_libraries(const std::vector<std::string>& a
     // State machine: track current visibility (default PUBLIC for backward compat)
     DependencyVisibility current_visibility = DependencyVisibility::PUBLIC;
 
+    // `debug` / `optimized` / `general` apply to the library that follows them
+    enum class ConfigFilter { General, Debug, Optimized };
+    ConfigFilter filter = ConfigFilter::General;
+    auto applies_to = [&](const std::string& config_key) {
+        if (filter == ConfigFilter::General) return true;
+        const bool is_debug = to_lower(config_key.substr(0, config_key.find('|'))) == "debug";
+        return (filter == ConfigFilter::Debug) == is_debug;
+    };
+
     for (size_t i = 1; i < args.size(); ++i) {
         const std::string& arg = args[i];
+
+        if (arg == "debug" || arg == "optimized" || arg == "general") {
+            if (i + 1 < args.size()) {
+                filter = arg == "debug" ? ConfigFilter::Debug
+                       : arg == "optimized" ? ConfigFilter::Optimized : ConfigFilter::General;
+                continue;
+            }
+        }
+        struct FilterReset {
+            ConfigFilter& f;
+            ~FilterReset() { f = ConfigFilter::General; }
+        } filter_reset{filter};
 
         // Check for visibility keywords (DON'T skip, track them!)
         if (arg == "PUBLIC") {
@@ -1121,6 +1142,7 @@ void CMakeParser::handle_target_link_libraries(const std::vector<std::string>& a
         // If there's a generator expression, evaluate it per-config
         if (is_generator_expression(arg)) {
             for (const auto& config_key : state.solution->get_config_keys()) {
+                if (!applies_to(config_key)) continue;
                 // Parse config_key to get config and platform
                 size_t pipe_pos = config_key.find('|');
                 std::string config = config_key.substr(0, pipe_pos);
@@ -1225,6 +1247,7 @@ void CMakeParser::handle_target_link_libraries(const std::vector<std::string>& a
 
         // Add to all configurations
         for (const auto& config_key : state.solution->get_config_keys()) {
+            if (!applies_to(config_key)) continue;
             auto& deps = proj->configurations[config_key].link.additional_dependencies;
 
             // Avoid duplicates

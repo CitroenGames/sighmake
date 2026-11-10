@@ -49,7 +49,8 @@ private:
     void write_per_file_settings(std::ostream& out, const Project& project, const Solution& solution,
                                  const std::string& project_dir);
     void write_build_events(std::ostream& out, const Project& project, const Solution& solution);
-    void write_custom_build_rules(std::ostream& out, const Project& project, const std::string& project_dir);
+    void write_custom_build_rules(std::ostream& out, const Project& project, const Solution& solution,
+                                  const std::string& project_dir);
     void write_nasm_support(std::ostream& out, const Project& project, const Solution& solution,
                             const std::string& project_dir);
 

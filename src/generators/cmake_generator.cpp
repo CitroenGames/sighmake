@@ -25,6 +25,149 @@ std::string cmake_arg(const std::string& value) {
     if (!value.empty() && value.find_first_of(" \t\n\"()#\\") == std::string::npos) return value;
     return cmake_quote(value);
 }
+
+// True when `text` starts like a Windows path or a path made of a variable reference
+bool starts_like_path(const std::string& text, size_t pos) {
+    auto at = [&](size_t i) { return pos + i < text.size() ? text[pos + i] : '\0'; };
+    if (std::isalpha(static_cast<unsigned char>(at(0))) && at(1) == ':' && (at(2) == '\\' || at(2) == '/')) return true;
+    if (at(0) == '.' && at(1) == '\\') return true;
+    if (at(0) == '.' && at(1) == '.' && at(2) == '\\') return true;
+    if (at(0) == '\\' && at(1) == '\\') return true;
+    return (at(0) == '$' && (at(1) == '{' || at(1) == '(' || at(1) == '<')) || at(0) == '%';
+}
+
+// Converts the backslashes of a build command line. Windows path separators become `/`. Backslashes
+// inside a quoted string that does not start like a path are escape sequences for the program
+// (`printf "a\n"`) and stay. With `words` false the result is CMake source text (quotes kept, kept
+// backslashes escaped); with `words` true it is the list of decoded arguments.
+std::vector<std::string> convert_command(const std::string& command, bool words) {
+    std::vector<std::string> result;
+    std::string current;
+    bool in_word = false;
+    char quote = 0;
+    bool path_region = false;
+    auto flush = [&]() {
+        if (in_word) result.push_back(current);
+        current.clear();
+        in_word = false;
+    };
+    for (size_t i = 0; i < command.size(); ++i) {
+        char c = command[i];
+        if (quote == 0 && std::isspace(static_cast<unsigned char>(c))) {
+            if (words) flush();
+            else current += c;
+            continue;
+        }
+        in_word = true;
+        if (quote == 0 && (c == '"' || c == '\'')) {
+            quote = c;
+            path_region = starts_like_path(command, i + 1);
+            if (!words) current += c;
+        } else if (quote != 0 && c == quote) {
+            quote = 0;
+            if (!words) current += c;
+        } else if (c == '\\') {
+            // CMake passes arguments to the shell without escaping backslashes, so a backslash that
+            // must reach the program is doubled in the argument (`bs` is one backslash of the
+            // argument, written as CMake source text when `words` is false)
+            const std::string bs = words ? "\\" : "\\\\";
+            const char next = i + 1 < command.size() ? command[i + 1] : '\0';
+            if (quote == 0 || path_region) {
+                if (quote == 0 && next == '"') {
+                    current += bs + (words ? "\"" : "\\\"");
+                    ++i;
+                } else {
+                    current += '/';
+                }
+            } else if (quote == '"' && next == '"') {
+                current += bs + (words ? "\"" : "\\\"");
+                ++i;
+            } else if (quote == '"' && next == '\\') {
+                current += bs + bs;
+                ++i;
+            } else {
+                current += bs + bs;
+            }
+        } else {
+            current += c;
+        }
+    }
+    if (words) flush();
+    else result.push_back(current);
+    return result;
+}
+
+std::string command_to_cmake(const std::string& command) {
+    return convert_command(command, false).front();
+}
+
+// Compiler/linker options split by whether every configuration agrees on them.
+struct ConfigFlagSets {
+    std::vector<std::string> shared_msvc;
+    std::vector<std::string> shared_gcc;
+    std::map<std::string, std::pair<std::vector<std::string>, std::vector<std::string>>> per_config;
+};
+
+// Evaluates one setting for every configuration: when all configurations produce the same options
+// they are shared, otherwise each configuration gets its own (guarded) options.
+template <typename Fn>
+void add_setting(ConfigFlagSets& sets, const std::vector<std::pair<std::string, const Configuration*>>& configs,
+                 Fn fn) {
+    using Flags = std::pair<std::vector<std::string>, std::vector<std::string>>;
+    std::vector<Flags> flags(configs.size());
+    bool same = true;
+    for (size_t i = 0; i < configs.size(); ++i) {
+        fn(*configs[i].second, flags[i].first, flags[i].second);
+        if (flags[i] != flags[0]) same = false;
+    }
+    if (configs.empty()) return;
+    if (same) {
+        sets.shared_msvc.insert(sets.shared_msvc.end(), flags[0].first.begin(), flags[0].first.end());
+        sets.shared_gcc.insert(sets.shared_gcc.end(), flags[0].second.begin(), flags[0].second.end());
+        return;
+    }
+    for (size_t i = 0; i < configs.size(); ++i) {
+        auto& target = sets.per_config[configs[i].first];
+        target.first.insert(target.first.end(), flags[i].first.begin(), flags[i].first.end());
+        target.second.insert(target.second.end(), flags[i].second.begin(), flags[i].second.end());
+    }
+}
+
+// Writes `COMMAND` lines. `commands` holds one (configuration, command text) pair per configuration;
+// with `all_same` the first entry is written once for every configuration, otherwise each command is
+// guarded so it only exists in its own configuration.
+void write_command_lines(std::ostream& out, const std::vector<std::pair<std::string, std::string>>& commands,
+                         bool all_same) {
+    for (const auto& [cfg_name, command] : commands) {
+        if (command.empty()) continue;
+        // Each line is a separate command
+        std::istringstream lines(unescape_newlines(command));
+        std::string line;
+        while (std::getline(lines, line)) {
+            line = trim(line);
+            if (line.empty()) continue;
+            if (all_same) {
+                out << "    COMMAND " << command_to_cmake(line) << "\n";
+                continue;
+            }
+            // Configuration-specific: every word becomes empty in the other configurations,
+            // which drops the command there
+            out << "    COMMAND";
+            for (const auto& word : convert_command(line, true)) {
+                std::string escaped;
+                for (char c : word) {
+                    if (c == '>') escaped += "$<ANGLE-R>";
+                    else if (c == ',') escaped += "$<COMMA>";
+                    else if (c == ';') escaped += "$<SEMICOLON>";
+                    else escaped += c;
+                }
+                out << " " << cmake_arg("$<$<CONFIG:" + cfg_name + ">:" + escaped + ">");
+            }
+            out << "\n";
+        }
+        if (all_same) break;
+    }
+}
 }
 
 
@@ -374,6 +517,7 @@ void CMakeGenerator::write_compile_options(std::ostream& out, const Project& pro
     if (config_type == "Utility") return;
 
     auto config_names = get_config_names(solution);
+    const std::string cid = detect_project_language(project) == "C" ? "C_COMPILER_ID" : "CXX_COMPILER_ID";
 
     // Collect MSVC and GCC/Clang options per config
     struct ConfigOpts {
@@ -383,66 +527,80 @@ void CMakeGenerator::write_compile_options(std::ostream& out, const Project& pro
     };
     std::vector<ConfigOpts> per_config;
 
-    // Shared options (non-config-specific)
-    std::vector<std::string> shared_msvc;
-    std::vector<std::string> shared_gcc;
-
-    // Get the first config for shared options
-    const Configuration* first_config = nullptr;
-    for (const auto& [key, config] : project.configurations) {
-        first_config = &config;
-        break;
+    // The configurations of the solution (one per name); settings they disagree on are written per configuration
+    std::vector<std::pair<std::string, const Configuration*>> configs;
+    for (const auto& cfg_name : config_names) {
+        if (const Configuration* config = find_config(project, cfg_name)) configs.emplace_back(cfg_name, config);
     }
-    if (!first_config) return;
+    if (configs.empty() && !project.configurations.empty()) {
+        configs.emplace_back("", &project.configurations.begin()->second);
+    }
+    if (configs.empty()) return;
+    const Configuration* first_config = configs.front().second;
 
-    // Warning level (usually same across configs)
-    if (const auto* wl = flags::find_warning_level(first_config->cl_compile.warning_level)) {
-        shared_msvc.push_back(wl->msvc);
-        std::istringstream gnu_flags(wl->gnu);
+    ConfigFlagSets sets;
+    auto split_gnu = [](const std::string& text, std::vector<std::string>& into) {
+        std::istringstream gnu_flags(text);
         std::string flag;
-        while (gnu_flags >> flag) {
-            shared_gcc.push_back(flag);
+        while (gnu_flags >> flag) into.push_back(flag);
+    };
+
+    // Warning level
+    add_setting(sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+        if (const auto* wl = flags::find_warning_level(c.cl_compile.warning_level)) {
+            msvc.push_back(wl->msvc);
+            split_gnu(wl->gnu, gcc);
         }
-    }
+    });
 
     // Exception handling
-    if (!first_config->cl_compile.exception_handling.empty()) {
-        const std::string& eh = first_config->cl_compile.exception_handling;
+    add_setting(sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+        const std::string& eh = c.cl_compile.exception_handling;
+        if (eh.empty()) return;
         if (eh == "false") {
             // No exceptions - MSVC doesn't set /EH, GCC uses -fno-exceptions
-            shared_gcc.push_back("-fno-exceptions");
+            gcc.push_back("-fno-exceptions");
         } else if (eh == "Sync") {
-            shared_msvc.push_back("/EHsc");
+            msvc.push_back("/EHsc");
         } else if (eh == "Async") {
-            shared_msvc.push_back("/EHa");
+            msvc.push_back("/EHa");
         }
-    }
+    });
 
     // RTTI
-    if (!first_config->cl_compile.runtime_type_info) {
-        shared_msvc.push_back("/GR-");
-        shared_gcc.push_back("-fno-rtti");
-    }
+    add_setting(sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+        if (!c.cl_compile.runtime_type_info) {
+            msvc.push_back("/GR-");
+            gcc.push_back("-fno-rtti");
+        }
+    });
 
     // UTF-8
-    if (first_config->cl_compile.utf8_source.value_or(false)) {
-        shared_msvc.push_back("/utf-8");
-        shared_gcc.push_back("-finput-charset=UTF-8");
-        shared_gcc.push_back("-fexec-charset=UTF-8");
-    }
+    add_setting(sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+        if (c.cl_compile.utf8_source.value_or(false)) {
+            msvc.push_back("/utf-8");
+            gcc.push_back("-finput-charset=UTF-8");
+            gcc.push_back("-fexec-charset=UTF-8");
+        }
+    });
 
     // Multi-processor compilation
-    if (first_config->cl_compile.multi_processor_compilation) {
-        shared_msvc.push_back("/MP");
-    }
+    add_setting(sets, configs, [&](const Configuration& c, auto& msvc, auto&) {
+        if (c.cl_compile.multi_processor_compilation) msvc.push_back("/MP");
+    });
 
     // Treat warnings as errors
-    if (first_config->cl_compile.treat_warning_as_error) {
-        shared_msvc.push_back("/WX");
-        shared_gcc.push_back("-Werror");
-    }
+    add_setting(sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+        if (c.cl_compile.treat_warning_as_error) {
+            msvc.push_back("/WX");
+            gcc.push_back("-Werror");
+        }
+    });
 
-    // Forced include files
+    std::vector<std::string>& shared_msvc = sets.shared_msvc;
+    std::vector<std::string>& shared_gcc = sets.shared_gcc;
+
+    // Forced include files (a -include flag and its file must stay together: first configuration)
     for (const auto& fi : first_config->cl_compile.forced_include_files) {
         shared_msvc.push_back("/FI\"" + to_cmake_path(fi) + "\"");
         shared_gcc.push_back("-include");
@@ -464,6 +622,10 @@ void CMakeGenerator::write_compile_options(std::ostream& out, const Project& pro
 
         ConfigOpts opts;
         opts.name = cfg_name;
+        if (auto it = sets.per_config.find(cfg_name); it != sets.per_config.end()) {
+            opts.msvc_opts = it->second.first;
+            opts.gcc_opts = it->second.second;
+        }
 
         // Optimization
         if (const auto* opt = flags::find_optimization(config->cl_compile.optimization)) {
@@ -527,24 +689,24 @@ void CMakeGenerator::write_compile_options(std::ostream& out, const Project& pro
     // Shared MSVC options
     if (!shared_msvc.empty()) {
         for (const auto& opt : shared_msvc) {
-            out << "    $<$<CXX_COMPILER_ID:MSVC>:" << opt << ">\n";
+            out << "    $<$<" << cid << ":MSVC>:" << opt << ">\n";
         }
     }
 
     // Shared GCC/Clang options
     if (!shared_gcc.empty()) {
         for (const auto& opt : shared_gcc) {
-            out << "    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:" << opt << ">\n";
+            out << "    $<$<NOT:$<" << cid << ":MSVC>>:" << opt << ">\n";
         }
     }
 
     // Per-config options
     for (const auto& pc : per_config) {
         for (const auto& opt : pc.msvc_opts) {
-            out << "    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:" << pc.name << ">>:" << opt << ">\n";
+            out << "    $<$<AND:$<" << cid << ":MSVC>,$<CONFIG:" << pc.name << ">>:" << opt << ">\n";
         }
         for (const auto& opt : pc.gcc_opts) {
-            out << "    $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:" << pc.name << ">>:" << opt << ">\n";
+            out << "    $<$<AND:$<NOT:$<" << cid << ":MSVC>>,$<CONFIG:" << pc.name << ">>:" << opt << ">\n";
         }
     }
 
@@ -609,6 +771,7 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
 
     // Per-config libs
     auto config_names = get_config_names(solution);
+    const std::string cid = detect_project_language(project) == "C" ? "C_COMPILER_ID" : "CXX_COMPILER_ID";
     struct ConfigLibs {
         std::string name;
         std::vector<std::string> libs;
@@ -696,98 +859,108 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
         out << ")\n";
     }
 
-    // Linker options (subsystem, entry point, etc.)
-    std::vector<std::string> msvc_link_opts;
-    std::vector<std::string> gcc_link_opts;
-
-    if (!project.configurations.empty()) {
-        const Configuration* first_cfg = nullptr;
-        for (const auto& [key, config] : project.configurations) {
-            first_cfg = &config;
-            break;
+    // Linker options (subsystem, entry point, etc.); settings the configurations disagree on are
+    // written per configuration
+    ConfigFlagSets link_sets;
+    {
+        std::vector<std::pair<std::string, const Configuration*>> configs;
+        for (const auto& cfg_name : config_names) {
+            if (const Configuration* config = find_config(project, cfg_name)) configs.emplace_back(cfg_name, config);
         }
-        if (first_cfg) {
+        if (configs.empty() && !project.configurations.empty()) {
+            configs.emplace_back("", &project.configurations.begin()->second);
+        }
+        if (!configs.empty()) {
             // Subsystem
-            if (const char* flag = flags::subsystem_to_msvc_flag(first_cfg->link.sub_system)) {
-                msvc_link_opts.push_back(flag);
-            }
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto&) {
+                if (const char* flag = flags::subsystem_to_msvc_flag(c.link.sub_system)) msvc.push_back(flag);
+            });
 
-            // Entry point
+            // Entry point (the GCC flag and its symbol must stay together: first configuration)
+            const Configuration* first_cfg = configs.front().second;
             if (!first_cfg->link.entry_point_symbol.empty()) {
-                msvc_link_opts.push_back("/ENTRY:" + first_cfg->link.entry_point_symbol);
-                gcc_link_opts.push_back("-e");
-                gcc_link_opts.push_back(first_cfg->link.entry_point_symbol);
+                link_sets.shared_msvc.push_back("/ENTRY:" + first_cfg->link.entry_point_symbol);
+                link_sets.shared_gcc.push_back("-e");
+                link_sets.shared_gcc.push_back(first_cfg->link.entry_point_symbol);
             }
 
             // Ignore all default libraries
-            if (first_cfg->link.ignore_all_default_libraries) {
-                msvc_link_opts.push_back("/NODEFAULTLIB");
-                gcc_link_opts.push_back("-nodefaultlibs");
-            }
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+                if (c.link.ignore_all_default_libraries) {
+                    msvc.push_back("/NODEFAULTLIB");
+                    gcc.push_back("-nodefaultlibs");
+                }
+            });
 
             // Ignore specific default libraries
-            for (const auto& lib : first_cfg->link.ignore_specific_default_libraries) {
-                if (!lib.empty()) {
-                    msvc_link_opts.push_back("/NODEFAULTLIB:" + lib);
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto&) {
+                for (const auto& lib : c.link.ignore_specific_default_libraries) {
+                    if (!lib.empty()) msvc.push_back("/NODEFAULTLIB:" + lib);
                 }
-            }
+            });
 
             // Additional linker options
-            if (!first_cfg->link.additional_options.empty()) {
-                std::istringstream iss(first_cfg->link.additional_options);
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+                std::istringstream iss(c.link.additional_options);
                 std::string flag;
                 while (iss >> flag) {
-                    if (!flag.empty() && flag[0] == '/') {
-                        msvc_link_opts.push_back(flag);
-                    } else if (!flag.empty() && flag[0] == '-') {
-                        gcc_link_opts.push_back(flag);
-                    }
+                    if (flag[0] == '/') msvc.push_back(flag);
+                    else if (flag[0] == '-') gcc.push_back(flag);
                 }
-            }
+            });
 
             // Generate debug info
-            if (first_cfg->link.generate_debug_info) {
-                msvc_link_opts.push_back("/DEBUG");
-            }
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto&) {
+                if (c.link.generate_debug_info) msvc.push_back("/DEBUG");
+            });
 
             // Map file
-            if (first_cfg->link.generate_map_file) {
-                msvc_link_opts.push_back("/MAP");
-            }
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto&) {
+                if (c.link.generate_map_file) msvc.push_back("/MAP");
+            });
 
             // Large address aware
-            if (first_cfg->link.large_address_aware) {
-                msvc_link_opts.push_back("/LARGEADDRESSAWARE");
-            }
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto&) {
+                if (c.link.large_address_aware) msvc.push_back("/LARGEADDRESSAWARE");
+            });
+        }
+    }
+    const std::vector<std::string>& msvc_link_opts = link_sets.shared_msvc;
+    const std::vector<std::string>& gcc_link_opts = link_sets.shared_gcc;
 
-            // Link-time code generation (per-config)
-            for (const auto& cfg_name : config_names) {
-                const Configuration* cfg = find_config(project, cfg_name);
-                if (cfg && (cfg->link.optimize_references.value_or(false) || cfg->link.enable_comdat_folding.value_or(false))) {
-                    // GCC equivalent per-config
-                    // We'll handle this outside the opts collection
-                }
-            }
+    // Per-config gc-sections for release-type configs
+    std::vector<std::string> gc_configs;
+    for (const auto& cfg_name : config_names) {
+        const Configuration* cfg = find_config(project, cfg_name);
+        if (cfg && (cfg->link.optimize_references.value_or(false) || cfg->link.enable_comdat_folding.value_or(false))) {
+            gc_configs.push_back(cfg_name);
         }
     }
 
-    if (!msvc_link_opts.empty() || !gcc_link_opts.empty()) {
+    if (!msvc_link_opts.empty() || !gcc_link_opts.empty() || !link_sets.per_config.empty() || !gc_configs.empty()) {
         out << "\ntarget_link_options(" << project.name << " " << default_vis << "\n";
         for (const auto& opt : msvc_link_opts) {
-            out << "    $<$<CXX_COMPILER_ID:MSVC>:" << opt << ">\n";
+            out << "    $<$<" << cid << ":MSVC>:" << opt << ">\n";
         }
         for (const auto& opt : gcc_link_opts) {
-            out << "    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:" << opt << ">\n";
+            out << "    $<$<NOT:$<" << cid << ":MSVC>>:" << opt << ">\n";
         }
 
-        // Per-config gc-sections for release-type configs
         for (const auto& cfg_name : config_names) {
-            const Configuration* cfg = find_config(project, cfg_name);
-            if (cfg && (cfg->link.optimize_references.value_or(false) || cfg->link.enable_comdat_folding.value_or(false))) {
-                out << "    $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<CONFIG:" << cfg_name << ">>:-Wl,--gc-sections>\n";
-                out << "    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:" << cfg_name << ">>:/OPT:REF>\n";
-                out << "    $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:" << cfg_name << ">>:/OPT:ICF>\n";
+            auto it = link_sets.per_config.find(cfg_name);
+            if (it == link_sets.per_config.end()) continue;
+            for (const auto& opt : it->second.first) {
+                out << "    $<$<AND:$<" << cid << ":MSVC>,$<CONFIG:" << cfg_name << ">>:" << opt << ">\n";
             }
+            for (const auto& opt : it->second.second) {
+                out << "    $<$<AND:$<NOT:$<" << cid << ":MSVC>>,$<CONFIG:" << cfg_name << ">>:" << opt << ">\n";
+            }
+        }
+
+        for (const auto& cfg_name : gc_configs) {
+            out << "    $<$<AND:$<NOT:$<" << cid << ":MSVC>>,$<CONFIG:" << cfg_name << ">>:-Wl,--gc-sections>\n";
+            out << "    $<$<AND:$<" << cid << ":MSVC>,$<CONFIG:" << cfg_name << ">>:/OPT:REF>\n";
+            out << "    $<$<AND:$<" << cid << ":MSVC>,$<CONFIG:" << cfg_name << ">>:/OPT:ICF>\n";
         }
 
         out << ")\n";
@@ -1208,37 +1381,11 @@ void CMakeGenerator::write_build_events(std::ostream& out, const Project& projec
         if (!message_source) return;
 
         out << "\nadd_custom_command(TARGET " << project.name << " " << when << "\n";
+        std::vector<std::pair<std::string, std::string>> commands;
         for (const auto& [cfg_name, event] : events) {
-            if (!event || event->command.empty()) continue;
-            // Each line is a separate command
-            std::istringstream lines(to_cmake_path(unescape_newlines(event->command)));
-            std::string line;
-            while (std::getline(lines, line)) {
-                line = trim(line);
-                if (line.empty()) continue;
-                if (all_same) {
-                    out << "    COMMAND " << line << "\n";
-                    continue;
-                }
-                // Configuration-specific: every word becomes empty in the other configurations,
-                // which drops the command there
-                out << "    COMMAND";
-                std::istringstream words(line);
-                std::string word;
-                while (words >> word) {
-                    std::string escaped;
-                    for (char c : word) {
-                        if (c == '>') escaped += "$<ANGLE-R>";
-                        else if (c == ',') escaped += "$<COMMA>";
-                        else if (c == ';') escaped += "$<SEMICOLON>";
-                        else escaped += c;
-                    }
-                    out << " " << cmake_arg("$<$<CONFIG:" + cfg_name + ">:" + escaped + ">");
-                }
-                out << "\n";
-            }
-            if (all_same) break;
+            commands.emplace_back(cfg_name, event ? event->command : std::string());
         }
+        write_command_lines(out, commands, all_same);
         if (!message_source->message.empty()) {
             out << "    COMMENT " << cmake_quote(message_source->message) << "\n";
         }
@@ -1255,39 +1402,129 @@ void CMakeGenerator::write_build_events(std::ostream& out, const Project& projec
 // ============================================================================
 
 void CMakeGenerator::write_custom_build_rules(std::ostream& out, const Project& project,
-                                               const std::string& project_dir) {
+                                               const Solution& solution, const std::string& project_dir) {
+    std::string config_type;
+    for (const auto& [key, config] : project.configurations) {
+        if (!config.config_type.empty()) {
+            config_type = config.config_type;
+            break;
+        }
+    }
+    auto config_names = get_config_names(solution);
+    int rule_index = 0;
+
+    // Paths and commands of a rule are relative to the buildscript, like in the Visual Studio generator
+    auto from_script = [&](const std::string& path) {
+        fs::path p(path);
+        if (p.is_relative() && !project.buildscript_path.empty()) p = fs::path(project.buildscript_path) / p;
+        return p.string();
+    };
+    std::string working_dir = "${CMAKE_CURRENT_SOURCE_DIR}";
+    if (!project.buildscript_path.empty()) {
+        std::string rel = compute_relative_path(project.buildscript_path, project_dir);
+        if (rel != ".") working_dir += "/" + rel;
+    }
+
     for (const auto& src : project.sources) {
         if (src.type != FileType::CustomBuild) continue;
 
         std::string rel_path = compute_relative_path(src.path, project_dir);
 
-        // Use the first config's custom build settings
-        std::string command, outputs, description;
-        for (const auto& [cfg_key, cmd] : src.custom_command) {
-            command = unescape_newlines(cmd);
-            break;
+        // Value of a per-configuration setting for a configuration name (ALL_CONFIGS applies to every one)
+        auto value_for = [&](const std::map<std::string, std::string>& values, const std::string& cfg_name) {
+            std::string fallback;
+            for (const auto& [cfg_key, value] : values) {
+                if (cfg_key == ALL_CONFIGS) fallback = value;
+                else if (parse_config_key(cfg_key).first == cfg_name) return value;
+            }
+            return fallback;
+        };
+
+        std::vector<std::pair<std::string, std::string>> commands;
+        std::vector<std::pair<std::string, std::string>> outputs;
+        std::string description;
+        bool commands_same = true;
+        bool outputs_same = true;
+        for (const auto& cfg_name : config_names) {
+            std::string command = value_for(src.custom_command, cfg_name);
+            std::string output = value_for(src.custom_outputs, cfg_name);
+            if (!commands.empty() && command != commands.front().second) commands_same = false;
+            if (!outputs.empty() && output != outputs.front().second) outputs_same = false;
+            commands.emplace_back(cfg_name, command);
+            outputs.emplace_back(cfg_name, output);
+            if (description.empty()) description = value_for(src.custom_message, cfg_name);
         }
-        for (const auto& [cfg_key, out_val] : src.custom_outputs) {
-            outputs = out_val;
-            break;
+        if (commands.empty()) {
+            // No solution configurations: fall back to whatever the rule declares
+            for (const auto& [cfg_key, cmd] : src.custom_command) {
+                commands.emplace_back(parse_config_key(cfg_key).first, cmd);
+                outputs.emplace_back(parse_config_key(cfg_key).first, value_for(src.custom_outputs, parse_config_key(cfg_key).first));
+                break;
+            }
+            if (!src.custom_message.empty()) description = src.custom_message.begin()->second;
         }
-        for (const auto& [cfg_key, msg] : src.custom_message) {
-            description = msg;
-            break;
+        if (std::all_of(commands.begin(), commands.end(), [](const auto& c) { return c.second.empty(); })) continue;
+
+        // Outputs are written relative to the project directory (CMake would take them relative to the
+        // build directory), one list per configuration
+        auto output_list = [&](const std::string& value) {
+            std::vector<std::string> list;
+            for (const auto& part : split_semicolons(value)) {
+                std::string t = trim(part);
+                if (t.empty()) continue;
+                std::string rel = compute_relative_path(from_script(t), project_dir);
+                if (!fs::path(rel).is_absolute()) rel = "${CMAKE_CURRENT_SOURCE_DIR}/" + rel;
+                list.push_back(rel);
+            }
+            return list;
+        };
+        std::vector<std::string> output_items;
+        for (size_t i = 0; i < outputs.size(); ++i) {
+            for (const auto& item : output_list(outputs[i].second)) {
+                output_items.push_back(outputs_same ? item : "$<$<CONFIG:" + outputs[i].first + ">:" + item + ">");
+            }
+            if (outputs_same) break;
         }
 
-        if (command.empty()) continue;
-
-        out << "\nadd_custom_command(\n";
-        if (!outputs.empty()) {
-            out << "    OUTPUT " << to_cmake_path(outputs) << "\n";
+        std::vector<std::string> depends{cmake_arg(rel_path)};
+        const std::string inputs = value_for(src.custom_inputs, config_names.empty() ? std::string() : config_names.front());
+        for (const auto& part : split_semicolons(inputs)) {
+            std::string t = trim(part);
+            if (!t.empty()) depends.push_back(cmake_arg(compute_relative_path(from_script(t), project_dir)));
         }
-        out << "    COMMAND " << to_cmake_path(command) << "\n";
-        out << "    DEPENDS " << rel_path << "\n";
+
+        const bool real_output = !output_items.empty();
+        const std::string target_name = project.name + "_custom_" + std::to_string(rule_index++);
+        if (real_output) {
+            out << "\nadd_custom_command(\n    OUTPUT";
+            for (const auto& item : output_items) out << " " << cmake_arg(item);
+            out << "\n";
+        } else {
+            out << "\nadd_custom_target(" << target_name << " ALL\n";
+        }
+        write_command_lines(out, commands, commands_same);
+        out << "    WORKING_DIRECTORY " << cmake_arg(working_dir) << "\n";
+        out << "    DEPENDS";
+        for (const auto& d : depends) out << " " << d;
+        out << "\n";
         if (!description.empty()) {
-            out << "    COMMENT \"" << description << "\"\n";
+            out << "    COMMENT " << cmake_quote(description) << "\n";
         }
         out << ")\n";
+
+        if (!real_output) {
+            out << "add_dependencies(" << project.name << " " << target_name << ")\n";
+        } else if (config_type == "Utility" || config_type == "ExternalCMake" || config_type == "AndroidApk") {
+            // An INTERFACE target would hand its generated sources to every consumer
+            out << "add_custom_target(" << target_name << " ALL DEPENDS";
+            for (const auto& item : output_items) out << " " << cmake_arg(item);
+            out << ")\n";
+            out << "add_dependencies(" << project.name << " " << target_name << ")\n";
+        } else {
+            out << "target_sources(" << project.name << " PRIVATE\n";
+            for (const auto& item : output_items) out << "    " << cmake_arg(item) << "\n";
+            out << ")\n";
+        }
     }
 }
 
@@ -1424,7 +1661,7 @@ bool CMakeGenerator::generate_project_cmakelists(const Project& project, const S
     write_build_events(out, project, solution);
 
     // Custom build rules
-    write_custom_build_rules(out, project, project_dir);
+    write_custom_build_rules(out, project, solution, project_dir);
 
     std::cout << "  Generated: " << cmake_path << "\n";
     return true;
