@@ -555,9 +555,25 @@ When omitted, the parser supplies these baseline values:
 | Other runtime | `MultiThreadedDLL` |
 | Debug info | `EditAndContinue` for `Debug|Win32`; `ProgramDatabase` otherwise |
 
-Non-Debug configurations also default to function-level linking, intrinsic
-functions, reference optimization, and COMDAT folding when those settings are
-unset. Explicit settings take precedence.
+#### Defaults per configuration name (Visual Studio generator)
+
+These depend only on the configuration name, and apply the same way whether or not the
+buildscript contains any `[config:...]` section. A section only overrides what it sets;
+an explicit value, including an explicit `false`, always wins.
+
+| Setting | `Debug` | `Release` | Other names (`Profile`, ...) |
+| --- | --- | --- | --- |
+| `optimization` | `Disabled` | `MaxSpeed` | `MaxSpeed` |
+| `runtime_library` | `MultiThreadedDebugDLL` | `MultiThreadedDLL` | `MultiThreadedDLL` |
+| Debug info format | `EditAndContinue` (Win32), `ProgramDatabase` otherwise | `ProgramDatabase` | `ProgramDatabase` |
+| `generate_debug_info` (`/DEBUG`, `.pdb`) | `true` | `true` | `false` |
+| `link_incremental` | `true` | `false` | `false` |
+| `function_level_linking`, `intrinsic_functions` | unset | `true` | `true` |
+| `optimize_references`, `enable_comdat_folding` | unset | `true` | `true` |
+| Use debug libraries | `true` | `false` | `false` |
+| Default define | `_DEBUG` | `NDEBUG` | none |
+
+Explicit settings take precedence.
 
 ### Conditional blocks
 
