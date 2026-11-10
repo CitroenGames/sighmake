@@ -3,16 +3,21 @@
 #include "parsers/buildscript_parser.hpp"
 #include "generators/makefile_generator.hpp"
 
+#include <chrono>
 #include <cstdlib>
+#include <thread>
 
 using namespace vcxproj;
 namespace fs = std::filesystem;
 
 namespace {
 
+// Generated Makefiles are written in text mode, so Windows produces CRLF; compare on LF.
 std::string bugfix4_read(const fs::path& path) {
     std::ifstream f(path, std::ios::binary);
-    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+    return text;
 }
 
 // Generates makefiles for a buildscript into a fresh temp directory holding the given files.
@@ -46,6 +51,11 @@ struct Bugfix4Project {
 #ifndef _WIN32
     // Runs `<env> make -C build <args>`; output goes to <dir>/make.log.
     int make(const std::string& args, const std::string& env = "") const {
+#ifdef __APPLE__
+        // macOS ships GNU make 3.81, which compares modification times to the second: let the
+        // previous step's files age so a rewritten flag stamp is newer than the objects.
+        std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+#endif
         const std::string cmd = "cd \"" + build_dir().string() + "\" && " + env + (env.empty() ? "" : " ") +
                                 "make " + args + " > \"" + (dir / "make.log").string() + "\" 2>&1";
         const int status = std::system(cmd.c_str());
@@ -172,6 +182,7 @@ TEST_CASE("Makefile keeps the project flags apart from the user's CXXFLAGS/CPPFL
     // (the shared library is found through its build-relative path: run from the build directory)
     CHECK(p.run("cd \"" + p.build_dir().string() + "\" && \"" + exe.string() + "\"") != 0);  // C part still not 0
     REQUIRE(bugfix4_ok(p.make("Release", "CXXFLAGS=-DUSER_FLAG CFLAGS=-DUSER_C")));
+    INFO("make log of the last step:\n" << p.log());
     CHECK(p.run("cd \"" + p.build_dir().string() + "\" && \"" + exe.string() + "\"") == 0);
     // The same flags again: nothing to rebuild.
     REQUIRE(bugfix4_ok(p.make("-n Release", "CXXFLAGS=-DUSER_FLAG CFLAGS=-DUSER_C")));
