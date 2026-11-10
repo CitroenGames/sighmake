@@ -690,10 +690,12 @@ target_link_libraries(
     Engine PUBLIC
 )
 if(Android) {
-    type = dll                    # libgame.so loaded by the NativeActivity
+    # libgame.so loaded by the NativeActivity
+    type = dll
     sources = src/android/*.cpp
+    # SDL3: an Android-only external_cmake project
     target_link_libraries(
-        SDL3 PUBLIC               # an Android-only external_cmake project
+        SDL3 PUBLIC
     )
 }
 ```
@@ -814,13 +816,16 @@ generator only. Nothing is installed or run on a device.
 type = apk
 android_package = com.example.game
 android_label = My Game
-android_native_lib = game          # NativeActivity loads libgame.so
-android_assets = content           # stored uncompressed under assets/
+# NativeActivity loads libgame.so
+android_native_lib = game
+# stored uncompressed under assets/
+android_assets = content
 android_permissions = INTERNET
 target_name = Game
 outdir = bin/android
+# type = dll projects (and external_cmake .so outputs) are packaged
 target_link_libraries(
-    GameLib PUBLIC                 # type = dll projects (and external_cmake .so outputs) are packaged
+    GameLib PUBLIC
 )
 ```
 
@@ -1541,8 +1546,8 @@ executables:
 ```ini
 [project:Plugin_Support]
 type = lib
-# auto (default) | true | false
-position_independent = true   # e.g. linked into a shared library outside this solution
+# auto (default) | true | false; true e.g. when linked into a shared library outside this solution
+position_independent = true
 ```
 
 `position_independent = false` on a static library that a shared library links

@@ -86,6 +86,7 @@ private:
         std::vector<std::string> solution_folder_stack;
         std::vector<std::string> file_filter_stack;
         std::vector<FolderKind> folder_kind_stack;
+        std::vector<size_t> folder_conditional_depth;  // conditional_stack size when each folder was opened
         bool pending_folder_brace = false;
         std::string pending_folder_name;
         FolderKind pending_folder_kind = FolderKind::Solution;
@@ -114,12 +115,29 @@ private:
                 solution_folder_stack.push_back(name);
             }
             folder_kind_stack.push_back(kind);
+            folder_conditional_depth.push_back(conditional_stack.size());
+        }
+
+        // True when the innermost open block is a folder (not an if() block opened inside it).
+        bool innermost_block_is_folder() const {
+            return !folder_conditional_depth.empty() &&
+                   folder_conditional_depth.back() == conditional_stack.size();
+        }
+
+        // A project declared inside folders opened as file filters (a folder() following another
+        // project's settings) means those folders group projects: turn them into solution folders.
+        void promote_file_filters_to_solution_folders() {
+            if (file_filter_stack.empty()) return;
+            solution_folder_stack.insert(solution_folder_stack.end(), file_filter_stack.begin(), file_filter_stack.end());
+            file_filter_stack.clear();
+            for (auto& kind : folder_kind_stack) kind = FolderKind::Solution;
         }
 
         bool pop_folder() {
             if (folder_kind_stack.empty()) return false;
             FolderKind kind = folder_kind_stack.back();
             folder_kind_stack.pop_back();
+            folder_conditional_depth.pop_back();
             if (kind == FolderKind::FileFilter) {
                 if (!file_filter_stack.empty()) file_filter_stack.pop_back();
             } else {

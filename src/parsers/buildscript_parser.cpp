@@ -236,6 +236,21 @@ static std::string rebase_library_entries(const std::string& value, const std::s
     return result;
 }
 
+// True when the final '}' of `text` closes a ${VARIABLE} reference rather than a brace list.
+static bool ends_with_variable_reference(const std::string& text) {
+    int depth = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '$' && i + 1 < text.size() && text[i + 1] == '{') {
+            ++depth;
+            ++i;
+        } else if (text[i] == '}' && depth > 0) {
+            --depth;
+            if (i + 1 == text.size()) return true;
+        }
+    }
+    return false;
+}
+
 std::string preprocess_multiline(const std::string& content) {
     std::string processed_content;
     std::istringstream preprocess_stream(content);
@@ -288,7 +303,8 @@ std::string preprocess_multiline(const std::string& content) {
             
             // Check for closing brace
             // We assume } is the last significant char or the only one
-            if (trimmed == "}" || (trimmed.size() > 0 && trimmed.back() == '}')) {
+            if (trimmed == "}" || (trimmed.size() > 0 && trimmed.back() == '}' &&
+                                   !ends_with_variable_reference(trimmed))) {
                  // If line is "file.cpp }", we should capture "file.cpp"
                  if (trimmed != "}") {
                      std::string item = trimmed.substr(0, trimmed.size() - 1);
@@ -315,9 +331,11 @@ std::string preprocess_multiline(const std::string& content) {
             continue;
         }
 
-        // Check for start of multiline value or brace block
+        // Check for start of multiline value or brace block (a comment line never starts one)
+        const std::string line_start = trim(line);
+        const bool is_comment = !line_start.empty() && (line_start[0] == '#' || line_start[0] == ';');
         size_t eq_pos = line.find('=');
-        if (eq_pos != std::string::npos) {
+        if (eq_pos != std::string::npos && !is_comment) {
             std::string value_part = line.substr(eq_pos + 1);
             size_t first_nonspace = value_part.find_first_not_of(" \t");
             
@@ -473,9 +491,10 @@ std::vector<std::string> BuildscriptParser::expand_wildcards(const std::string& 
         fs::path suffix_path(suffix);
         file_pattern = suffix_path.filename().string();
     } else {
-        fs::path full_pattern = fs::path(base_path) / pattern;
-        dir = full_pattern.parent_path().string();
-        file_pattern = full_pattern.filename().string();
+        // Relative to base_path, which is joined below (as for the recursive case)
+        fs::path pattern_path(pattern);
+        dir = pattern_path.parent_path().string();
+        file_pattern = pattern_path.filename().string();
     }
 
     if (dir.empty()) dir = ".";
@@ -629,6 +648,15 @@ Solution BuildscriptParser::parse(const std::string& filepath) {
                     : solution.name;
 
     return solution;
+}
+
+// Insert the entries of `defaults` that `target` lacks at the front of `target`, keeping their order.
+static void merge_missing_entries_front(std::vector<std::string>& target, const std::vector<std::string>& defaults) {
+    std::vector<std::string> missing;
+    for (const auto& entry : defaults) {
+        if (std::find(target.begin(), target.end(), entry) == target.end()) missing.push_back(entry);
+    }
+    target.insert(target.begin(), missing.begin(), missing.end());
 }
 
 Solution BuildscriptParser::parse_string(const std::string& content, const std::string& base_path) {
@@ -836,18 +864,17 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
             if (!cl.multi_processor_compilation && d.multi_processor_compilation)
                 cl.multi_processor_compilation = d.multi_processor_compilation;
 
-            // Vector settings: copy if empty
-            if (cl.additional_include_directories.empty() && !d.additional_include_directories.empty())
-                cl.additional_include_directories = d.additional_include_directories;
+            // Vector settings: copy if empty. Lists that accumulate (includes, libs, libdirs) get the
+            // project-level entries they are missing in front, so a [config:...] section that adds its
+            // own entries to a configuration discovered after the project settings still keeps them.
+            merge_missing_entries_front(cl.additional_include_directories, d.additional_include_directories);
             if (cl.forced_include_files.empty() && !d.forced_include_files.empty())
                 cl.forced_include_files = d.forced_include_files;
             if (cl.disable_specific_warnings.empty() && !d.disable_specific_warnings.empty())
                 cl.disable_specific_warnings = d.disable_specific_warnings;
 
-            if (cfg.link.additional_dependencies.empty() && !defs.link.additional_dependencies.empty())
-                cfg.link.additional_dependencies = defs.link.additional_dependencies;
-            if (cfg.link.additional_library_directories.empty() && !defs.link.additional_library_directories.empty())
-                cfg.link.additional_library_directories = defs.link.additional_library_directories;
+            merge_missing_entries_front(cfg.link.additional_dependencies, defs.link.additional_dependencies);
+            merge_missing_entries_front(cfg.link.additional_library_directories, defs.link.additional_library_directories);
             if (cfg.link.additional_options.empty() && !defs.link.additional_options.empty())
                 cfg.link.additional_options = defs.link.additional_options;
             if (!cfg.link.fixed_base_address && defs.link.fixed_base_address)
@@ -1248,14 +1275,15 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
              return;
         }
 
+        // Folder block closing (when the folder was opened inside the innermost if() block)
+        if (state.innermost_block_is_folder()) {
+            state.pop_folder();
+            return;
+        }
+
         if (!state.conditional_stack.empty()) {
              state.conditional_stack.pop_back();
              return;
-        }
-
-        // Folder block closing
-        if (state.pop_folder()) {
-            return;
         }
     }
 
@@ -1320,6 +1348,27 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
                 state.set_file_properties_file = find_or_create_source(file_path, state);
                 state.in_set_file_properties = true;
                 state.current_file = nullptr;  // Clear current file context
+
+                // Settings on the opening line, and the closing ')' of the single-line form
+                std::string rest = trimmed.substr(comma_pos + 1);
+                const bool single_line = parens_balanced(trimmed) && rest.rfind(')') != std::string::npos;
+                if (single_line) rest = rest.substr(0, rest.rfind(')'));
+                std::vector<std::pair<std::string, std::string>> settings;
+                for (const auto& part : split(rest, ',')) {
+                    const size_t eq = part.find('=');
+                    if (eq != std::string::npos) {
+                        settings.emplace_back(trim(part.substr(0, eq)), trim(part.substr(eq + 1)));
+                    } else if (!settings.empty()) {
+                        settings.back().second += ", " + part;  // a list value such as defines = A, B
+                    }
+                }
+                for (const auto& [setting_key, setting_value] : settings) {
+                    parse_key_value(setting_key, setting_value, state);
+                }
+                if (single_line) {
+                    state.in_set_file_properties = false;
+                    state.set_file_properties_file = nullptr;
+                }
             }
         }
         return;
@@ -1511,6 +1560,16 @@ static std::vector<std::string> expand_config_selector(const std::string& spec,
     return keys;
 }
 
+// Normalize the platform of a `[Config|Platform]` or `[Platform]` selector the way the solution matrix
+// normalizes its platforms (x86 -> Win32, android -> Android), so the selector names an existing cell.
+static std::string normalize_selector(const std::string& selector) {
+    const size_t pipe = selector.find('|');
+    if (pipe == std::string::npos) {
+        return selector == ALL_CONFIGS ? selector : normalize_platform(selector);
+    }
+    return selector.substr(0, pipe + 1) + normalize_platform(selector.substr(pipe + 1));
+}
+
 bool BuildscriptParser::parse_section(const std::string& line, ParseState& state) {
     // Extract content between [ and ], handling template suffix outside brackets
     // e.g., "[config:Release|x64] : Template:BankRelease" -> "config:Release|x64 : Template:BankRelease"
@@ -1533,6 +1592,7 @@ bool BuildscriptParser::parse_section(const std::string& line, ParseState& state
 
     // [project:name]
     if (section.rfind("project:", 0) == 0) {
+        state.promote_file_filters_to_solution_folders();
         state.solution->projects.emplace_back();
         state.current_project = &state.solution->projects.back();
         state.current_project->name = trim(section.substr(8));
@@ -1686,7 +1746,7 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
         std::string setting = rest;
         
         if (bracket_start != std::string::npos && bracket_end != std::string::npos) {
-            config_key = rest.substr(bracket_start + 1, bracket_end - bracket_start - 1);
+            config_key = normalize_selector(rest.substr(bracket_start + 1, bracket_end - bracket_start - 1));
             setting = trim(rest.substr(0, bracket_start));
         }
         
@@ -1699,7 +1759,7 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
     size_t bracket_start = key.find('[');
     size_t bracket_end = key.find(']');
     if (bracket_start != std::string::npos && bracket_end != std::string::npos) {
-        std::string config_key = key.substr(bracket_start + 1, bracket_end - bracket_start - 1);
+        std::string config_key = normalize_selector(key.substr(bracket_start + 1, bracket_end - bracket_start - 1));
         std::string setting = trim(key.substr(0, bracket_start));
 
         // Build list of config keys to apply setting to
@@ -1840,6 +1900,9 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
     // Regular key=value
     if (state.current_project == nullptr) {
         parse_solution_setting(key, resolved_value, state);
+    } else if (key == "include") {
+        // Included in the current context, also inside [config:...] and [file:...] sections
+        process_include(resolved_value, state);
     } else if (state.in_file_properties && !state.file_properties_files.empty()) {
         // If we're in a file_properties() block, apply to all files in the group
         for (const auto& file_path : state.file_properties_files) {
@@ -1951,9 +2014,14 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
     std::string saved_base_path = state.base_path;
     state.base_path = include_base.string();
 
-    // Save and restore current_project and current_file to prevent included files from affecting parent context
-    Project* saved_current_project = state.current_project;
-    SourceFile* saved_current_file = state.current_file;
+    // Save and restore current_project and current_file to prevent included files from affecting parent context.
+    // They are saved as an index and a path: projects declared by the included file can reallocate the
+    // project list, which would leave saved pointers dangling.
+    const size_t saved_project_index = state.current_project
+        ? static_cast<size_t>(state.current_project - state.solution->projects.data())
+        : state.solution->projects.size();
+    const bool had_current_project = state.current_project != nullptr;
+    const std::string saved_current_file_path = state.current_file ? state.current_file->path : std::string();
     std::string saved_current_config = state.current_config;
     auto saved_current_targets = state.current_config_targets;
     auto saved_current_section = state.current_section;
@@ -1967,8 +2035,16 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
     state.include_stack.pop_back();
     state.line_number = saved_line_number;
     state.base_path = saved_base_path;
-    state.current_project = saved_current_project;
-    state.current_file = saved_current_file;
+    state.current_project = had_current_project ? &state.solution->projects[saved_project_index] : nullptr;
+    state.current_file = nullptr;
+    if (state.current_project && !saved_current_file_path.empty()) {
+        for (auto& src : state.current_project->sources) {
+            if (src.path == saved_current_file_path) {
+                state.current_file = &src;
+                break;
+            }
+        }
+    }
     state.current_config = saved_current_config;
     state.current_config_targets = saved_current_targets;
     state.current_section = saved_current_section;
@@ -2624,6 +2700,7 @@ bool BuildscriptParser::parse_project_source_setting(const std::string& key, con
                     auto& deps = proj.configurations[config_key].link.additional_dependencies;
                     deps.push_back(path);
                 }
+                proj.project_level_defaults.link.additional_dependencies.push_back(path);
             }
         }
     } else {
@@ -3007,6 +3084,8 @@ bool BuildscriptParser::parse_project_linker_setting(const std::string& key, con
             auto& deps = proj.configurations[config_key].link.additional_dependencies;
             deps.insert(deps.end(), libs.begin(), libs.end());
         }
+        auto& def_deps = proj.project_level_defaults.link.additional_dependencies;
+        def_deps.insert(def_deps.end(), libs.begin(), libs.end());
     } else if (key == "subsystem" || key == "sub_system") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].link.sub_system = value;
@@ -3516,7 +3595,7 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
     } else if (key == "intdir" || key == "intermediate_dir") {
         cfg.int_dir = (value.find("$(") != std::string::npos)
             ? value : resolve_path(value, state.base_path);
-    } else if (key == "includes" || key == "additional_include_directories") {
+    } else if (key == "includes" || key == "include_dirs" || key == "additional_include_directories") {
         auto dirs = split(value, ',');
         std::vector<std::string> resolved_dirs;
         for (const auto& dir : dirs) {
@@ -3527,11 +3606,11 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
     } else if (key == "forced_includes" || key == "forced_include_files") {
         auto files = split(value, ',');
         cfg.cl_compile.forced_include_files = files;
-    } else if (key == "defines" || key == "preprocessor_definitions") {
+    } else if (key == "defines" || key == "preprocessor" || key == "preprocessor_definitions") {
         auto defs = split(value, ',');
         cfg.cl_compile.preprocessor_definitions.insert(
             cfg.cl_compile.preprocessor_definitions.end(), defs.begin(), defs.end());
-    } else if (key == "libs" || key == "additional_dependencies") {
+    } else if (key == "libs" || key == "link_libs" || key == "additional_dependencies") {
         // Config-level libs should go into AdditionalDependencies
         auto libs = split(rebase_library_entries(value, state.base_path), ',');
         // For static libraries, use lib.additional_dependencies (Librarian)
@@ -4449,7 +4528,10 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
 
         // Work queue: (dependency_name, effective_visibility)
         std::vector<std::pair<std::string, DependencyVisibility>> to_process;
-        std::set<std::string> processed;
+        // Dependencies already handled, mapped to whether they were added to this project. One reached
+        // first only through an INTERFACE edge is handled again when it is also reached through a
+        // PUBLIC or PRIVATE edge, so the order of the edges does not decide what the project receives.
+        std::map<std::string, bool> processed;
 
         // Initialize with direct dependencies
         for (const auto& dep : proj.project_references) {
@@ -4463,8 +4545,10 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
             auto [dep_name, visibility] = to_process.back();
             to_process.pop_back();
 
-            if (processed.count(dep_name)) continue;
-            processed.insert(dep_name);
+            const bool adds_locally = visibility != DependencyVisibility::INTERFACE;
+            auto seen = processed.find(dep_name);
+            if (seen != processed.end() && (seen->second || !adds_locally)) continue;
+            processed[dep_name] = adds_locally;
 
             // Find the dependency project
             Project* dep = nullptr;
@@ -4579,7 +4663,8 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
                 if (!trans_dep.link_library_dependencies || !dependency_applies_to_platform(trans_dep, platform)) {
                     continue;
                 }
-                if (!processed.count(trans_dep.name)) {
+                auto trans_seen = processed.find(trans_dep.name);
+                if (trans_seen == processed.end() || !trans_seen->second) {
                     // Determine effective visibility for transitive dependency
                     DependencyVisibility effective_vis;
 
