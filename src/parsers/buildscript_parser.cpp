@@ -473,9 +473,10 @@ std::vector<std::string> BuildscriptParser::expand_wildcards(const std::string& 
         fs::path suffix_path(suffix);
         file_pattern = suffix_path.filename().string();
     } else {
-        fs::path full_pattern = fs::path(base_path) / pattern;
-        dir = full_pattern.parent_path().string();
-        file_pattern = full_pattern.filename().string();
+        // Relative to base_path, which is joined below (as for the recursive case)
+        fs::path pattern_path(pattern);
+        dir = pattern_path.parent_path().string();
+        file_pattern = pattern_path.filename().string();
     }
 
     if (dir.empty()) dir = ".";
