@@ -832,6 +832,13 @@ export const KEYWORDS: KeywordInfo[] = [
         supportsConfigQualifier: true,
     },
     {
+        name: 'strip',
+        valueType: 'bool',
+        context: ['project', 'config'],
+        documentation: 'Makefile generator: strip executables and shared libraries and compile without `-g`. Defaults to `true` for `Release`, `false` otherwise.',
+        supportsConfigQualifier: true,
+    },
+    {
         name: 'large_address_aware',
         aliases: [],
         valueType: 'bool',

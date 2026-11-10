@@ -215,6 +215,100 @@ TEST_CASE("MakefileGenerator NDEBUG default is per config and recorded in the fl
     CHECK(rel.find("SIGHMAKE_CXX_STAMP") != std::string::npos);
 }
 
+static std::string makefile_variable_line(const std::string& makefile, const std::string& name) {
+    const auto start = makefile.find("\n" + name + " = ");
+    if (start == std::string::npos) return {};
+    const auto end = makefile.find('\n', start + 1);
+    return makefile.substr(start + 1, end - start - 1);
+}
+
+static bool has_flag(const std::string& line, const std::string& flag) {
+    return (" " + line + " ").find(" " + flag + " ") != std::string::npos;
+}
+
+TEST_CASE("MakefileGenerator compiles Release without -g because its outputs are stripped", "[makefile_generator][debug_info]") {
+    const std::string rel = makefile_for_config("debug_info = ProgramDatabase\ngenerate_debug_info = true\n", "Release");
+    const std::string dbg = makefile_for_config("debug_info = ProgramDatabase\ngenerate_debug_info = true\n", "Debug");
+    REQUIRE(!rel.empty());
+    REQUIRE(!dbg.empty());
+    const std::string rel_flags = makefile_variable_line(rel, "CXXFLAGS");
+    REQUIRE(!rel_flags.empty());
+    CHECK_FALSE(has_flag(rel_flags, "-g"));
+    CHECK(rel.find("\tstrip $@") != std::string::npos);
+    CHECK(has_flag(makefile_variable_line(dbg, "CXXFLAGS"), "-g"));
+    CHECK(dbg.find("\tstrip $@") == std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator Release C and C++ compiles and static libraries skip -g", "[makefile_generator][debug_info]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:Core]
+type = lib
+sources = main.cpp, util.c
+)");
+    REQUIRE(result.files.count("Core.Release"));
+    const std::string& mk = result.files["Core.Release"];
+    const std::string cxxflags = makefile_variable_line(mk, "CXXFLAGS");
+    const std::string cflags = makefile_variable_line(mk, "CFLAGS");
+    REQUIRE(!cxxflags.empty());
+    REQUIRE(!cflags.empty());
+    CHECK_FALSE(has_flag(cxxflags, "-g"));
+    CHECK_FALSE(has_flag(cflags, "-g"));
+}
+
+TEST_CASE("MakefileGenerator strip = false keeps Release symbols and -g", "[makefile_generator][debug_info]") {
+    const std::string rel = makefile_for_config("strip = false\n", "Release");
+    REQUIRE(!rel.empty());
+    CHECK(has_flag(makefile_variable_line(rel, "CXXFLAGS"), "-g"));
+    CHECK(rel.find("\tstrip $@") == std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator strip = true strips Debug and drops its -g", "[makefile_generator][debug_info]") {
+    const std::string dbg = makefile_for_config("strip = true\n", "Debug");
+    REQUIRE(!dbg.empty());
+    CHECK_FALSE(has_flag(makefile_variable_line(dbg, "CXXFLAGS"), "-g"));
+    CHECK(dbg.find("\tstrip $@") != std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator strip in a config section applies to that configuration only", "[makefile_generator][debug_info]") {
+    const std::string section =
+        "\n[config:Debug|Linux]\ndebug_info = ProgramDatabase\n"
+        "\n[config:Release|Linux]\ndebug_info = ProgramDatabase\nstrip = false\n";
+    const std::string rel = makefile_for_config(section, "Release");
+    const std::string dbg = makefile_for_config(section, "Debug");
+    REQUIRE(!rel.empty());
+    REQUIRE(!dbg.empty());
+    CHECK(has_flag(makefile_variable_line(rel, "CXXFLAGS"), "-g"));
+    CHECK(rel.find("\tstrip $@") == std::string::npos);
+    CHECK(has_flag(makefile_variable_line(dbg, "CXXFLAGS"), "-g"));
+    CHECK(dbg.find("\tstrip $@") == std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator strip in a config section overrides the project-level value", "[makefile_generator][debug_info]") {
+    const std::string script =
+        "strip = true\n"
+        "\n[config:Debug|Linux]\ndebug_info = ProgramDatabase\nstrip = false\n"
+        "\n[config:Release|Linux]\ndebug_info = ProgramDatabase\n";
+    const std::string rel = makefile_for_config(script, "Release");
+    const std::string dbg = makefile_for_config(script, "Debug");
+    REQUIRE(!rel.empty());
+    REQUIRE(!dbg.empty());
+    CHECK(rel.find("\tstrip $@") != std::string::npos);
+    CHECK_FALSE(has_flag(makefile_variable_line(rel, "CXXFLAGS"), "-g"));
+    CHECK(dbg.find("\tstrip $@") == std::string::npos);
+    CHECK(has_flag(makefile_variable_line(dbg, "CXXFLAGS"), "-g"));
+}
+
+TEST_CASE("MakefileGenerator Release keeps -g passed through cflags", "[makefile_generator][debug_info]") {
+    const std::string rel = makefile_for_config("cflags = -g\n", "Release");
+    REQUIRE(!rel.empty());
+    CHECK(has_flag(makefile_variable_line(rel, "CXXFLAGS"), "-g"));
+}
+
 TEST_CASE("MakefileGenerator name and description", "[makefile_generator]") {
     MakefileGenerator gen;
     CHECK(gen.name() == "makefile");

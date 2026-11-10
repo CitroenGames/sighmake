@@ -1582,6 +1582,42 @@ non-Windows hosts. Shared libraries get `-Wl,-Bsymbolic-functions` through
 `target_link_options` on non-Apple, non-Windows hosts when
 `check_linker_flag` accepts it.
 
+#### Stripping and debug information
+
+A configuration either strips its binaries or compiles debug information, never
+both. The `strip` key decides which. It is accepted at project level (every
+configuration) and in a `[config:...]` section (that configuration only, which
+wins), and defaults to `true` for the configuration named `Release` and `false`
+for every other.
+
+| `strip` | Compiles | Executables and shared libraries |
+| --- | --- | --- |
+| `true` (default for `Release`) | Without `-g`, even when `debug_info` is set. | Stripped after linking (`strip`; `strip -x` for macOS shared libraries; `$(STRIP) --strip-unneeded` on Android). |
+| `false` (default otherwise) | With `-g` when `debug_info` is set. | Keep their symbols. |
+
+Debug information compiled into a stripped configuration never reaches a binary
+and only costs compile time, memory and disk; in template-heavy C++ it can be a
+third of the compile time and of the compiler's peak memory. Static libraries
+are never stripped themselves, but their objects follow the same rule, because
+in a stripping configuration they end up in stripped binaries.
+
+To keep symbols in Release (for example to profile or debug an optimized
+build), turn stripping off for that configuration:
+
+```ini
+[config:Release|Linux]
+strip = false
+```
+
+`strip = true` at project level, or in another configuration, strips that
+configuration and drops its `-g` too. A project that wants `-g` on its static
+libraries while its binaries stay stripped can still pass it through `cflags`.
+`debug_info` and `generate_debug_info` keep their meaning for Visual Studio
+(`/Zi`, `/DEBUG` and a `.pdb`); the CMake generator does not use `strip`.
+
+Changing `strip` changes the compile command line, so the next build recompiles
+the configuration's objects.
+
 ### CMake
 
 ```text
@@ -1746,7 +1782,7 @@ clang++ --target=aarch64-linux-android24 -shared -Wl,-soname,libgame.so \
 | 16 KB page alignment | `-Wl,-z,max-page-size=16384` for `arm64-v8a` and `x86_64` (required for Android 15+ devices; NDK r27 does not enable it itself). `make ANDROID_MAX_PAGE_SIZE=4096` changes it, `ANDROID_MAX_PAGE_SIZE=` (empty) turns it off. `armeabi-v7a` and `x86` are never aligned. |
 | Archives | Linked inside `--start-group ... --end-group`, so their order does not matter. `whole_archive` dependencies use `--whole-archive`. |
 | C++ runtime | `clang++` from the NDK links `libc++_shared.so` dynamically. Bundle it with the app (the APK target below does) or link it statically with `ldflags = -static-libstdc++`. |
-| Stripping | Release shared libraries and executables are stripped with `llvm-strip`. |
+| Stripping | Release shared libraries and executables are stripped with `llvm-strip` and compiled without `-g`; `strip = false` keeps their symbols. See [Stripping and debug information](#stripping-and-debug-information). |
 
 Executables use the same response-file link without `-shared`/`-soname`.
 
@@ -1982,7 +2018,7 @@ the primary names shown here in hand-written buildscripts.
 | `optimization` | `Disabled`, `MinSpace`, `MaxSpeed`, or `Full`. |
 | `warning_level` | `Level0` through `Level4`. |
 | `runtime_library` | `MultiThreaded`, `MultiThreadedDebug`, `MultiThreadedDLL`, or `MultiThreadedDebugDLL`. |
-| `debug_info` | `EditAndContinue`, `ProgramDatabase`, or `OldStyle`. |
+| `debug_info` | `EditAndContinue`, `ProgramDatabase`, or `OldStyle`. Makefiles compile `-g` for it unless the configuration strips its outputs (`strip`). |
 | `exceptions` | `true`/`Sync`, `Async`, or `false`. |
 | `rtti` | Boolean runtime type information. |
 | `support_just_my_code` | Optional Boolean for Visual Studio C/C++ Just My Code debugging. Unset preserves MSBuild defaults. |
@@ -2042,6 +2078,7 @@ configuration section when setting them explicitly.
 | `ignore_all_default_libraries` | Disable all default libraries. |
 | `module_def` | Module definition/version-script path. |
 | `generate_debug_info` | Emit linker debug information. |
+| `strip` | Make only. Strip executables and shared libraries and compile without `-g`. Default `true` for `Release`, `false` otherwise. See [Stripping and debug information](#stripping-and-debug-information). |
 | `link_incremental` | Incremental linking. |
 | `whole_program_optimization` | Whole-program optimization/LTCG. |
 | `optimize_references` | Remove unreferenced functions/data. |

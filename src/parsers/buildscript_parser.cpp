@@ -853,6 +853,8 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 cfg.link.fixed_base_address = defs.link.fixed_base_address;
             if (!cfg.link.randomized_base_address.has_value() && defs.link.randomized_base_address.has_value())
                 cfg.link.randomized_base_address = defs.link.randomized_base_address;
+            if (!cfg.link.strip.has_value() && defs.link.strip.has_value())
+                cfg.link.strip = defs.link.strip;
         }
     }
 
@@ -3110,6 +3112,12 @@ bool BuildscriptParser::parse_project_linker_setting(const std::string& key, con
             proj.configurations[config_key].link.randomized_base_address = val;
         }
         proj.project_level_defaults.link.randomized_base_address = val;
+    } else if (key == "strip") {
+        bool val = (value == "true" || value == "yes" || value == "1");
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.strip = val;
+        }
+        proj.project_level_defaults.link.strip = val;
     } else if (key == "large_address_aware") {
         bool val = (value == "true" || value == "yes" || value == "1");
         for (const auto& config_key : state.solution->get_config_keys()) {
@@ -3666,6 +3674,8 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.link.fixed_base_address = (value == "true" || value == "yes" || value == "1");
     } else if (key == "randomized_base_address" || key == "dynamic_base") {
         cfg.link.randomized_base_address = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "strip") {
+        cfg.link.strip = (value == "true" || value == "yes" || value == "1");
     } else {
         return parse_config_setting_aux(key, value, config_key, state);
     }
@@ -4046,6 +4056,8 @@ void BuildscriptParser::apply_template(Project& project, const std::string& deri
         d_link.fixed_base_address = t_link.fixed_base_address;
     if (!d_link.randomized_base_address.has_value() && t_link.randomized_base_address.has_value())
         d_link.randomized_base_address = t_link.randomized_base_address;
+    if (!d_link.strip.has_value() && t_link.strip.has_value())
+        d_link.strip = t_link.strip;
     if (!d_link.large_address_aware && t_link.large_address_aware)
         d_link.large_address_aware = t_link.large_address_aware;
     if (!d_link.ignore_all_default_libraries && t_link.ignore_all_default_libraries)

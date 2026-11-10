@@ -122,6 +122,14 @@ std::string decorate_target_name(const std::string& name, const std::string& con
     return name;
 }
 
+// Whether a configuration strips its linked executables and shared libraries (`strip`, default
+// true for "Release" only). A stripping configuration also compiles without -g: the debug
+// information would never reach a binary and only costs compile time, memory and disk.
+// `strip = false` keeps the symbols and compiles with -g again.
+bool makefile_strips_outputs(const Configuration& config, const std::string& config_name) {
+    return config.link.strip.value_or(config_name == "Release");
+}
+
 // Default output/intermediate directories. Android builds get an ABI-specific
 // subdirectory ($(ANDROID_ABI) expands when make runs) so different ABIs don't
 // overwrite each other's artifacts.
@@ -702,8 +710,8 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
         ss << flags::optimization_to_gnu_flag(config.cl_compile.optimization) << " ";
     }
 
-    // Debug information
-    if (!config.cl_compile.debug_information_format.empty()) {
+    // Debug information (not for configurations whose outputs are stripped)
+    if (!config.cl_compile.debug_information_format.empty() && !makefile_strips_outputs(config, config_name)) {
         ss << "-g ";
     }
 
@@ -2318,15 +2326,10 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "\t" << config.post_build_event.command << "\n";
     }
 
-    // Strip debug symbols for Release builds (executables and shared libraries only)
+    // Strip symbols from executables and shared libraries (`strip`, default Release only).
     // On Linux, debug symbols are embedded in the binary unlike Windows .pdb files
     if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
-        std::string release_config_name = config_key;
-        size_t release_pipe_pos = release_config_name.find('|');
-        if (release_pipe_pos != std::string::npos) {
-            release_config_name = release_config_name.substr(0, release_pipe_pos);
-        }
-        if (release_config_name == "Release") {
+        if (makefile_strips_outputs(config, parse_config_key(config_key).first)) {
             if (android) {
                 // Host strip can't handle Android ELF binaries; use the NDK's llvm-strip
                 out << "\t$(STRIP) --strip-unneeded $@\n";

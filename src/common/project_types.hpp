@@ -158,6 +158,9 @@ struct LinkSettings {
     bool fixed_base_address = false;                    // FixedBaseAddress
     std::optional<bool> randomized_base_address;        // RandomizedBaseAddress (/DYNAMICBASE)
     bool large_address_aware = false;                   // LargeAddressAware
+    // Makefile generator: strip linked executables and shared libraries, and compile without -g
+    // (stripping would discard it). Unset means true for the "Release" configuration only.
+    std::optional<bool> strip;
 };
 
 // Librarian settings (for static library projects)
