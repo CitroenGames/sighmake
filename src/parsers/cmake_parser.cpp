@@ -31,6 +31,24 @@ namespace {
         return result;
     }
 
+    // An unquoted argument whose value is a list becomes one argument per non-empty element.
+    void append_unquoted_argument(std::vector<std::string>& args, const std::string& value) {
+        if (value.find(';') == std::string::npos) {
+            args.push_back(value);
+            return;
+        }
+        std::string item;
+        for (size_t k = 0; k < value.size(); ++k) {
+            if (value[k] == ';' && (k == 0 || value[k - 1] != '\\')) {
+                if (!item.empty()) args.push_back(item);
+                item.clear();
+            } else {
+                item += value[k];
+            }
+        }
+        if (!item.empty()) args.push_back(item);
+    }
+
     void append_option(std::string& options, const std::string& option) {
         if (option.empty()) return;
         if (!options.empty()) options += " ";
@@ -281,6 +299,27 @@ std::vector<CMakeParser::Token> CMakeParser::tokenize(const std::string& content
     size_t pos = 0;
     int line = 1;
 
+    // Bracket opener "[" "="* "[" at `at`: returns the number of '=' or -1
+    auto bracket_open = [&](size_t at) -> int {
+        if (at >= content.size() || content[at] != '[') return -1;
+        size_t k = at + 1;
+        while (k < content.size() && content[k] == '=') k++;
+        if (k < content.size() && content[k] == '[') return static_cast<int>(k - at - 1);
+        return -1;
+    };
+    // Reads a bracket block starting at pos (which holds the opener); returns its content
+    auto read_bracket = [&](int eq) {
+        pos += eq + 2;
+        if (pos < content.size() && content[pos] == '\n') { line++; pos++; }
+        std::string closer = "]" + std::string(eq, '=') + "]";
+        size_t end = content.find(closer, pos);
+        if (end == std::string::npos) end = content.size();
+        std::string value = content.substr(pos, end - pos);
+        line += static_cast<int>(std::count(value.begin(), value.end(), '\n'));
+        pos = std::min(content.size(), end + closer.size());
+        return value;
+    };
+
     while (pos < content.size()) {
         char c = content[pos];
 
@@ -291,10 +330,24 @@ std::vector<CMakeParser::Token> CMakeParser::tokenize(const std::string& content
         }
 
         if (c == '#') {
+            int eq = bracket_open(pos + 1);
+            if (eq >= 0) {
+                // Bracket comment #[[ ... ]]
+                pos++;
+                read_bracket(eq);
+                continue;
+            }
             // Comment
             while (pos < content.size() && content[pos] != '\n') {
                 pos++;
             }
+            continue;
+        }
+
+        if (int eq = bracket_open(pos); eq >= 0) {
+            // Bracket argument [[ ... ]]: verbatim, no escapes or variable references
+            std::string value = read_bracket(eq);
+            tokens.push_back({TokenType::Bracket, value, line});
             continue;
         }
 
@@ -309,8 +362,25 @@ std::vector<CMakeParser::Token> CMakeParser::tokenize(const std::string& content
             std::string value;
             pos++; // skip opening quote
             while (pos < content.size()) {
-                if (content[pos] == '"' && (pos == 0 || content[pos-1] != '\\')) {
+                if (content[pos] == '"') {
                     break;
+                }
+                if (content[pos] == '\\' && pos + 1 < content.size()) {
+                    char next = content[pos + 1];
+                    if (next == '\n') {
+                        // Line continuation
+                        line++;
+                        pos += 2;
+                        continue;
+                    }
+                    if (next == 'n' || next == 't' || next == 'r' || next == '\\' || next == '"' ||
+                        next == '(' || next == ')' || next == '#' || next == ' ') {
+                        value += next == 'n' ? '\n' : next == 't' ? '\t' : next == 'r' ? '\r' : next;
+                        pos += 2;
+                        continue;
+                    }
+                    // \; and \$ stay as written
+                    value += content[pos++];
                 }
                 value += content[pos];
                 if (content[pos] == '\n') line++;
@@ -339,11 +409,14 @@ std::vector<CMakeParser::Token> CMakeParser::tokenize(const std::string& content
 std::string CMakeParser::resolve_variables(const std::string& str, const ParseState& state) {
     std::string result = str;
     size_t pos = 0;
-    while ((pos = result.find("${", pos)) != std::string::npos) {
+    size_t replacements = 0;
+    while ((pos = result.find("${", pos)) != std::string::npos && ++replacements < 10000) {
         size_t end = result.find('}', pos);
         if (end == std::string::npos) break; // Unclosed variable
+        // Nested references (${${NAME}_DIR}) are evaluated innermost first
+        size_t start = result.rfind("${", end);
         
-        std::string var_name = result.substr(pos + 2, end - (pos + 2));
+        std::string var_name = result.substr(start + 2, end - (start + 2));
         
         std::string var_value;
         auto it = state.variables.find(var_name);
@@ -351,8 +424,9 @@ std::string CMakeParser::resolve_variables(const std::string& str, const ParseSt
             var_value = it->second;
         }
         
-        result.replace(pos, end - pos + 1, var_value);
-        pos += var_value.length();
+        result.replace(start, end - start + 1, var_value);
+        // An inner reference completes the enclosing one: rescan it from pos
+        if (start == pos) pos += var_value.length();
     }
     pos = 0;
     while ((pos = result.find("$ENV{", pos)) != std::string::npos) {
@@ -1492,8 +1566,17 @@ std::string CMakeParser::evaluate_generator_expression(const std::string& expr, 
 }
 
 std::string CMakeParser::evaluate_simple_gen_expr(const std::string& expr, const GenExprContext& ctx) {
-    // Parse expression type and arguments
-    size_t colon = expr.find(':');
+    // Parse expression type and arguments; the separating ':' is the first one outside nested $<...>
+    size_t colon = std::string::npos;
+    int nest = 0;
+    for (size_t k = 0; k < expr.size(); ++k) {
+        if (expr[k] == '<' && k > 0 && expr[k - 1] == '$') nest++;
+        else if (expr[k] == '>' && nest > 0) nest--;
+        else if (expr[k] == ':' && nest == 0) {
+            colon = k;
+            break;
+        }
+    }
 
     // Boolean expressions without colon
     if (colon == std::string::npos) {
@@ -1517,7 +1600,13 @@ std::string CMakeParser::evaluate_simple_gen_expr(const std::string& expr, const
 
     // CONFIG expression: $<CONFIG:Debug>
     if (type == "CONFIG") {
-        return (args == ctx.current_config) ? "1" : "0";
+        // Case-insensitive; CMake 3.19+ accepts a comma-separated list
+        std::stringstream cfgs(args);
+        std::string cfg;
+        while (std::getline(cfgs, cfg, ',')) {
+            if (to_lower(cfg) == to_lower(ctx.current_config)) return "1";
+        }
+        return "0";
     }
 
     // Platform/architecture checks
@@ -1566,7 +1655,7 @@ std::string CMakeParser::evaluate_simple_gen_expr(const std::string& expr, const
         std::string current;
         int depth = 0;
         for (char c : args) {
-            if (c == '$' && current.size() > 0 && current.back() == '<') depth++;
+            if (c == '<' && current.size() > 0 && current.back() == '$') depth++;
             if (c == '>') depth--;
             if (c == ',' && depth == 0) {
                 parts.push_back(current);
@@ -1590,7 +1679,7 @@ std::string CMakeParser::evaluate_simple_gen_expr(const std::string& expr, const
         std::string current;
         int depth = 0;
         for (char c : args) {
-            if (c == '$' && current.size() > 0 && current.back() == '<') depth++;
+            if (c == '<' && current.size() > 0 && current.back() == '$') depth++;
             if (c == '>') depth--;
             if (c == ',' && depth == 0) {
                 parts.push_back(current);
@@ -1752,11 +1841,22 @@ void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, Pa
                 i++; // Skip (
                 
                 std::vector<std::string> args;
-                while (i < tokens.size() && tokens[i].type != TokenType::CloseParen) {
-                    if (tokens[i].type == TokenType::String || tokens[i].type == TokenType::Identifier) {
+                // Nested parentheses are arguments of their own: if((A OR B) AND C)
+                int paren_depth = 0;
+                while (i < tokens.size() && (tokens[i].type != TokenType::CloseParen || paren_depth > 0)) {
+                    if (tokens[i].type == TokenType::OpenParen) {
+                        paren_depth++;
+                        args.push_back("(");
+                    } else if (tokens[i].type == TokenType::CloseParen) {
+                        paren_depth--;
+                        args.push_back(")");
+                    } else if (tokens[i].type == TokenType::String) {
                         // Resolve variables in arguments
-                        std::string arg = resolve_variables(tokens[i].value, state);
-                        args.push_back(arg);
+                        args.push_back(resolve_variables(tokens[i].value, state));
+                    } else if (tokens[i].type == TokenType::Identifier) {
+                        append_unquoted_argument(args, resolve_variables(tokens[i].value, state));
+                    } else if (tokens[i].type == TokenType::Bracket) {
+                        args.push_back(tokens[i].value);
                     }
                     i++;
                 }
@@ -1994,9 +2094,20 @@ void CMakeParser::handle_if(const std::vector<std::string>& args, size_t& i, con
                      std::vector<std::string> elseif_args;
                      if (i < tokens.size() && tokens[i].type == TokenType::OpenParen) {
                          i++;
-                         while (i < tokens.size() && tokens[i].type != TokenType::CloseParen) {
-                            if (tokens[i].type == TokenType::String || tokens[i].type == TokenType::Identifier) {
+                         int paren_depth = 0;
+                         while (i < tokens.size() && (tokens[i].type != TokenType::CloseParen || paren_depth > 0)) {
+                            if (tokens[i].type == TokenType::OpenParen) {
+                                paren_depth++;
+                                elseif_args.push_back("(");
+                            } else if (tokens[i].type == TokenType::CloseParen) {
+                                paren_depth--;
+                                elseif_args.push_back(")");
+                            } else if (tokens[i].type == TokenType::String) {
                                 elseif_args.push_back(resolve_variables(tokens[i].value, state));
+                            } else if (tokens[i].type == TokenType::Identifier) {
+                                append_unquoted_argument(elseif_args, resolve_variables(tokens[i].value, state));
+                            } else if (tokens[i].type == TokenType::Bracket) {
+                                elseif_args.push_back(tokens[i].value);
                             }
                             i++;
                          }
@@ -2128,6 +2239,27 @@ bool CMakeParser::evaluate_condition(const std::vector<std::string>& args, Parse
         return 0;
     };
 
+    // Parenthesized groups bind tightest: reduce each top-level group to its truth value.
+    if (std::find(args.begin(), args.end(), "(") != args.end()) {
+        std::vector<std::string> reduced;
+        for (size_t idx = 0; idx < args.size(); ++idx) {
+            if (args[idx] != "(") {
+                reduced.push_back(args[idx]);
+                continue;
+            }
+            int depth = 1;
+            size_t close = idx + 1;
+            for (; close < args.size(); ++close) {
+                if (args[close] == "(") depth++;
+                else if (args[close] == ")" && --depth == 0) break;
+            }
+            bool group = evaluate_condition({args.begin() + idx + 1, args.begin() + std::min(close, args.size())}, state);
+            reduced.push_back(group ? "TRUE" : "FALSE");
+            idx = close;
+        }
+        return evaluate_condition(reduced, state);
+    }
+
     // OR has the lowest precedence.
     for (size_t idx = 0; idx < args.size(); ++idx) {
         if (args[idx] == "OR") {
@@ -2158,14 +2290,22 @@ bool CMakeParser::evaluate_condition(const std::vector<std::string>& args, Parse
 
         if (op == "STREQUAL") return lhs == rhs;
         if (op == "EQUAL") return lhs == rhs;
+        if (op == "STRLESS") return lhs < rhs;
+        if (op == "STRGREATER") return lhs > rhs;
+        if (op == "STRLESS_EQUAL") return lhs <= rhs;
+        if (op == "STRGREATER_EQUAL") return lhs >= rhs;
         if (op == "VERSION_GREATER") return compare_version(lhs, rhs) > 0;
         if (op == "VERSION_LESS") return compare_version(lhs, rhs) < 0;
         if (op == "VERSION_EQUAL") return compare_version(lhs, rhs) == 0;
-        if (op == "LESS" || op == "GREATER") {
+        if (op == "VERSION_GREATER_EQUAL") return compare_version(lhs, rhs) >= 0;
+        if (op == "VERSION_LESS_EQUAL") return compare_version(lhs, rhs) <= 0;
+        if (op == "LESS" || op == "GREATER" || op == "LESS_EQUAL" || op == "GREATER_EQUAL") {
             try {
                 int a = std::stoi(lhs);
                 int b = std::stoi(rhs);
-                return op == "LESS" ? a < b : a > b;
+                if (op == "LESS") return a < b;
+                if (op == "GREATER") return a > b;
+                return op == "LESS_EQUAL" ? a <= b : a >= b;
             } catch (...) {
                 return false;
             }

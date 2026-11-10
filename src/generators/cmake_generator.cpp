@@ -10,6 +10,24 @@ namespace vcxproj {
 
 namespace fs = std::filesystem;
 
+namespace {
+std::string cmake_quote(const std::string& value) {
+    std::string quoted = "\"";
+    for (char c : value) {
+        if (c == '"' || c == '\\') quoted += '\\';
+        quoted += c;
+    }
+    return quoted + "\"";
+}
+
+// Quote a command argument that would otherwise be split (spaces) or misread (quotes, parentheses, ...)
+std::string cmake_arg(const std::string& value) {
+    if (!value.empty() && value.find_first_of(" \t\n\"()#\\") == std::string::npos) return value;
+    return cmake_quote(value);
+}
+}
+
+
 // Convert Windows path to CMake path (backslash to forward slash)
 std::string CMakeGenerator::to_cmake_path(const std::string& path) {
     std::string result = path;
@@ -136,19 +154,19 @@ void CMakeGenerator::write_sources(std::ostream& out, const Project& project, co
     out << "\ntarget_sources(" << project.name << " PRIVATE\n";
 
     for (const auto& s : compile_sources) {
-        out << "    " << s << "\n";
+        out << "    " << cmake_arg(s) << "\n";
     }
     for (const auto& s : header_sources) {
-        out << "    " << s << "\n";
+        out << "    " << cmake_arg(s) << "\n";
     }
     for (const auto& s : resource_sources) {
-        out << "    " << s << "\n";
+        out << "    " << cmake_arg(s) << "\n";
     }
     for (const auto& s : masm_sources) {
-        out << "    " << s << "\n";
+        out << "    " << cmake_arg(s) << "\n";
     }
     for (const auto& s : def_sources) {
-        out << "    " << s << "\n";
+        out << "    " << cmake_arg(s) << "\n";
     }
 
     out << ")\n";
@@ -198,25 +216,25 @@ void CMakeGenerator::write_include_directories(std::ostream& out, const Project&
         public_incs.push_back(compute_relative_path(inc, project_dir));
     }
 
-    if (common_includes.empty() && public_incs.empty()) return;
+    if (!common_includes.empty() || !public_incs.empty()) {
+        out << "\ntarget_include_directories(" << project.name << "\n";
 
-    out << "\ntarget_include_directories(" << project.name << "\n";
-
-    if (!public_incs.empty()) {
-        out << "    PUBLIC\n";
-        for (const auto& inc : public_incs) {
-            out << "        " << inc << "\n";
+        if (!public_incs.empty()) {
+            out << "    PUBLIC\n";
+            for (const auto& inc : public_incs) {
+                out << "        " << cmake_arg(inc) << "\n";
+            }
         }
-    }
 
-    if (!common_includes.empty()) {
-        out << "    " << visibility << "\n";
-        for (const auto& inc : common_includes) {
-            out << "        " << compute_relative_path(inc, project_dir) << "\n";
+        if (!common_includes.empty()) {
+            out << "    " << visibility << "\n";
+            for (const auto& inc : common_includes) {
+                out << "        " << cmake_arg(compute_relative_path(inc, project_dir)) << "\n";
+            }
         }
-    }
 
-    out << ")\n";
+        out << ")\n";
+    }
 
     // Per-config includes that differ from common
     auto config_names = get_config_names(solution);
@@ -230,7 +248,10 @@ void CMakeGenerator::write_include_directories(std::ostream& out, const Project&
             for (const auto& part : split_semicolons(inc)) {
                 std::string normalized = to_cmake_path(part);
                 if (!common_includes.count(normalized)) {
-                    extra.push_back(compute_relative_path(normalized, project_dir));
+                    // CMake does not absolutize paths produced by a generator expression
+                    std::string rel = compute_relative_path(normalized, project_dir);
+                    if (!fs::path(rel).is_absolute()) rel = "${CMAKE_CURRENT_SOURCE_DIR}/" + rel;
+                    extra.push_back(rel);
                 }
             }
         }
@@ -241,7 +262,7 @@ void CMakeGenerator::write_include_directories(std::ostream& out, const Project&
             }
             out << "target_include_directories(" << project.name << " " << visibility << "\n";
             for (const auto& e : extra) {
-                out << "    $<$<CONFIG:" << cfg_name << ">:" << e << ">\n";
+                out << "    " << cmake_arg("$<$<CONFIG:" + cfg_name + ">:" + e + ">") << "\n";
             }
             out << ")\n";
         }
@@ -319,18 +340,18 @@ void CMakeGenerator::write_compile_definitions(std::ostream& out, const Project&
     if (!public_defs.empty()) {
         out << "    PUBLIC\n";
         for (const auto& d : public_defs) {
-            out << "        " << d << "\n";
+            out << "        " << cmake_arg(d) << "\n";
         }
     }
 
     if (!common_defines.empty() || !per_config.empty()) {
         out << "    " << visibility << "\n";
         for (const auto& d : common_defines) {
-            out << "        " << d << "\n";
+            out << "        " << cmake_arg(d) << "\n";
         }
         for (const auto& pc : per_config) {
             for (const auto& d : pc.defines) {
-                out << "        $<$<CONFIG:" << pc.name << ">:" << d << ">\n";
+                out << "        " << cmake_arg("$<$<CONFIG:" + pc.name + ">:" + d + ">") << "\n";
             }
         }
     }
@@ -663,11 +684,11 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
                     if (dep.name == lib) { is_proj_dep = true; break; }
                 }
                 if (is_proj_dep) continue;
-                out << "        " << to_cmake_path(lib) << "\n";
+                out << "        " << cmake_arg(to_cmake_path(lib)) << "\n";
             }
             for (const auto& pc : per_config) {
                 for (const auto& lib : pc.libs) {
-                    out << "        $<$<CONFIG:" << pc.name << ">:" << to_cmake_path(lib) << ">\n";
+                    out << "        " << cmake_arg("$<$<CONFIG:" + pc.name + ">:" + to_cmake_path(lib) + ">") << "\n";
                 }
             }
         }
@@ -778,7 +799,7 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
 // ============================================================================
 
 void CMakeGenerator::write_link_directories(std::ostream& out, const Project& project,
-                                             const Solution& /*solution*/, const std::string& project_dir) {
+                                             const Solution& solution, const std::string& project_dir) {
     std::string config_type;
     for (const auto& [key, config] : project.configurations) {
         if (!config.config_type.empty()) {
@@ -816,25 +837,49 @@ void CMakeGenerator::write_link_directories(std::ostream& out, const Project& pr
         public_dirs.push_back(compute_relative_path(dir, project_dir));
     }
 
-    if (common_libdirs.empty() && public_dirs.empty()) return;
+    if (!common_libdirs.empty() || !public_dirs.empty()) {
+        out << "\ntarget_link_directories(" << project.name << "\n";
 
-    out << "\ntarget_link_directories(" << project.name << "\n";
-
-    if (!public_dirs.empty()) {
-        out << "    PUBLIC\n";
-        for (const auto& d : public_dirs) {
-            out << "        " << d << "\n";
+        if (!public_dirs.empty()) {
+            out << "    PUBLIC\n";
+            for (const auto& d : public_dirs) {
+                out << "        " << cmake_arg(d) << "\n";
+            }
         }
+
+        if (!common_libdirs.empty()) {
+            out << "    PRIVATE\n";
+            for (const auto& d : common_libdirs) {
+                out << "        " << cmake_arg(compute_relative_path(d, project_dir)) << "\n";
+            }
+        }
+
+        out << ")\n";
     }
 
-    if (!common_libdirs.empty()) {
-        out << "    PRIVATE\n";
-        for (const auto& d : common_libdirs) {
-            out << "        " << compute_relative_path(d, project_dir) << "\n";
+    // Per-config library directories that differ from common
+    for (const auto& cfg_name : get_config_names(solution)) {
+        const Configuration* config = find_config(project, cfg_name);
+        if (!config) continue;
+
+        std::vector<std::string> extra;
+        for (const auto& libdir : config->link.additional_library_directories) {
+            for (const auto& part : split_semicolons(libdir)) {
+                std::string normalized = to_cmake_path(part);
+                if (common_libdirs.count(normalized)) continue;
+                std::string rel = compute_relative_path(normalized, project_dir);
+                if (!fs::path(rel).is_absolute()) rel = "${CMAKE_CURRENT_SOURCE_DIR}/" + rel;
+                extra.push_back(rel);
+            }
+        }
+        if (!extra.empty()) {
+            out << "target_link_directories(" << project.name << " PRIVATE\n";
+            for (const auto& e : extra) {
+                out << "    " << cmake_arg("$<$<CONFIG:" + cfg_name + ">:" + e + ">") << "\n";
+            }
+            out << ")\n";
         }
     }
-
-    out << ")\n";
 }
 
 // ============================================================================
@@ -986,7 +1031,8 @@ void CMakeGenerator::write_target_properties(std::ostream& out, const Project& p
 // Precompiled headers
 // ============================================================================
 
-void CMakeGenerator::write_pch_settings(std::ostream& out, const Project& project, const Solution& /*solution*/) {
+void CMakeGenerator::write_pch_settings(std::ostream& out, const Project& project, const Solution& /*solution*/,
+                                        const std::string& project_dir) {
     std::string config_type;
     for (const auto& [key, config] : project.configurations) {
         if (!config.config_type.empty()) {
@@ -1009,7 +1055,28 @@ void CMakeGenerator::write_pch_settings(std::ostream& out, const Project& projec
 
     if (!pch_enabled || pch_header.empty()) return;
 
-    out << "\ntarget_precompile_headers(" << project.name << " PRIVATE " << pch_header << ")\n";
+    // pch_header is the name sources #include: look for it next to the sources and in the include
+    // directories. A header that is not found is included by name through the include path.
+    std::string pch_arg;
+    std::vector<fs::path> search_dirs;
+    if (fs::path(pch_header).is_absolute()) search_dirs.emplace_back();
+    for (const auto& src : project.sources) search_dirs.push_back(fs::path(src.path).parent_path());
+    for (const auto& [key, config] : project.configurations) {
+        for (const auto& inc : config.cl_compile.additional_include_directories) {
+            for (const auto& part : split_semicolons(inc)) search_dirs.emplace_back(part);
+        }
+    }
+    for (const auto& dir : search_dirs) {
+        std::error_code ec;
+        fs::path candidate = dir / pch_header;
+        if (fs::is_regular_file(candidate, ec)) {
+            pch_arg = cmake_arg(compute_relative_path(candidate.string(), project_dir));
+            break;
+        }
+    }
+    if (pch_arg.empty()) pch_arg = cmake_arg("<" + to_cmake_path(pch_header) + ">");
+
+    out << "\ntarget_precompile_headers(" << project.name << " PRIVATE " << pch_arg << ")\n";
 
     // Files that skip PCH
     for (const auto& src : project.sources) {
@@ -1024,8 +1091,7 @@ void CMakeGenerator::write_pch_settings(std::ostream& out, const Project& projec
             }
         }
         if (skip_pch) {
-            std::string filename = fs::path(src.path).filename().string();
-            out << "set_source_files_properties(" << filename
+            out << "set_source_files_properties(" << cmake_arg(compute_relative_path(src.path, project_dir))
                 << " PROPERTIES SKIP_PRECOMPILE_HEADERS ON)\n";
         }
     }
@@ -1047,16 +1113,27 @@ void CMakeGenerator::write_per_file_settings(std::ostream& out, const Project& p
         // Per-file defines
         std::vector<std::string> file_defines;
         for (const auto& [cfg_key, defs] : src.settings.preprocessor_defines) {
+            const bool all_configs = cfg_key == ALL_CONFIGS || cfg_key == "ALL_CONFIGS";
             for (const auto& d : defs) {
-                file_defines.push_back(d);
+                std::string entry = all_configs ? d : "$<$<CONFIG:" + parse_config_key(cfg_key).first + ">:" + d + ">";
+                if (std::find(file_defines.begin(), file_defines.end(), entry) == file_defines.end()) {
+                    file_defines.push_back(entry);
+                }
             }
         }
 
-        // Per-file excluded
-        bool excluded_all = false;
-        for (const auto& [cfg_key, excluded] : src.settings.excluded) {
-            if (excluded && cfg_key == "ALL_CONFIGS") {
-                excluded_all = true;
+        // Per-file excluded (in every configuration)
+        auto excluded_in = [&](const std::string& config_key) {
+            for (const char* key : {config_key.c_str(), ALL_CONFIGS, "ALL_CONFIGS"}) {
+                auto it = src.settings.excluded.find(key);
+                if (it != src.settings.excluded.end()) return it->second;
+            }
+            return false;
+        };
+        bool excluded_all = !project.configurations.empty();
+        for (const auto& [cfg_key, config] : project.configurations) {
+            if (!excluded_in(cfg_key)) {
+                excluded_all = false;
                 break;
             }
         }
@@ -1076,15 +1153,15 @@ void CMakeGenerator::write_per_file_settings(std::ostream& out, const Project& p
             has_settings = true;
         }
 
-        out << "set_source_files_properties(" << rel_path << " PROPERTIES";
+        out << "set_source_files_properties(" << cmake_arg(rel_path) << " PROPERTIES";
 
         if (!file_defines.empty()) {
-            out << "\n    COMPILE_DEFINITIONS \"";
+            std::string joined;
             for (size_t i = 0; i < file_defines.size(); i++) {
-                if (i > 0) out << ";";
-                out << file_defines[i];
+                if (i > 0) joined += ";";
+                joined += file_defines[i];
             }
-            out << "\"";
+            out << "\n    COMPILE_DEFINITIONS " << cmake_quote(joined);
         }
 
         if (excluded_all) {
@@ -1105,47 +1182,72 @@ void CMakeGenerator::write_per_file_settings(std::ostream& out, const Project& p
 // Build events
 // ============================================================================
 
-void CMakeGenerator::write_build_events(std::ostream& out, const Project& project, const Solution& /*solution*/) {
-    // Use the first config's build events (they're typically the same across configs)
-    const Configuration* config = nullptr;
-    for (const auto& [key, cfg] : project.configurations) {
-        config = &cfg;
-        break;
-    }
-    if (!config) return;
+void CMakeGenerator::write_build_events(std::ostream& out, const Project& project, const Solution& solution) {
+    auto config_names = get_config_names(solution);
 
-    // Pre-build event
-    if (!config->pre_build_event.command.empty()) {
-        std::string cmd = unescape_newlines(config->pre_build_event.command);
-        out << "\nadd_custom_command(TARGET " << project.name << " PRE_BUILD\n";
-        out << "    COMMAND " << to_cmake_path(cmd) << "\n";
-        if (!config->pre_build_event.message.empty()) {
-            out << "    COMMENT \"" << config->pre_build_event.message << "\"\n";
+    auto write_event = [&](BuildEvent Configuration::*member, const char* when) {
+        // Commands of every configuration; one shared command list is written unconditionally
+        std::vector<std::pair<std::string, const BuildEvent*>> events;
+        bool all_same = true;
+        for (const auto& cfg_name : config_names) {
+            const Configuration* config = find_config(project, cfg_name);
+            const BuildEvent* event = config ? &(config->*member) : nullptr;
+            if (!events.empty() && (!event || !events.front().second ||
+                                    event->command != events.front().second->command)) {
+                all_same = false;
+            }
+            events.emplace_back(cfg_name, event);
+        }
+        const BuildEvent* message_source = nullptr;
+        for (const auto& [cfg_name, event] : events) {
+            if (event && !event->command.empty()) {
+                message_source = event;
+                break;
+            }
+        }
+        if (!message_source) return;
+
+        out << "\nadd_custom_command(TARGET " << project.name << " " << when << "\n";
+        for (const auto& [cfg_name, event] : events) {
+            if (!event || event->command.empty()) continue;
+            // Each line is a separate command
+            std::istringstream lines(to_cmake_path(unescape_newlines(event->command)));
+            std::string line;
+            while (std::getline(lines, line)) {
+                line = trim(line);
+                if (line.empty()) continue;
+                if (all_same) {
+                    out << "    COMMAND " << line << "\n";
+                    continue;
+                }
+                // Configuration-specific: every word becomes empty in the other configurations,
+                // which drops the command there
+                out << "    COMMAND";
+                std::istringstream words(line);
+                std::string word;
+                while (words >> word) {
+                    std::string escaped;
+                    for (char c : word) {
+                        if (c == '>') escaped += "$<ANGLE-R>";
+                        else if (c == ',') escaped += "$<COMMA>";
+                        else if (c == ';') escaped += "$<SEMICOLON>";
+                        else escaped += c;
+                    }
+                    out << " " << cmake_arg("$<$<CONFIG:" + cfg_name + ">:" + escaped + ">");
+                }
+                out << "\n";
+            }
+            if (all_same) break;
+        }
+        if (!message_source->message.empty()) {
+            out << "    COMMENT " << cmake_quote(message_source->message) << "\n";
         }
         out << ")\n";
-    }
+    };
 
-    // Pre-link event
-    if (!config->pre_link_event.command.empty()) {
-        std::string cmd = unescape_newlines(config->pre_link_event.command);
-        out << "\nadd_custom_command(TARGET " << project.name << " PRE_LINK\n";
-        out << "    COMMAND " << to_cmake_path(cmd) << "\n";
-        if (!config->pre_link_event.message.empty()) {
-            out << "    COMMENT \"" << config->pre_link_event.message << "\"\n";
-        }
-        out << ")\n";
-    }
-
-    // Post-build event
-    if (!config->post_build_event.command.empty()) {
-        std::string cmd = unescape_newlines(config->post_build_event.command);
-        out << "\nadd_custom_command(TARGET " << project.name << " POST_BUILD\n";
-        out << "    COMMAND " << to_cmake_path(cmd) << "\n";
-        if (!config->post_build_event.message.empty()) {
-            out << "    COMMENT \"" << config->post_build_event.message << "\"\n";
-        }
-        out << ")\n";
-    }
+    write_event(&Configuration::pre_build_event, "PRE_BUILD");
+    write_event(&Configuration::pre_link_event, "PRE_LINK");
+    write_event(&Configuration::post_build_event, "POST_BUILD");
 }
 
 // ============================================================================
@@ -1313,7 +1415,7 @@ bool CMakeGenerator::generate_project_cmakelists(const Project& project, const S
     write_target_properties(out, project, solution);
 
     // PCH
-    write_pch_settings(out, project, solution);
+    write_pch_settings(out, project, solution, project_dir);
 
     // Per-file settings
     write_per_file_settings(out, project, solution, project_dir);

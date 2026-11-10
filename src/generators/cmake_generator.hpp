@@ -44,7 +44,8 @@ private:
     void write_link_directories(std::ostream& out, const Project& project, const Solution& solution,
                                 const std::string& project_dir);
     void write_target_properties(std::ostream& out, const Project& project, const Solution& solution);
-    void write_pch_settings(std::ostream& out, const Project& project, const Solution& solution);
+    void write_pch_settings(std::ostream& out, const Project& project, const Solution& solution,
+                            const std::string& project_dir);
     void write_per_file_settings(std::ostream& out, const Project& project, const Solution& solution,
                                  const std::string& project_dir);
     void write_build_events(std::ostream& out, const Project& project, const Solution& solution);
