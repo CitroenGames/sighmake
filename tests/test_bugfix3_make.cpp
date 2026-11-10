@@ -387,3 +387,42 @@ target_compile_definitions(App PRIVATE R_${RESULT})
     REQUIRE(p != nullptr);
     CHECK(bugfix3_has(p->project_level_preprocessor_definitions, "R_fromfunc"));
 }
+
+TEST_CASE("CMake reader file(GLOB) sorts, honours ? and ignores CONFIGURE_DEPENDS", "[bugfix3_make]") {
+    const fs::path dir = fs::temp_directory_path() / "sighmake bugfix3 cmake glob";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir / "src");
+    const std::vector<std::string> names = {"k.cpp", "b.cpp", "m.cpp", "a.cpp", "z.cpp", "d.cpp",
+                                            "q.cpp", "f.cpp", "x.cpp", "c.cpp", "ab.cpp", "t.cpp"};
+    for (const auto& name : names) std::ofstream(dir / "src" / name) << "int x;\n";
+    CMakeParser parser;
+    Solution sol = parser.parse_string(R"(
+project(T)
+file(GLOB ALL CONFIGURE_DEPENDS src/*.cpp)
+file(GLOB ONE src/?.cpp)
+file(GLOB REL RELATIVE ${CMAKE_SOURCE_DIR} src/a*.cpp)
+add_executable(All ${ALL})
+add_executable(One ${ONE})
+add_executable(Rel ${REL})
+)", dir.string());
+    auto names_of = [&](const char* project) {
+        std::vector<std::string> result;
+        const Project* p = bugfix3_find(sol, project);
+        REQUIRE(p != nullptr);
+        for (const auto& src : p->sources) result.push_back(fs::path(src.path).filename().string());
+        return result;
+    };
+    std::vector<std::string> sorted = names;
+    std::sort(sorted.begin(), sorted.end());
+    CHECK(names_of("All") == sorted);
+    const auto one = names_of("One");
+    CHECK(one.size() == names.size() - 1);
+    CHECK(std::is_sorted(one.begin(), one.end()));
+    CHECK(std::find(one.begin(), one.end(), "ab.cpp") == one.end());
+    const Project* rel = bugfix3_find(sol, "Rel");
+    REQUIRE(rel != nullptr);
+    REQUIRE(rel->sources.size() == 2);
+    CHECK(rel->sources[0].path.find("src/a.cpp") != std::string::npos);
+    fs::remove_all(dir, ec);
+}

@@ -1613,7 +1613,11 @@ void CMakeParser::handle_file(const std::vector<std::string>& args, ParseState& 
     if (mode == "GLOB" || mode == "GLOB_RECURSE") {
         std::string out_var = args[1];
         std::vector<std::string> patterns;
+        std::string relative_to;
         for (size_t i = 2; i < args.size(); ++i) {
+            if (args[i] == "CONFIGURE_DEPENDS" || args[i] == "FOLLOW_SYMLINKS") continue;
+            if (args[i] == "LIST_DIRECTORIES" && i + 1 < args.size()) { ++i; continue; }
+            if (args[i] == "RELATIVE" && i + 1 < args.size()) { relative_to = args[++i]; continue; }
             patterns.push_back(args[i]);
         }
 
@@ -1635,15 +1639,26 @@ void CMakeParser::handle_file(const std::vector<std::string>& args, ParseState& 
             }
             
             std::string regex_str = "^";
+            // Wildcards: * and ? (and [...] classes, which pass through); everything else literal
+            bool in_class = false;
             for (char c : filename_pattern) {
-                if (c == '*') regex_str += ".*";
-                else if (c == '.') regex_str += "\\.";
+                if (in_class) {
+                    regex_str += c;
+                    if (c == ']') in_class = false;
+                } else if (c == '[') { regex_str += c; in_class = true; }
+                else if (c == '*') regex_str += "[^/]*";
+                else if (c == '?') regex_str += "[^/]";
+                else if (std::string(".+()^$|{}\\").find(c) != std::string::npos) { regex_str += '\\'; regex_str += c; }
                 else regex_str += c;
             }
             regex_str += "$";
-            
+
             try {
+#if defined(_WIN32) || defined(__APPLE__)
                 std::regex re(regex_str, std::regex::icase);
+#else
+                std::regex re(regex_str);
+#endif
                 if (fs::exists(base_search_path)) {
                     if (recursive) {
                         for (const auto& entry : fs::recursive_directory_iterator(base_search_path)) {
@@ -1666,10 +1681,20 @@ void CMakeParser::handle_file(const std::vector<std::string>& args, ParseState& 
             } catch (...) {}
         }
 
+        // CMake returns the matches in lexicographic order, without duplicates
+        std::sort(found_files.begin(), found_files.end());
+        found_files.erase(std::unique(found_files.begin(), found_files.end()), found_files.end());
+
         std::string result;
         for (const auto& f : found_files) {
             if (!result.empty()) result += ";";
-            result += f;
+            if (relative_to.empty()) {
+                result += f;
+            } else {
+                fs::path base(relative_to);
+                if (base.is_relative()) base = fs::path(state.base_path) / base;
+                result += fs::relative(fs::path(f), base).generic_string();
+            }
         }
         state.variables[out_var] = result;
     }
