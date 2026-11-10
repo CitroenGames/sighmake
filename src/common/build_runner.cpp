@@ -107,7 +107,7 @@ static std::optional<fs::path> existing_path(const fs::path& path) {
     return std::nullopt;
 }
 
-static std::optional<fs::path> resolve_msbuild_project(
+std::optional<fs::path> resolve_msbuild_project(
     const BuildCache& cache,
     const std::string& cache_dir,
     const std::string& requested_project)
@@ -130,7 +130,8 @@ static std::optional<fs::path> resolve_msbuild_project(
     for (const auto& project : cache.projects) {
         fs::path project_file(project.file);
         if (to_lower(project.name) == requested_lower ||
-            to_lower(project_file.stem().string()) == requested_lower) {
+            to_lower(project_file.stem().string()) == requested_lower ||
+            to_lower(project_file.filename().string()) == requested_lower) {
             return fs::path(cache_dir) / project_file;
         }
     }

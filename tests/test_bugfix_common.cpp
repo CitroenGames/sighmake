@@ -136,3 +136,23 @@ TEST_CASE("Dependency report does not count synthetic find_package projects", "[
     CHECK(html.find("<h2>Projects (1)</h2>") != std::string::npos);
     CHECK(html.find("1 projects, 1 dependencies") != std::string::npos);
 }
+
+TEST_CASE("MSBuild --project accepts the generated project file name", "[bugfix_common]") {
+    BugfixTempDir dir("sighmake_bugfix_common_msbuild_project");
+    fs::create_directories(dir.path / "build");
+    std::ofstream(dir.path / "build" / "Editor.vcxproj") << "<Project/>\n";
+    BuildCache cache;
+    cache.generator = "vcxproj";
+    cache.build_dir = "build";
+    cache.projects.push_back({"Editor", (fs::path("build") / "Editor.vcxproj").string()});
+
+    const fs::path expected = dir.path / "build" / "Editor.vcxproj";
+    auto by_name = resolve_msbuild_project(cache, dir.path.string(), "Editor");
+    REQUIRE(by_name.has_value());
+    CHECK(*by_name == expected);
+    auto by_path = resolve_msbuild_project(cache, dir.path.string(), "build/Editor.vcxproj");
+    REQUIRE(by_path.has_value());
+    auto by_file = resolve_msbuild_project(cache, dir.path.string(), "Editor.vcxproj");
+    REQUIRE(by_file.has_value());
+    CHECK(*by_file == expected);
+}

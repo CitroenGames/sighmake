@@ -47,6 +47,13 @@ std::string resolve_make_build_target(
     const BuildOptions& options,
     const std::string& config);
 
+// Generated project file that --project names for an MSBuild build: a path (relative to the cache
+// directory), a project or target name, or a generated project file name. std::nullopt when unknown.
+std::optional<std::filesystem::path> resolve_msbuild_project(
+    const BuildCache& cache,
+    const std::string& cache_dir,
+    const std::string& requested_project);
+
 // Message printed when --build finds no cache in `directory`. Names the directory that was searched and,
 // when the cache is in `cwd` instead, hints at `--build .`.
 std::string missing_cache_message(const std::string& directory, const std::filesystem::path& cwd);
