@@ -52,3 +52,22 @@ libs = deps/libfoo.a, pthread
     CHECK(bf2_contains(deps, fs::path("/tmp/bf2/sub/deps/libfoo.a").lexically_normal().string()));
 }
 
+TEST_CASE("A later unconditional type does not clobber a platform-conditional type", "[bugfix2_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug
+platforms = Linux, Android
+
+[project:App]
+if(Android) {
+    type = dll
+}
+type = exe
+)");
+    REQUIRE(sol.projects.size() == 1);
+    const Project& app = sol.projects[0];
+    CHECK(app.configurations.at("Debug|Android").config_type == "DynamicLibrary");
+    CHECK(app.configurations.at("Debug|Linux").config_type == "Application");
+}
+
