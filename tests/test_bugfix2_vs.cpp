@@ -197,3 +197,70 @@ $Project "App"
     }
 }
 
+TEST_CASE("buildscript writer: per-config compiler/linker settings are not taken from the first config only", "[bugfix2_vs]") {
+    Bugfix2VsTempDir dir("writer_per_config");
+    Project project;
+    project.name = "App";
+    auto& debug = project.configurations["Debug|x64"];
+    auto& release = project.configurations["Release|x64"];
+    debug.config_type = release.config_type = "Application";
+    debug.cl_compile.warning_level = "Level4";
+    release.cl_compile.warning_level = "Level3";
+    debug.cl_compile.exception_handling = "Sync";
+    release.cl_compile.exception_handling = "false";
+    debug.cl_compile.runtime_type_info = true;
+    release.cl_compile.runtime_type_info = false;
+    debug.link.target_machine = "MachineX64";
+    release.link.target_machine = "MachineX86";
+    SourceFile src;
+    src.path = "main.cpp";
+    src.type = FileType::ClCompile;
+    project.sources.push_back(src);
+
+    const fs::path script = dir.path / "App.buildscript";
+    BuildscriptWriter writer;
+    REQUIRE(writer.write_buildscript(project, script.string(), {"Debug", "Release"}, {"x64"}));
+
+    BuildscriptParser parser;
+    Solution solution = parser.parse(script.string());
+    REQUIRE(solution.projects.size() == 1);
+    const auto& cfgs = solution.projects[0].configurations;
+    REQUIRE(cfgs.count("Debug|x64"));
+    REQUIRE(cfgs.count("Release|x64"));
+    CHECK(cfgs.at("Debug|x64").cl_compile.warning_level == "Level4");
+    CHECK(cfgs.at("Release|x64").cl_compile.warning_level == "Level3");
+    CHECK(cfgs.at("Debug|x64").cl_compile.exception_handling == "Sync");
+    CHECK(cfgs.at("Release|x64").cl_compile.exception_handling == "false");
+    CHECK(cfgs.at("Debug|x64").cl_compile.runtime_type_info == true);
+    CHECK(cfgs.at("Release|x64").cl_compile.runtime_type_info == false);
+    CHECK(cfgs.at("Debug|x64").link.target_machine == "MachineX64");
+    CHECK(cfgs.at("Release|x64").link.target_machine == "MachineX86");
+}
+
+TEST_CASE("buildscript writer: identical per-config settings stay at project level", "[bugfix2_vs]") {
+    Bugfix2VsTempDir dir("writer_same");
+    Project project;
+    project.name = "App";
+    for (const char* key : {"Debug|x64", "Release|x64"}) {
+        auto& c = project.configurations[key];
+        c.config_type = "Application";
+        c.cl_compile.warning_level = "Level3";
+        c.cl_compile.runtime_type_info = false;
+    }
+    SourceFile src;
+    src.path = "main.cpp";
+    src.type = FileType::ClCompile;
+    project.sources.push_back(src);
+    const fs::path script = dir.path / "App.buildscript";
+    BuildscriptWriter writer;
+    REQUIRE(writer.write_buildscript(project, script.string(), {"Debug", "Release"}, {"x64"}));
+    std::ifstream f(script);
+    std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    auto count = [&](const std::string& needle) {
+        size_t n = 0, pos = 0;
+        while ((pos = text.find(needle, pos)) != std::string::npos) { n++; pos += needle.size(); }
+        return n;
+    };
+    CHECK(count("warning_level = Level3") == 1);
+    CHECK(count("rtti = false") == 1);
+}

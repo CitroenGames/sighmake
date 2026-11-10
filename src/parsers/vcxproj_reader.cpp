@@ -2564,7 +2564,13 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         }
         if (!cl.exception_handling.empty())
             out << "exceptions = " << cl.exception_handling << "\n";
-        if (!cl.runtime_type_info)
+        // rtti = false is written when any config disables it; configs that keep it get "rtti = true" below
+        // (a project-level default of true would otherwise override a per-config false on parse).
+        bool any_rtti_off = false;
+        for (const auto& [config_key, config] : project.configurations) {
+            if (!config.cl_compile.runtime_type_info) any_rtti_off = true;
+        }
+        if (any_rtti_off)
             out << "rtti = false\n";
         if (cl.multi_processor_compilation)
             out << "multiprocessor = true\n";
@@ -2845,6 +2851,39 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         if (!cfg.cl_compile.forced_include_files.empty() &&
             cfg.cl_compile.forced_include_files != first_cfg.cl_compile.forced_include_files) {
             out << "forced_includes = " << join_paths(cfg.cl_compile.forced_include_files) << "\n";
+        }
+        // Settings written once at project level from the first config; emit per config when they differ
+        {
+            const auto& fcl = first_cfg.cl_compile;
+            const auto& ccl = cfg.cl_compile;
+            const auto& flk = first_cfg.link;
+            const auto& clk = cfg.link;
+            auto diff_str = [&](const char* key, const std::string& v, const std::string& first_v) {
+                if (!v.empty() && v != first_v) out << key << " = " << v << "\n";
+            };
+            auto diff_bool = [&](const char* key, bool v, bool first_v) {
+                if (v != first_v) out << key << " = " << (v ? "true" : "false") << "\n";
+            };
+            if (!ccl.warning_level.empty() && ccl.warning_level != fcl.warning_level) {
+                out << "warning_level = " << (ccl.warning_level == "TurnOffAllWarnings" ? "Level0" : ccl.warning_level) << "\n";
+            }
+            diff_str("exceptions", ccl.exception_handling, fcl.exception_handling);
+            if (ccl.runtime_type_info) {
+                bool any_off = false;
+                for (const auto& [k, c] : project.configurations) {
+                    if (!c.cl_compile.runtime_type_info) any_off = true;
+                }
+                if (any_off) out << "rtti = true\n";
+            }
+            diff_str("simd", ccl.enhanced_instruction_set, fcl.enhanced_instruction_set);
+            diff_str("floating_point", ccl.floating_point_model, fcl.floating_point_model);
+            diff_bool("string_pooling", ccl.string_pooling, fcl.string_pooling);
+            diff_bool("buffer_security", ccl.buffer_security_check, fcl.buffer_security_check);
+            diff_str("compile_as", ccl.compile_as, fcl.compile_as);
+            diff_bool("openmp", ccl.openmp_support, fcl.openmp_support);
+            diff_bool("treat_warning_as_error", ccl.treat_warning_as_error, fcl.treat_warning_as_error);
+            diff_bool("safe_seh", clk.image_has_safe_exception_handlers, flk.image_has_safe_exception_handlers);
+            diff_str("target_machine", clk.target_machine, flk.target_machine);
         }
         if (!cfg.executable_path.empty())
             out << "executable_path = " << cfg.executable_path << "\n";
