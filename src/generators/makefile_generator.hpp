@@ -67,6 +67,12 @@ private:
     // Strip .lib or .dll extension from library names
     std::string strip_lib_extension(const std::string& lib);
 
+    // Static libraries linked into a shared library, per "Config|Platform" key, for the solution
+    // being generated (static_libraries_linked_into_shared_libraries(); computed once per key).
+    const std::set<std::string>& pic_static_libraries(const Solution& solution, const std::string& config_key);
+    const Solution* pic_cache_solution_ = nullptr;
+    std::map<std::string, std::set<std::string>> pic_cache_;
+
     // PCH helper functions
     std::pair<bool, std::string> get_pch_info(const Configuration& config);
     std::tuple<std::string, std::string> get_file_pch_mode(

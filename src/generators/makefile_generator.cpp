@@ -642,6 +642,19 @@ std::string MakefileGenerator::strip_lib_extension(const std::string& lib) {
     return result;
 }
 
+const std::set<std::string>& MakefileGenerator::pic_static_libraries(const Solution& solution,
+                                                                    const std::string& config_key) {
+    if (pic_cache_solution_ != &solution) {
+        pic_cache_.clear();
+        pic_cache_solution_ = &solution;
+    }
+    auto it = pic_cache_.find(config_key);
+    if (it == pic_cache_.end()) {
+        it = pic_cache_.emplace(config_key, static_libraries_linked_into_shared_libraries(solution, config_key)).first;
+    }
+    return it->second;
+}
+
 // Determine if PCH is enabled for a configuration and return the PCH header path
 std::pair<bool, std::string> MakefileGenerator::get_pch_info(const Configuration& config) {
     bool has_pch = !config.cl_compile.pch.mode.empty() &&
@@ -1528,6 +1541,8 @@ $(AAB): $(APK)
 bool MakefileGenerator::generate_makefile(const Project& project, const Solution& solution,
                                          const std::string& config_key, const std::string& output_path) {
     auto project_lookup = build_project_lookup(solution);
+    pic_cache_.clear();  // Single-project entry point: never reuse a graph from an earlier call
+    pic_cache_solution_ = &solution;
     return generate_makefile_with_lookup(project, solution, config_key, output_path, project_lookup);
 }
 
@@ -1761,7 +1776,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     // true: without it GCC must assume every exported function can be replaced at load time, so it
     // inlines less across functions and reaches globals through the GOT. Mach-O (two-level
     // namespaces) has no such interposition model, so Apple targets do not need the flag.
-    const bool position_independent = project_uses_position_independent_code(solution, project, config_key);
+    const bool position_independent = project_uses_position_independent_code(
+        solution, project, config_key, &pic_static_libraries(solution, config_key));
 #ifdef __APPLE__
     const bool elf_target = android;
 #else
@@ -2439,6 +2455,8 @@ bool MakefileGenerator::generate(Solution& solution, const std::string& output_d
     }
 
     std::cout << "Generating Makefiles for solution: " << solution.name << "\n";
+    pic_cache_.clear();  // The solution may have changed since a previous generate()
+    pic_cache_solution_ = &solution;
 
     // C# projects are built by `dotnet build` on their generated .csproj. Give each configuration a cell
     // for the host platform (copied from the project's existing cell) so the master Makefile lists it, and
