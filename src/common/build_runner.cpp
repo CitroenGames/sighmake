@@ -253,7 +253,7 @@ int BuildRunner::run_msbuild(const BuildCache& cache, const BuildOptions& option
 
     // Build MSBuild command
     std::string cmd = "\"\"" + msbuild_path + "\" \"" + build_path.string() + "\"";
-    cmd += " /p:Configuration=" + config;
+    cmd += " /p:Configuration=\"" + config + "\"";
     cmd += " /p:Platform=\"" + platform + "\"";
 
     if (!options.clean_only && std::any_of(cache.projects.begin(), cache.projects.end(),
@@ -584,7 +584,7 @@ int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,
     const std::string requested_target = options.project.empty() ? options.target : options.project;
 
     // Build cmake --build command
-    std::string cmd = "cmake --build \"" + build_dir.string() + "\" --config " + config;
+    std::string cmd = "cmake --build \"" + build_dir.string() + "\" --config \"" + config + "\"";
 
     if (options.clean_only) {
         cmd += " --target clean";

@@ -156,3 +156,31 @@ TEST_CASE("MSBuild --project accepts the generated project file name", "[bugfix_
     REQUIRE(by_file.has_value());
     CHECK(*by_file == expected);
 }
+
+#ifndef _WIN32
+TEST_CASE("CMake --build passes a configuration name with spaces as one argument", "[bugfix_common]") {
+    BugfixTempDir dir("sighmake_bugfix_common_cmake_config_space");
+    const fs::path bin = dir.path / "bin";
+    const fs::path log = dir.path / "cmake.log";
+    fs::create_directories(bin);
+    std::ofstream(bin / "cmake") << "#!/bin/sh\nprintf '[%s]\\n' \"$@\" >> \"" << log.string() << "\"\nexit 0\n";
+    fs::permissions(bin / "cmake", fs::perms::owner_all, fs::perm_options::add);
+
+    const fs::path root = dir.path / "root";
+    fs::create_directories(root / "build");
+    std::ofstream(root / "build" / "CMakeCache.txt") << "\n";
+    BuildCache cache;
+    cache.generator = "cmake";
+    cache.solution_name = "Demo";
+    cache.configurations = {"Debug DLL", "Release"};
+    cache.build_dir = "build";
+    REQUIRE(cache.write(root.string()));
+
+    EnvGuard path("PATH", bin.string() + ":" + (std::getenv("PATH") ? std::getenv("PATH") : ""));
+    BuildOptions options;
+    options.directory = root.string();
+    options.config = "Debug DLL";
+    CHECK(BuildRunner::run(options) == 0);
+    CHECK(read_text(log).find("[--config]\n[Debug DLL]\n") != std::string::npos);
+}
+#endif
