@@ -1704,6 +1704,17 @@ bool CMakeGenerator::generate_root_cmakelists(const Solution& solution, const st
         std::string lang = detect_project_language(project);
         if (lang == "C") has_c = true;
         else has_cxx = true;
+        // A project of mixed C and C++ sources reports C++, but CMake silently skips the sources
+        // of a language the root project() did not enable.
+        for (const auto& src : project.sources) {
+            if (src.type != FileType::ClCompile) continue;
+            const std::string ext = file_types::lowercase_extension(src.path);
+            if (file_types::is_c_source(ext)) has_c = true;
+            for (const auto& [key, value] : src.settings.compile_as) {
+                (void)key;
+                if (value == "CompileAsC") has_c = true;
+            }
+        }
     }
 
     out << "project(" << solution.name << " LANGUAGES";

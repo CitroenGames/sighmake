@@ -2,6 +2,8 @@
 #include "catch_amalgamated.hpp"
 #include "parsers/buildscript_parser.hpp"
 #include "generators/makefile_generator.hpp"
+#include "generators/cmake_generator.hpp"
+#include "parsers/cmake_parser.hpp"
 
 #include <cstdlib>
 
@@ -204,4 +206,29 @@ intdir = obj
     CHECK(p.make("Debug") == 0);
     CHECK(bugfix3_run("\"" + (p.dir / "bin" / "App").string() + "\"") == 0);
 #endif
+}
+
+TEST_CASE("CMake root enables C when a C++ project also holds C sources", "[bugfix3_make]") {
+    const fs::path dir = fs::temp_directory_path() / "sighmake bugfix3 cmake mixed";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir / "src");
+    std::ofstream(dir / "src" / "a.c") << "int c_fn(void) { return 1; }\n";
+    std::ofstream(dir / "src" / "main.cpp") << "extern \"C\" int c_fn(void);\nint main() { return c_fn() == 1 ? 0 : 1; }\n";
+    BuildscriptParser parser;
+    Solution solution = parser.parse_string(R"(
+[solution]
+name = Mixed
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+sources = src/a.c, src/main.cpp
+)", dir.string());
+    CMakeGenerator generator;
+    REQUIRE(generator.generate(solution, dir.string()));
+    const std::string root = bugfix3_make_read(dir / "CMakeLists.txt");
+    CHECK(root.find("project(Mixed LANGUAGES C CXX)") != std::string::npos);
+    fs::remove_all(dir, ec);
 }
