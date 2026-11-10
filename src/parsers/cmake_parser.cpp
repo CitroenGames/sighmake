@@ -184,6 +184,7 @@ Solution CMakeParser::parse_string(const std::string& content, const std::string
     state.variables["CMAKE_SOURCE_DIR"] = base_path;
     state.variables["CMAKE_CURRENT_SOURCE_DIR"] = base_path;
     state.variables["CMAKE_BINARY_DIR"] = base_path;
+    state.variables["CMAKE_CURRENT_LIST_DIR"] = base_path;
     state.variables["CMAKE_CURRENT_BINARY_DIR"] = base_path;
     state.variables["PROJECT_SOURCE_DIR"] = base_path;
     state.variables["PROJECT_BINARY_DIR"] = base_path;
@@ -280,6 +281,18 @@ Solution CMakeParser::parse_string(const std::string& content, const std::string
                     ++it;
                 }
             }
+        }
+    }
+
+    // Definitions without a generator expression are recorded at project level; the generators
+    // only read the per-configuration lists, so they are applied to every configuration here
+    // (before the configuration specific ones, as the buildscript parser does).
+    for (auto& proj : solution.projects) {
+        if (proj.project_level_preprocessor_definitions.empty()) continue;
+        for (const auto& config_key : solution.get_config_keys()) {
+            auto& defines = proj.configurations[config_key].cl_compile.preprocessor_definitions;
+            defines.insert(defines.begin(), proj.project_level_preprocessor_definitions.begin(),
+                           proj.project_level_preprocessor_definitions.end());
         }
     }
 
@@ -474,6 +487,7 @@ void CMakeParser::handle_add_executable(const std::vector<std::string>& args, Pa
         proj->project_name = target_name;
         proj->uuid = generate_uuid();
         proj->root_namespace = target_name;
+        apply_directory_settings(*proj, state);
     }
 
     // Set type to Application for all configs
@@ -505,8 +519,8 @@ void CMakeParser::handle_add_library(const std::vector<std::string>& args, Parse
 
     // Handle ALIAS targets - they don't create real build artifacts
     if (args.size() > 2 && args[1] == "ALIAS") {
-        // Don't create a project for ALIAS targets
-        // They're just references to existing targets
+        // No project for an ALIAS target: remember it so links to it reach the real target
+        state.aliases[sanitize_target_name(args[0])] = resolve_alias(sanitize_target_name(args[2]), state);
         return;
     }
 
@@ -527,6 +541,7 @@ void CMakeParser::handle_add_library(const std::vector<std::string>& args, Parse
         proj->project_name = target_name;
         proj->uuid = generate_uuid();
         proj->root_namespace = target_name;
+        apply_directory_settings(*proj, state);
     }
 
     // Check for type
@@ -608,6 +623,7 @@ void CMakeParser::handle_add_subdirectory(const std::vector<std::string>& args, 
     // Update CMake variables for the new scope
     sub_state.variables["CMAKE_CURRENT_SOURCE_DIR"] = subdir_path.string();
     sub_state.variables["CMAKE_CURRENT_BINARY_DIR"] = binary_dir.string();
+    sub_state.variables["CMAKE_CURRENT_LIST_DIR"] = subdir_path.string();
     
     // Clear parent-scope vars before parsing subdirectory
     sub_state.parent_scope_vars.clear();
@@ -1160,7 +1176,7 @@ void CMakeParser::handle_target_link_libraries(const std::vector<std::string>& a
                 if (evaluated.empty()) continue;
 
                 // Process the evaluated library for this config
-                std::string sanitized_name = sanitize_target_name(evaluated);
+                std::string sanitized_name = resolve_alias(sanitize_target_name(evaluated), state);
 
                 // Check if it's an internal project reference
                 Project* dep_proj = find_project(sanitized_name, state);
@@ -1196,7 +1212,7 @@ void CMakeParser::handle_target_link_libraries(const std::vector<std::string>& a
         }
 
         // No generator expression - original logic
-        std::string sanitized_name = sanitize_target_name(arg);
+        std::string sanitized_name = resolve_alias(sanitize_target_name(arg), state);
 
         // 1. Check if it's an internal project reference
         Project* dep_proj = find_project(sanitized_name, state);
@@ -1323,6 +1339,7 @@ void CMakeParser::handle_include_directories(const std::vector<std::string>& arg
             p = fs::path(state.base_path) / p;
         }
 
+        state.directory_include_dirs.push_back(p.string());
         for (auto& proj : state.solution->projects) {
             for (const auto& config_key : state.solution->get_config_keys()) {
                 proj.configurations[config_key].cl_compile.additional_include_directories.push_back(p.string());
@@ -1339,12 +1356,124 @@ void CMakeParser::handle_link_directories(const std::vector<std::string>& args, 
             p = fs::path(state.base_path) / p;
         }
 
+        state.directory_link_dirs.push_back(p.string());
         for (auto& proj : state.solution->projects) {
             for (const auto& config_key : state.solution->get_config_keys()) {
                 proj.configurations[config_key].link.additional_library_directories.push_back(p.string());
             }
         }
     }
+}
+
+std::string CMakeParser::resolve_alias(const std::string& name, const ParseState& state) const {
+    auto it = state.aliases.find(name);
+    return it == state.aliases.end() ? name : it->second;
+}
+
+// Applies the directory-scope settings recorded so far to a target created in that scope.
+void CMakeParser::apply_directory_settings(Project& project, const ParseState& state) {
+    for (const auto& def : state.directory_definitions) project.project_level_preprocessor_definitions.push_back(def);
+    for (const auto& config_key : state.solution->get_config_keys()) {
+        auto& cfg = project.configurations[config_key];
+        for (const auto& dir : state.directory_include_dirs) cfg.cl_compile.additional_include_directories.push_back(dir);
+        for (const auto& dir : state.directory_link_dirs) cfg.link.additional_library_directories.push_back(dir);
+        for (const auto& opt : state.directory_compile_options) {
+            if (!cfg.cl_compile.additional_options.empty()) cfg.cl_compile.additional_options += " ";
+            cfg.cl_compile.additional_options += opt;
+        }
+    }
+}
+
+void CMakeParser::handle_add_compile_definitions(const std::vector<std::string>& args, ParseState& state) {
+    for (const auto& def : args) {
+        if (def.empty()) continue;
+        state.directory_definitions.push_back(def);
+        for (auto& proj : state.solution->projects) proj.project_level_preprocessor_definitions.push_back(def);
+    }
+}
+
+void CMakeParser::handle_add_definitions(const std::vector<std::string>& args, ParseState& state) {
+    std::vector<std::string> definitions;
+    for (const auto& arg : args) {
+        if (arg.size() > 2 && arg.compare(0, 2, "-D") == 0) {
+            definitions.push_back(arg.substr(2));
+        } else if (!arg.empty()) {
+            // Other flags go to the compiler command line unchanged
+            handle_add_compile_options({arg}, state);
+        }
+    }
+    handle_add_compile_definitions(definitions, state);
+}
+
+void CMakeParser::handle_add_compile_options(const std::vector<std::string>& args, ParseState& state) {
+    for (const auto& opt : args) {
+        if (opt.empty()) continue;
+        state.directory_compile_options.push_back(opt);
+        for (auto& proj : state.solution->projects) {
+            for (const auto& config_key : state.solution->get_config_keys()) {
+                std::string& opts = proj.configurations[config_key].cl_compile.additional_options;
+                if (!opts.empty()) opts += " ";
+                opts += opt;
+            }
+        }
+    }
+}
+
+// include(<file|module> [OPTIONAL] [RESULT_VARIABLE <var>] [NO_POLICY_SCOPE]): runs the file in
+// the current scope. Built-in modules (GNUInstallDirs, ...) are not available and are skipped.
+void CMakeParser::handle_include(const std::vector<std::string>& args, ParseState& state) {
+    if (args.empty()) return;
+    static int depth = 0;
+    if (depth >= 32) return;
+
+    const std::string& name = args[0];
+    fs::path file(name);
+    const bool is_path = name.find('/') != std::string::npos || name.find('\\') != std::string::npos ||
+                         fs::path(name).extension() == ".cmake";
+    if (is_path) {
+        if (file.is_relative()) {
+            file = fs::path(state.current_source_dir.empty() ? state.base_path : state.current_source_dir) / file;
+        }
+    } else {
+        file.clear();
+        auto module_path = state.variables.find("CMAKE_MODULE_PATH");
+        if (module_path != state.variables.end()) {
+            std::stringstream dirs(module_path->second);
+            std::string dir;
+            while (std::getline(dirs, dir, ';')) {
+                if (dir.empty()) continue;
+                fs::path candidate = fs::path(dir) / (name + ".cmake");
+                if (fs::is_regular_file(candidate)) { file = candidate; break; }
+            }
+        }
+    }
+    std::error_code ec;
+    if (file.empty() || !fs::is_regular_file(file, ec)) {
+        for (size_t i = 1; i + 1 < args.size(); ++i) {
+            if (args[i] == "RESULT_VARIABLE") state.variables[args[i + 1]] = "NOTFOUND";
+        }
+        return;
+    }
+    std::ifstream in(file);
+    if (!in) return;
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    for (size_t i = 1; i + 1 < args.size(); ++i) {
+        if (args[i] == "RESULT_VARIABLE") state.variables[args[i + 1]] = file.string();
+    }
+
+    const auto old_list_dir = state.variables.find("CMAKE_CURRENT_LIST_DIR");
+    const bool had_list_dir = old_list_dir != state.variables.end();
+    const std::string saved_list_dir = had_list_dir ? old_list_dir->second : std::string();
+    state.variables["CMAKE_CURRENT_LIST_DIR"] = file.parent_path().string();
+    state.variables["CMAKE_CURRENT_LIST_FILE"] = file.string();
+    ++depth;
+    auto tokens = tokenize(buffer.str());
+    size_t i = 0;
+    execute_tokens(tokens, i, state);
+    --depth;
+    if (had_list_dir) state.variables["CMAKE_CURRENT_LIST_DIR"] = saved_list_dir;
+    else state.variables.erase("CMAKE_CURRENT_LIST_DIR");
 }
 
 void CMakeParser::handle_file(const std::vector<std::string>& args, ParseState& state) {
@@ -1906,6 +2035,10 @@ void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, Pa
                     else if (command == "target_sources") handle_target_sources(args, state);
                     else if (command == "include_directories") handle_include_directories(args, state);
                     else if (command == "link_directories") handle_link_directories(args, state);
+                    else if (command == "add_compile_definitions") handle_add_compile_definitions(args, state);
+                    else if (command == "add_definitions") handle_add_definitions(args, state);
+                    else if (command == "add_compile_options") handle_add_compile_options(args, state);
+                    else if (command == "include") handle_include(args, state);
                     else if (command == "file") handle_file(args, state);
                     else if (command == "find_library") handle_find_library(args, state);
                     else if (command == "find_path") handle_find_path(args, state);

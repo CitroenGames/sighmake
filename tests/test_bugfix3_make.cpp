@@ -232,3 +232,101 @@ sources = src/a.c, src/main.cpp
     CHECK(root.find("project(Mixed LANGUAGES C CXX)") != std::string::npos);
     fs::remove_all(dir, ec);
 }
+
+namespace {
+const Project* bugfix3_find(const Solution& sol, const std::string& name) {
+    for (const auto& proj : sol.projects) {
+        if (proj.name == name) return &proj;
+    }
+    return nullptr;
+}
+bool bugfix3_has(const std::vector<std::string>& values, const std::string& value) {
+    return std::find(values.begin(), values.end(), value) != values.end();
+}
+} // namespace
+
+TEST_CASE("CMake reader applies plain target_compile_definitions to every configuration", "[bugfix3_make]") {
+    CMakeParser parser;
+    Solution sol = parser.parse_string(R"(
+project(T)
+add_executable(App main.cpp)
+target_compile_definitions(App PRIVATE PLAIN=1 PUBLIC OTHER)
+)");
+    const Project* p = bugfix3_find(sol, "App");
+    REQUIRE(p != nullptr);
+    for (const auto& key : sol.get_config_keys()) {
+        const auto& defs = p->configurations.at(key).cl_compile.preprocessor_definitions;
+        CHECK(bugfix3_has(defs, "PLAIN=1"));
+        CHECK(bugfix3_has(defs, "OTHER"));
+    }
+}
+
+TEST_CASE("CMake reader directory-scope commands reach targets created afterwards", "[bugfix3_make]") {
+    CMakeParser parser;
+    Solution sol = parser.parse_string(R"(
+project(T)
+include_directories(inc)
+link_directories(libs)
+add_definitions(-DFOO=1 -Wall)
+add_compile_definitions(BAR)
+add_compile_options(-Wextra)
+add_executable(App main.cpp)
+add_library(Lib STATIC lib.cpp)
+)");
+    for (const char* name : {"App", "Lib"}) {
+        const Project* p = bugfix3_find(sol, name);
+        REQUIRE(p != nullptr);
+        for (const auto& key : sol.get_config_keys()) {
+            const auto& cfg = p->configurations.at(key);
+            CHECK(bugfix3_has(cfg.cl_compile.preprocessor_definitions, "FOO=1"));
+            CHECK(bugfix3_has(cfg.cl_compile.preprocessor_definitions, "BAR"));
+            CHECK(cfg.cl_compile.additional_options.find("-Wall") != std::string::npos);
+            CHECK(cfg.cl_compile.additional_options.find("-Wextra") != std::string::npos);
+            REQUIRE(cfg.cl_compile.additional_include_directories.size() == 1);
+            CHECK(cfg.cl_compile.additional_include_directories[0].find("inc") != std::string::npos);
+            REQUIRE(cfg.link.additional_library_directories.size() == 1);
+        }
+    }
+}
+
+TEST_CASE("CMake reader resolves ALIAS targets in target_link_libraries", "[bugfix3_make]") {
+    CMakeParser parser;
+    Solution sol = parser.parse_string(R"(
+project(T)
+add_library(core STATIC core.cpp)
+add_library(T::core ALIAS core)
+add_executable(App main.cpp)
+target_link_libraries(App PRIVATE T::core)
+)");
+    const Project* app = bugfix3_find(sol, "App");
+    REQUIRE(app != nullptr);
+    REQUIRE(app->project_references.size() == 1);
+    CHECK(app->project_references[0].name == "core");
+    CHECK(bugfix3_find(sol, "T_core") == nullptr);
+    for (const auto& [key, cfg] : app->configurations) {
+        (void)key;
+        CHECK(cfg.link.additional_dependencies.empty());
+    }
+}
+
+TEST_CASE("CMake reader runs include() files in the current scope", "[bugfix3_make]") {
+    const fs::path dir = fs::temp_directory_path() / "sighmake bugfix3 cmake include";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir / "cmake");
+    std::ofstream(dir / "cmake" / "extra.cmake") << "set(EXTRA_DEFS ONE TWO)\nadd_library(fromfile STATIC f.cpp)\n";
+    CMakeParser parser;
+    Solution sol = parser.parse_string(R"(
+project(T)
+include(cmake/extra.cmake)
+include(DoesNotExist OPTIONAL)
+add_executable(App main.cpp)
+target_compile_definitions(App PRIVATE ${EXTRA_DEFS})
+)", dir.string());
+    const Project* app = bugfix3_find(sol, "App");
+    REQUIRE(app != nullptr);
+    CHECK(bugfix3_has(app->project_level_preprocessor_definitions, "ONE"));
+    CHECK(bugfix3_has(app->project_level_preprocessor_definitions, "TWO"));
+    CHECK(bugfix3_find(sol, "fromfile") != nullptr);
+    fs::remove_all(dir, ec);
+}

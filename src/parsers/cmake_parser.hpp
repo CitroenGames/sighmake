@@ -53,6 +53,16 @@ private:
         // Defined functions and macros
         std::map<std::string, FunctionDef> functions;
         std::map<std::string, FunctionDef> macros;
+
+        // add_library(<alias> ALIAS <target>): alias name -> target name (both sanitized)
+        std::map<std::string, std::string> aliases;
+
+        // Directory-scope settings (include_directories, add_definitions, ...). They also apply
+        // to targets created after the command, and subdirectories inherit them (state copy).
+        std::vector<std::string> directory_include_dirs;
+        std::vector<std::string> directory_link_dirs;
+        std::vector<std::string> directory_definitions;
+        std::vector<std::string> directory_compile_options;
     };
 
     // Context for evaluating generator expressions
@@ -83,6 +93,12 @@ private:
     void handle_target_sources(const std::vector<std::string>& args, ParseState& state);
     void handle_include_directories(const std::vector<std::string>& args, ParseState& state);
     void handle_link_directories(const std::vector<std::string>& args, ParseState& state);
+    void handle_add_compile_definitions(const std::vector<std::string>& args, ParseState& state);
+    void handle_add_definitions(const std::vector<std::string>& args, ParseState& state);
+    void handle_add_compile_options(const std::vector<std::string>& args, ParseState& state);
+    void handle_include(const std::vector<std::string>& args, ParseState& state);
+    void apply_directory_settings(Project& project, const ParseState& state);
+    std::string resolve_alias(const std::string& name, const ParseState& state) const;
     void handle_file(const std::vector<std::string>& args, ParseState& state);
     void handle_add_subdirectory(const std::vector<std::string>& args, ParseState& state);
     
