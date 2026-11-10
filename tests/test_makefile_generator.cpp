@@ -406,7 +406,12 @@ TEST_CASE("MakefileGenerator static lib linked into a shared lib is -fPIC, trans
         REQUIRE(result.files.count(name));
         const std::string flags = cxxflags_line(result.files[name]);
         CHECK(flags.find("-fPIC") != std::string::npos);
+#ifdef __APPLE__
+        // Mach-O has no ELF interposition model; the flag is not used there.
+        CHECK(flags.find("SIGHMAKE_NO_SEMANTIC_INTERPOSITION") == std::string::npos);
+#else
         CHECK(flags.find("$(SIGHMAKE_NO_SEMANTIC_INTERPOSITION)") != std::string::npos);
+#endif
     }
 }
 
