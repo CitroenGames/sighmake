@@ -477,13 +477,17 @@ Forms: `[config:*|Android]`, `[config:Release|*]`, `[config:*|*]` and `[config:*
 matching cell exactly as if the section were written once per cell, so the usual
 accumulate/replace rules apply. A literal platform that is not part of the matrix
 yet is added to it, and the platforms and configurations declared in `[solution]`
-stay in the matrix (explicit `[config:A|B]` sections alone replace it, see below).
-Declare the matrix before using wildcards; configurations introduced later are not
-covered.
+stay in the matrix. Declare the matrix before using wildcards; configurations
+introduced later are not covered.
 
-When configuration sections are present, the names and platforms appearing in
-those sections become the discovered matrix. If several names and platforms are
-present, sighmake forms their cross-product and fills unset cells with defaults.
+Configuration sections add to the matrix declared in `[solution]`; they never
+remove from it. A configuration or platform named only in a section joins the
+matrix, and a declared one without a section of its own stays and gets the
+defaults (`Debug` keeps `-O0 -g` in Makefiles when only `[config:Release|Linux]`
+is written). When `[solution]` declares no `configurations` (or no `platforms`),
+the names (or platforms) appearing in sections form that dimension instead of the
+built-in defaults. sighmake forms the cross-product and fills unset cells with
+defaults.
 
 ### Configuration templates
 

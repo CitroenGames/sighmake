@@ -658,7 +658,8 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
     // Update configurations from discovered [config:...] sections
     // (this is redundant if configs were discovered, since they're updated immediately,
     // but ensures the final state is correct)
-    if (!state.discovered_configs.empty() && !state.discovered_platforms.empty()) {
+    if (state.user_defined_config_sections &&
+        !state.discovered_configs.empty() && !state.discovered_platforms.empty()) {
         solution.configurations = std::vector<std::string>(
             state.discovered_configs.begin(),
             state.discovered_configs.end()
@@ -1979,11 +1980,13 @@ void BuildscriptParser::parse_solution_setting(const std::string& key, const std
         state.solution->name = value;
     } else if (key == "configurations" || key == "configs") {
         state.solution->configurations = split(value, ',');
+        state.discovered_configs.insert(state.solution->configurations.begin(), state.solution->configurations.end());
     } else if (key == "platforms") {
         state.solution->platforms = split(value, ',');
         for (auto& p : state.solution->platforms) {
             p = normalize_platform(p);
         }
+        state.discovered_platforms.insert(state.solution->platforms.begin(), state.solution->platforms.end());
     } else if (key == "defines" || key == "preprocessor" || key == "preprocessor_definitions") {
         auto defs = split(value, ',');
         state.solution->solution_level_preprocessor_definitions.insert(

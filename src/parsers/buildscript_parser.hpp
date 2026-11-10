@@ -44,8 +44,11 @@ private:
         bool in_set_file_properties = false;  // Track if we're inside a set_file_properties() block
         SourceFile* custom_build_file = nullptr;  // File being configured in custom_build() block
         bool in_custom_build = false;  // Track if we're inside a custom_build() block
-        std::set<std::string> discovered_configs;  // Track configs discovered from [config:...] sections
-        std::set<std::string> discovered_platforms;  // Track platforms discovered from [config:...] sections
+        // Configs and platforms declared in [solution] plus those discovered from [config:...] sections.
+        // Sections add to the declared matrix rather than replace it, so a declared configuration
+        // without a section of its own stays in the solution and gets its defaults.
+        std::set<std::string> discovered_configs;
+        std::set<std::string> discovered_platforms;
         std::set<std::string> explicitly_defined_config_keys;  // Full "Config|Platform" keys with explicit [config:] sections
 
         // Template inheritance tracking

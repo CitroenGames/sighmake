@@ -123,6 +123,62 @@ type = exe
     CHECK(sol.platforms.size() >= 1);
 }
 
+TEST_CASE("Config sections add to the declared matrix instead of replacing it", "[buildscript_parser][config_matrix]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Debug, Release
+platforms = x64, Linux
+
+[project:App]
+type = exe
+sources = main.cpp
+
+[config:Release|Linux]
+optimization = MaxSpeed
+
+[config:Profile|Android]
+optimization = MaxSpeed
+)");
+    auto has = [](const std::vector<std::string>& v, const char* s) {
+        return std::find(v.begin(), v.end(), s) != v.end();
+    };
+    CHECK(has(sol.configurations, "Debug"));
+    CHECK(has(sol.configurations, "Release"));
+    CHECK(has(sol.configurations, "Profile"));
+    CHECK(has(sol.platforms, "x64"));
+    CHECK(has(sol.platforms, "Linux"));
+    CHECK(has(sol.platforms, "Android"));
+
+    // A declared configuration without a section of its own still gets the defaults.
+    REQUIRE(sol.projects.size() == 1);
+    const auto& cfgs = sol.projects[0].configurations;
+    REQUIRE(cfgs.count("Debug|Linux"));
+    CHECK(cfgs.at("Debug|Linux").cl_compile.optimization == "Disabled");
+    CHECK(!cfgs.at("Debug|Linux").cl_compile.debug_information_format.empty());
+    REQUIRE(cfgs.count("Debug|x64"));
+    CHECK(cfgs.at("Debug|x64").cl_compile.optimization == "Disabled");
+    CHECK(cfgs.at("Release|Linux").cl_compile.optimization == "MaxSpeed");
+}
+
+TEST_CASE("Config sections still define the matrix when [solution] declares none", "[buildscript_parser][config_matrix]") {
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+
+[project:App]
+type = exe
+sources = main.cpp
+
+[config:Release|Linux]
+optimization = MaxSpeed
+)");
+    CHECK(sol.configurations == std::vector<std::string>{"Release"});
+    CHECK(sol.platforms == std::vector<std::string>{"Linux"});
+}
+
 TEST_CASE("Solution name falls back to first project name", "[buildscript_parser]") {
     BuildscriptParser parser;
     auto sol = parser.parse_string(R"(

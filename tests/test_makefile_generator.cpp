@@ -275,9 +275,8 @@ TEST_CASE("MakefileGenerator strip = true strips Debug and drops its -g", "[make
 }
 
 TEST_CASE("MakefileGenerator strip in a config section applies to that configuration only", "[makefile_generator][debug_info]") {
-    const std::string section =
-        "\n[config:Debug|Linux]\ndebug_info = ProgramDatabase\n"
-        "\n[config:Release|Linux]\ndebug_info = ProgramDatabase\nstrip = false\n";
+    // Debug has no section of its own: it keeps its defaults (-O0 -g, not stripped).
+    const std::string section = "\n[config:Release|Linux]\nstrip = false\n";
     const std::string rel = makefile_for_config(section, "Release");
     const std::string dbg = makefile_for_config(section, "Debug");
     REQUIRE(!rel.empty());
@@ -285,6 +284,7 @@ TEST_CASE("MakefileGenerator strip in a config section applies to that configura
     CHECK(has_flag(makefile_variable_line(rel, "CXXFLAGS"), "-g"));
     CHECK(rel.find("\tstrip $@") == std::string::npos);
     CHECK(has_flag(makefile_variable_line(dbg, "CXXFLAGS"), "-g"));
+    CHECK(has_flag(makefile_variable_line(dbg, "CXXFLAGS"), "-O0"));
     CHECK(dbg.find("\tstrip $@") == std::string::npos);
 }
 
