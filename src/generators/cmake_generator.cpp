@@ -1171,47 +1171,72 @@ void CMakeGenerator::write_per_file_settings(std::ostream& out, const Project& p
 // Build events
 // ============================================================================
 
-void CMakeGenerator::write_build_events(std::ostream& out, const Project& project, const Solution& /*solution*/) {
-    // Use the first config's build events (they're typically the same across configs)
-    const Configuration* config = nullptr;
-    for (const auto& [key, cfg] : project.configurations) {
-        config = &cfg;
-        break;
-    }
-    if (!config) return;
+void CMakeGenerator::write_build_events(std::ostream& out, const Project& project, const Solution& solution) {
+    auto config_names = get_config_names(solution);
 
-    // Pre-build event
-    if (!config->pre_build_event.command.empty()) {
-        std::string cmd = unescape_newlines(config->pre_build_event.command);
-        out << "\nadd_custom_command(TARGET " << project.name << " PRE_BUILD\n";
-        out << "    COMMAND " << to_cmake_path(cmd) << "\n";
-        if (!config->pre_build_event.message.empty()) {
-            out << "    COMMENT \"" << config->pre_build_event.message << "\"\n";
+    auto write_event = [&](BuildEvent Configuration::*member, const char* when) {
+        // Commands of every configuration; one shared command list is written unconditionally
+        std::vector<std::pair<std::string, const BuildEvent*>> events;
+        bool all_same = true;
+        for (const auto& cfg_name : config_names) {
+            const Configuration* config = find_config(project, cfg_name);
+            const BuildEvent* event = config ? &(config->*member) : nullptr;
+            if (!events.empty() && (!event || !events.front().second ||
+                                    event->command != events.front().second->command)) {
+                all_same = false;
+            }
+            events.emplace_back(cfg_name, event);
+        }
+        const BuildEvent* message_source = nullptr;
+        for (const auto& [cfg_name, event] : events) {
+            if (event && !event->command.empty()) {
+                message_source = event;
+                break;
+            }
+        }
+        if (!message_source) return;
+
+        out << "\nadd_custom_command(TARGET " << project.name << " " << when << "\n";
+        for (const auto& [cfg_name, event] : events) {
+            if (!event || event->command.empty()) continue;
+            // Each line is a separate command
+            std::istringstream lines(to_cmake_path(unescape_newlines(event->command)));
+            std::string line;
+            while (std::getline(lines, line)) {
+                line = trim(line);
+                if (line.empty()) continue;
+                if (all_same) {
+                    out << "    COMMAND " << line << "\n";
+                    continue;
+                }
+                // Configuration-specific: every word becomes empty in the other configurations,
+                // which drops the command there
+                out << "    COMMAND";
+                std::istringstream words(line);
+                std::string word;
+                while (words >> word) {
+                    std::string escaped;
+                    for (char c : word) {
+                        if (c == '>') escaped += "$<ANGLE-R>";
+                        else if (c == ',') escaped += "$<COMMA>";
+                        else if (c == ';') escaped += "$<SEMICOLON>";
+                        else escaped += c;
+                    }
+                    out << " " << cmake_arg("$<$<CONFIG:" + cfg_name + ">:" + escaped + ">");
+                }
+                out << "\n";
+            }
+            if (all_same) break;
+        }
+        if (!message_source->message.empty()) {
+            out << "    COMMENT " << cmake_quote(message_source->message) << "\n";
         }
         out << ")\n";
-    }
+    };
 
-    // Pre-link event
-    if (!config->pre_link_event.command.empty()) {
-        std::string cmd = unescape_newlines(config->pre_link_event.command);
-        out << "\nadd_custom_command(TARGET " << project.name << " PRE_LINK\n";
-        out << "    COMMAND " << to_cmake_path(cmd) << "\n";
-        if (!config->pre_link_event.message.empty()) {
-            out << "    COMMENT \"" << config->pre_link_event.message << "\"\n";
-        }
-        out << ")\n";
-    }
-
-    // Post-build event
-    if (!config->post_build_event.command.empty()) {
-        std::string cmd = unescape_newlines(config->post_build_event.command);
-        out << "\nadd_custom_command(TARGET " << project.name << " POST_BUILD\n";
-        out << "    COMMAND " << to_cmake_path(cmd) << "\n";
-        if (!config->post_build_event.message.empty()) {
-            out << "    COMMENT \"" << config->post_build_event.message << "\"\n";
-        }
-        out << ")\n";
-    }
+    write_event(&Configuration::pre_build_event, "PRE_BUILD");
+    write_event(&Configuration::pre_link_event, "PRE_LINK");
+    write_event(&Configuration::post_build_event, "POST_BUILD");
 }
 
 // ============================================================================

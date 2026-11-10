@@ -400,3 +400,51 @@ pch_header = stdafx.h
     INFO(c);
     CHECK(c.find("target_precompile_headers(App PRIVATE <stdafx.h>)") != std::string::npos);
 }
+
+// ============================================================================
+// CMake generator: build events
+// ============================================================================
+
+TEST_CASE("bugfix_cmake: each line of a multi-line build event is its own COMMAND", "[bugfix_cmake]") {
+    auto result = generate_cmake(R"(
+[solution]
+name = T
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp
+postbuild = """
+echo first step
+echo second step
+"""
+postbuild_message = Say "hi"
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("    COMMAND echo first step\n    COMMAND echo second step\n") != std::string::npos);
+    CHECK(c.find("    COMMENT \"Say \\\"hi\\\"\"\n") != std::string::npos);
+}
+
+TEST_CASE("bugfix_cmake: a build event set for one configuration only is kept for that configuration",
+          "[bugfix_cmake]") {
+    auto result = generate_cmake(R"(
+[solution]
+name = T
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp
+
+[config:Release|x64]
+prebuild = echo rel > out.txt
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("add_custom_command(TARGET App PRE_BUILD\n"
+                 "    COMMAND $<$<CONFIG:Release>:echo> $<$<CONFIG:Release>:rel> "
+                 "$<$<CONFIG:Release>:$<ANGLE-R>> $<$<CONFIG:Release>:out.txt>\n") != std::string::npos);
+}
