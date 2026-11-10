@@ -330,6 +330,7 @@ std::string map_midl_default_char_type(int value) {
     switch (value) {
         case 0: return "Unsigned";
         case 1: return "Signed";
+        case 2: return "Ascii";
         default: return "";
     }
 }
