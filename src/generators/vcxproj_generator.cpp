@@ -1611,6 +1611,7 @@ bool VcxprojGenerator::generate_vcxproj(const Project& project, const Solution& 
             // NASM custom build rules (auto-generated)
             if (type == FileType::NASM && src->custom_command.empty()) {
                 for (const auto& [cfg_key, cfg] : project.configurations) {
+                    if (is_unix_platform(parse_config_key(cfg_key).second)) continue;  // Skip Unix configs for vcxproj
                     std::string condition = "'$(Configuration)|$(Platform)'=='" + cfg_key + "'";
 
                     // Determine output format

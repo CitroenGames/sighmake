@@ -148,3 +148,28 @@ TEST_CASE("vcproj reader: MIDL DefaultCharType Ascii maps to a valid value", "[b
     CHECK(project.configurations.at("Release|Win32").midl.default_char_type == "Signed");
 }
 
+TEST_CASE("vcxproj: NASM custom build rules are not written for Unix configurations", "[bugfix2_vs]") {
+    Bugfix2VsTempDir dir("nasm_unix");
+    Bugfix2VsGenerated gen;
+    bugfix2_vs_generate(dir, R"(
+[solution]
+name = Test
+configurations = Debug
+platforms = x64, Linux
+
+[project:app]
+type = exe
+nasm = boot.asm
+)", gen);
+    int linux_rules = 0, win_rules = 0;
+    for (auto node : gen.doc.select_nodes("//*[@Include='../boot.asm' or @Include='boot.asm' or contains(@Include,'boot.asm')]")) {
+        for (auto child : node.node().children()) {
+            std::string cond = child.attribute("Condition").as_string();
+            if (cond.find("Linux") != std::string::npos) linux_rules++;
+            if (cond.find("Debug|x64") != std::string::npos) win_rules++;
+        }
+    }
+    CHECK(win_rules > 0);
+    CHECK(linux_rules == 0);
+}
+
