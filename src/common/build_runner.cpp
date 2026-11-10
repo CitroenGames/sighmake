@@ -519,7 +519,9 @@ int BuildRunner::run_cmake(const BuildCache& cache, const BuildOptions& options,
 
     // Verify build directory exists
     fs::path build_dir = fs::path(cache_dir) / cache.build_dir;
-    if (!fs::exists(build_dir)) {
+    // The directory may exist without being a CMake build tree (makefile or vcxproj output of an
+    // earlier generation into the same root): configure whenever CMakeCache.txt is missing.
+    if (!fs::exists(build_dir / "CMakeCache.txt")) {
         // Create build directory and run cmake configure first
         try {
             fs::create_directories(build_dir);
