@@ -320,7 +320,8 @@ std::string map_link_error_reporting(int value) {
 std::string map_midl_target_environment(int value) {
     switch (value) {
         case 1: return "Win32";
-        case 3: return "Win64";
+        case 2: return "Itanium";  // midlTargetWin64 (/env ia64)
+        case 3: return "X64";      // midlTargetAMD64 (/env x64)
         default: return "";
     }
 }

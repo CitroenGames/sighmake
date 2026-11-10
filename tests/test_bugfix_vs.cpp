@@ -248,3 +248,28 @@ TEST_CASE("buildscript writer: per-file optimization and custom build inputs sur
         CHECK(reparsed_gen->custom_inputs.at("Debug|x64") == "common.hlsli");
 }
 
+TEST_CASE("vcproj reader: MIDL TargetEnvironment maps to valid MSBuild values", "[bugfix_vs]") {
+    // VCProjectEngine midlTargetEnvironment: 1 = Win32, 2 = Win64 (Itanium), 3 = AMD64.
+    // MSBuild's Midl TargetEnvironment accepts Win32, Itanium, X64 (there is no "Win64").
+    BugfixVsTempDir dir("vcproj_midl");
+    bugfix_vs_write_file(dir.path / "App.vcproj", R"(<?xml version="1.0" encoding="Windows-1252"?>
+<VisualStudioProject ProjectType="Visual C++" Version="9.00" Name="App" ProjectGUID="{11111111-2222-3333-4444-555555555555}">
+  <Configurations>
+    <Configuration Name="Debug|x64" ConfigurationType="1">
+      <Tool Name="VCMIDLTool" TargetEnvironment="3"/>
+    </Configuration>
+    <Configuration Name="Debug|Itanium" ConfigurationType="1">
+      <Tool Name="VCMIDLTool" TargetEnvironment="2"/>
+    </Configuration>
+  </Configurations>
+  <Files/>
+</VisualStudioProject>
+)");
+    VcprojReader reader;
+    Project project = reader.read_vcproj((dir.path / "App.vcproj").string());
+    REQUIRE(project.configurations.count("Debug|x64"));
+    CHECK(project.configurations.at("Debug|x64").midl.target_environment == "X64");
+    REQUIRE(project.configurations.count("Debug|Itanium"));
+    CHECK(project.configurations.at("Debug|Itanium").midl.target_environment == "Itanium");
+}
+
