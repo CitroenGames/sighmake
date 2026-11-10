@@ -2881,7 +2881,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             const auto& flk = first_cfg.link;
             const auto& clk = cfg.link;
             auto diff_str = [&](const char* key, const std::string& v, const std::string& first_v) {
-                if (!v.empty() && v != first_v) out << key << " = " << v << "\n";
+                if (v != first_v) out << key << " = " << v << "\n";
             };
             auto diff_bool = [&](const char* key, bool v, bool first_v) {
                 if (v != first_v) out << key << " = " << (v ? "true" : "false") << "\n";

@@ -233,3 +233,33 @@ $Project "App"
     REQUIRE(solution.projects.size() == 1);
     CHECK(bugfix3_vs_filters(solution.projects[0]) == before);
 }
+
+TEST_CASE("buildscript writer unsets a per-config string setting that is empty in a later config", "[bugfix3_vs]") {
+    Bugfix3VsTempDir dir("unset");
+    Project project;
+    project.name = "App";
+    auto& debug = project.configurations["Debug|x64"];
+    auto& release = project.configurations["Release|x64"];
+    debug.config_type = release.config_type = "Application";
+    debug.cl_compile.enhanced_instruction_set = "AdvancedVectorExtensions2";
+    release.cl_compile.enhanced_instruction_set = "";
+    debug.cl_compile.floating_point_model = "Fast";
+    release.cl_compile.floating_point_model = "";
+    SourceFile src;
+    src.path = "main.cpp";
+    src.type = FileType::ClCompile;
+    project.sources.push_back(src);
+
+    const fs::path script = dir.path / "App.buildscript";
+    BuildscriptWriter writer;
+    REQUIRE(writer.write_buildscript(project, script.string(), {"Debug", "Release"}, {"x64"}));
+    BuildscriptParser parser;
+    Solution solution = parser.parse(script.string());
+    REQUIRE(solution.projects.size() == 1);
+    const auto& cfgs = solution.projects[0].configurations;
+    REQUIRE(cfgs.count("Release|x64"));
+    CHECK(cfgs.at("Debug|x64").cl_compile.enhanced_instruction_set == "AdvancedVectorExtensions2");
+    CHECK(cfgs.at("Release|x64").cl_compile.enhanced_instruction_set.empty());
+    CHECK(cfgs.at("Debug|x64").cl_compile.floating_point_model == "Fast");
+    CHECK(cfgs.at("Release|x64").cl_compile.floating_point_model.empty());
+}
