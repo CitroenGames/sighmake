@@ -2866,16 +2866,12 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
 
         for (const auto& proj : solution.projects) {
             if (proj.is_package_project) continue;
-            for (const auto& [config_key, config] : proj.configurations) {
-                size_t pipe_pos = config_key.find('|');
-                std::string cfg_name = (pipe_pos != std::string::npos)
-                    ? config_key.substr(0, pipe_pos) : config_key;
-                std::string plat = (pipe_pos != std::string::npos)
-                    ? config_key.substr(pipe_pos + 1) : "";
-
-                if (cfg_name != install_config) continue;
-                if (is_windows_platform(plat)) continue;
-                if (is_android_platform(plat)) continue;  // Device binaries - never installed on the host
+            // The configuration whose makefile is generated (Android device binaries are never
+            // installed on the host).
+            if (const auto install_key = find_makefile_config_key(proj, install_config, false)) {
+                const std::string& config_key = *install_key;
+                const Configuration& config = proj.configurations.at(config_key);
+                const std::string& cfg_name = install_config;
 
                 std::string target_name = config.target_name.empty() ? proj.name : config.target_name;
                 std::string target_ext = config.target_ext;
@@ -2891,7 +2887,8 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
                     target_ext.clear();
                 }
                 const std::string binary_name = target_name + target_ext;
-                std::string out_dir = config.out_dir.empty() ? "build/" + cfg_name : config.out_dir;
+                std::string out_dir = config.out_dir.empty() ? "build/" + cfg_name
+                                                             : anchor_variable_dir(config.out_dir, proj, config_key);
                 // Make path relative to build dir
                 fs::path out_path = fs::path(out_dir);
                 std::string rel_out = out_path.is_absolute()
@@ -2904,7 +2901,6 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
                 } else if (config.config_type == "DynamicLibrary") {
                     lib_targets.push_back({rel_out + binary_name, binary_name});
                 }
-                break;  // Only need one non-Windows platform config per project
             }
         }
 

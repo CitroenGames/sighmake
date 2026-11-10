@@ -210,3 +210,26 @@ postbuild_use_in_build = false
     CHECK(mk.find("POSTBUILD_RUNS") == std::string::npos);
     CHECK(mk.find("prebuild") == std::string::npos);
 }
+
+TEST_CASE("Master Makefile install expands $(Configuration) in outdir like the project makefile", "[bugfix_make]") {
+    BugfixMakeProject p("install_vars", R"(
+[solution]
+name = Inst
+configurations = Debug, Release
+platforms = Linux
+
+[project:App]
+type = exe
+outdir = bin/$(Configuration)
+intdir = obj/$(Configuration)
+sources = main.cpp
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    REQUIRE(p.generated);
+    const std::string master = p.makefile("Makefile");
+    CHECK(master.find("install -m 755 ../bin/Release/App ") != std::string::npos);
+    CHECK(master.find("$(Configuration)") == std::string::npos);
+#ifndef _WIN32
+    CHECK(p.make("install DESTDIR=\"" + (p.dir / "dest").string() + "\"") == 0);
+    CHECK(fs::exists(p.dir / "dest" / "usr" / "local" / "bin" / "App"));
+#endif
+}
