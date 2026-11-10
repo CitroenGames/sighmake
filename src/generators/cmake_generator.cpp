@@ -101,6 +101,38 @@ std::string command_to_cmake(const std::string& command) {
     return convert_command(command, false).front();
 }
 
+// Compiler/linker options split by whether every configuration agrees on them.
+struct ConfigFlagSets {
+    std::vector<std::string> shared_msvc;
+    std::vector<std::string> shared_gcc;
+    std::map<std::string, std::pair<std::vector<std::string>, std::vector<std::string>>> per_config;
+};
+
+// Evaluates one setting for every configuration: when all configurations produce the same options
+// they are shared, otherwise each configuration gets its own (guarded) options.
+template <typename Fn>
+void add_setting(ConfigFlagSets& sets, const std::vector<std::pair<std::string, const Configuration*>>& configs,
+                 Fn fn) {
+    using Flags = std::pair<std::vector<std::string>, std::vector<std::string>>;
+    std::vector<Flags> flags(configs.size());
+    bool same = true;
+    for (size_t i = 0; i < configs.size(); ++i) {
+        fn(*configs[i].second, flags[i].first, flags[i].second);
+        if (flags[i] != flags[0]) same = false;
+    }
+    if (configs.empty()) return;
+    if (same) {
+        sets.shared_msvc.insert(sets.shared_msvc.end(), flags[0].first.begin(), flags[0].first.end());
+        sets.shared_gcc.insert(sets.shared_gcc.end(), flags[0].second.begin(), flags[0].second.end());
+        return;
+    }
+    for (size_t i = 0; i < configs.size(); ++i) {
+        auto& target = sets.per_config[configs[i].first];
+        target.first.insert(target.first.end(), flags[i].first.begin(), flags[i].first.end());
+        target.second.insert(target.second.end(), flags[i].second.begin(), flags[i].second.end());
+    }
+}
+
 // Writes `COMMAND` lines. `commands` holds one (configuration, command text) pair per configuration;
 // with `all_same` the first entry is written once for every configuration, otherwise each command is
 // guarded so it only exists in its own configuration.
@@ -495,66 +527,80 @@ void CMakeGenerator::write_compile_options(std::ostream& out, const Project& pro
     };
     std::vector<ConfigOpts> per_config;
 
-    // Shared options (non-config-specific)
-    std::vector<std::string> shared_msvc;
-    std::vector<std::string> shared_gcc;
-
-    // Get the first config for shared options
-    const Configuration* first_config = nullptr;
-    for (const auto& [key, config] : project.configurations) {
-        first_config = &config;
-        break;
+    // The configurations of the solution (one per name); settings they disagree on are written per configuration
+    std::vector<std::pair<std::string, const Configuration*>> configs;
+    for (const auto& cfg_name : config_names) {
+        if (const Configuration* config = find_config(project, cfg_name)) configs.emplace_back(cfg_name, config);
     }
-    if (!first_config) return;
+    if (configs.empty() && !project.configurations.empty()) {
+        configs.emplace_back("", &project.configurations.begin()->second);
+    }
+    if (configs.empty()) return;
+    const Configuration* first_config = configs.front().second;
 
-    // Warning level (usually same across configs)
-    if (const auto* wl = flags::find_warning_level(first_config->cl_compile.warning_level)) {
-        shared_msvc.push_back(wl->msvc);
-        std::istringstream gnu_flags(wl->gnu);
+    ConfigFlagSets sets;
+    auto split_gnu = [](const std::string& text, std::vector<std::string>& into) {
+        std::istringstream gnu_flags(text);
         std::string flag;
-        while (gnu_flags >> flag) {
-            shared_gcc.push_back(flag);
+        while (gnu_flags >> flag) into.push_back(flag);
+    };
+
+    // Warning level
+    add_setting(sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+        if (const auto* wl = flags::find_warning_level(c.cl_compile.warning_level)) {
+            msvc.push_back(wl->msvc);
+            split_gnu(wl->gnu, gcc);
         }
-    }
+    });
 
     // Exception handling
-    if (!first_config->cl_compile.exception_handling.empty()) {
-        const std::string& eh = first_config->cl_compile.exception_handling;
+    add_setting(sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+        const std::string& eh = c.cl_compile.exception_handling;
+        if (eh.empty()) return;
         if (eh == "false") {
             // No exceptions - MSVC doesn't set /EH, GCC uses -fno-exceptions
-            shared_gcc.push_back("-fno-exceptions");
+            gcc.push_back("-fno-exceptions");
         } else if (eh == "Sync") {
-            shared_msvc.push_back("/EHsc");
+            msvc.push_back("/EHsc");
         } else if (eh == "Async") {
-            shared_msvc.push_back("/EHa");
+            msvc.push_back("/EHa");
         }
-    }
+    });
 
     // RTTI
-    if (!first_config->cl_compile.runtime_type_info) {
-        shared_msvc.push_back("/GR-");
-        shared_gcc.push_back("-fno-rtti");
-    }
+    add_setting(sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+        if (!c.cl_compile.runtime_type_info) {
+            msvc.push_back("/GR-");
+            gcc.push_back("-fno-rtti");
+        }
+    });
 
     // UTF-8
-    if (first_config->cl_compile.utf8_source.value_or(false)) {
-        shared_msvc.push_back("/utf-8");
-        shared_gcc.push_back("-finput-charset=UTF-8");
-        shared_gcc.push_back("-fexec-charset=UTF-8");
-    }
+    add_setting(sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+        if (c.cl_compile.utf8_source.value_or(false)) {
+            msvc.push_back("/utf-8");
+            gcc.push_back("-finput-charset=UTF-8");
+            gcc.push_back("-fexec-charset=UTF-8");
+        }
+    });
 
     // Multi-processor compilation
-    if (first_config->cl_compile.multi_processor_compilation) {
-        shared_msvc.push_back("/MP");
-    }
+    add_setting(sets, configs, [&](const Configuration& c, auto& msvc, auto&) {
+        if (c.cl_compile.multi_processor_compilation) msvc.push_back("/MP");
+    });
 
     // Treat warnings as errors
-    if (first_config->cl_compile.treat_warning_as_error) {
-        shared_msvc.push_back("/WX");
-        shared_gcc.push_back("-Werror");
-    }
+    add_setting(sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+        if (c.cl_compile.treat_warning_as_error) {
+            msvc.push_back("/WX");
+            gcc.push_back("-Werror");
+        }
+    });
 
-    // Forced include files
+    std::vector<std::string>& shared_msvc = sets.shared_msvc;
+    std::vector<std::string>& shared_gcc = sets.shared_gcc;
+
+    // Forced include files (a -include flag and its file must stay together: first configuration)
     for (const auto& fi : first_config->cl_compile.forced_include_files) {
         shared_msvc.push_back("/FI\"" + to_cmake_path(fi) + "\"");
         shared_gcc.push_back("-include");
@@ -576,6 +622,10 @@ void CMakeGenerator::write_compile_options(std::ostream& out, const Project& pro
 
         ConfigOpts opts;
         opts.name = cfg_name;
+        if (auto it = sets.per_config.find(cfg_name); it != sets.per_config.end()) {
+            opts.msvc_opts = it->second.first;
+            opts.gcc_opts = it->second.second;
+        }
 
         // Optimization
         if (const auto* opt = flags::find_optimization(config->cl_compile.optimization)) {
@@ -809,71 +859,74 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
         out << ")\n";
     }
 
-    // Linker options (subsystem, entry point, etc.)
-    std::vector<std::string> msvc_link_opts;
-    std::vector<std::string> gcc_link_opts;
-
-    if (!project.configurations.empty()) {
-        const Configuration* first_cfg = nullptr;
-        for (const auto& [key, config] : project.configurations) {
-            first_cfg = &config;
-            break;
+    // Linker options (subsystem, entry point, etc.); settings the configurations disagree on are
+    // written per configuration
+    ConfigFlagSets link_sets;
+    {
+        std::vector<std::pair<std::string, const Configuration*>> configs;
+        for (const auto& cfg_name : config_names) {
+            if (const Configuration* config = find_config(project, cfg_name)) configs.emplace_back(cfg_name, config);
         }
-        if (first_cfg) {
+        if (configs.empty() && !project.configurations.empty()) {
+            configs.emplace_back("", &project.configurations.begin()->second);
+        }
+        if (!configs.empty()) {
             // Subsystem
-            if (const char* flag = flags::subsystem_to_msvc_flag(first_cfg->link.sub_system)) {
-                msvc_link_opts.push_back(flag);
-            }
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto&) {
+                if (const char* flag = flags::subsystem_to_msvc_flag(c.link.sub_system)) msvc.push_back(flag);
+            });
 
-            // Entry point
+            // Entry point (the GCC flag and its symbol must stay together: first configuration)
+            const Configuration* first_cfg = configs.front().second;
             if (!first_cfg->link.entry_point_symbol.empty()) {
-                msvc_link_opts.push_back("/ENTRY:" + first_cfg->link.entry_point_symbol);
-                gcc_link_opts.push_back("-e");
-                gcc_link_opts.push_back(first_cfg->link.entry_point_symbol);
+                link_sets.shared_msvc.push_back("/ENTRY:" + first_cfg->link.entry_point_symbol);
+                link_sets.shared_gcc.push_back("-e");
+                link_sets.shared_gcc.push_back(first_cfg->link.entry_point_symbol);
             }
 
             // Ignore all default libraries
-            if (first_cfg->link.ignore_all_default_libraries) {
-                msvc_link_opts.push_back("/NODEFAULTLIB");
-                gcc_link_opts.push_back("-nodefaultlibs");
-            }
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+                if (c.link.ignore_all_default_libraries) {
+                    msvc.push_back("/NODEFAULTLIB");
+                    gcc.push_back("-nodefaultlibs");
+                }
+            });
 
             // Ignore specific default libraries
-            for (const auto& lib : first_cfg->link.ignore_specific_default_libraries) {
-                if (!lib.empty()) {
-                    msvc_link_opts.push_back("/NODEFAULTLIB:" + lib);
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto&) {
+                for (const auto& lib : c.link.ignore_specific_default_libraries) {
+                    if (!lib.empty()) msvc.push_back("/NODEFAULTLIB:" + lib);
                 }
-            }
+            });
 
             // Additional linker options
-            if (!first_cfg->link.additional_options.empty()) {
-                std::istringstream iss(first_cfg->link.additional_options);
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto& gcc) {
+                std::istringstream iss(c.link.additional_options);
                 std::string flag;
                 while (iss >> flag) {
-                    if (!flag.empty() && flag[0] == '/') {
-                        msvc_link_opts.push_back(flag);
-                    } else if (!flag.empty() && flag[0] == '-') {
-                        gcc_link_opts.push_back(flag);
-                    }
+                    if (flag[0] == '/') msvc.push_back(flag);
+                    else if (flag[0] == '-') gcc.push_back(flag);
                 }
-            }
+            });
 
             // Generate debug info
-            if (first_cfg->link.generate_debug_info) {
-                msvc_link_opts.push_back("/DEBUG");
-            }
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto&) {
+                if (c.link.generate_debug_info) msvc.push_back("/DEBUG");
+            });
 
             // Map file
-            if (first_cfg->link.generate_map_file) {
-                msvc_link_opts.push_back("/MAP");
-            }
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto&) {
+                if (c.link.generate_map_file) msvc.push_back("/MAP");
+            });
 
             // Large address aware
-            if (first_cfg->link.large_address_aware) {
-                msvc_link_opts.push_back("/LARGEADDRESSAWARE");
-            }
+            add_setting(link_sets, configs, [&](const Configuration& c, auto& msvc, auto&) {
+                if (c.link.large_address_aware) msvc.push_back("/LARGEADDRESSAWARE");
+            });
         }
     }
+    const std::vector<std::string>& msvc_link_opts = link_sets.shared_msvc;
+    const std::vector<std::string>& gcc_link_opts = link_sets.shared_gcc;
 
     // Per-config gc-sections for release-type configs
     std::vector<std::string> gc_configs;
@@ -884,13 +937,24 @@ void CMakeGenerator::write_link_libraries(std::ostream& out, const Project& proj
         }
     }
 
-    if (!msvc_link_opts.empty() || !gcc_link_opts.empty() || !gc_configs.empty()) {
+    if (!msvc_link_opts.empty() || !gcc_link_opts.empty() || !link_sets.per_config.empty() || !gc_configs.empty()) {
         out << "\ntarget_link_options(" << project.name << " " << default_vis << "\n";
         for (const auto& opt : msvc_link_opts) {
             out << "    $<$<" << cid << ":MSVC>:" << opt << ">\n";
         }
         for (const auto& opt : gcc_link_opts) {
             out << "    $<$<NOT:$<" << cid << ":MSVC>>:" << opt << ">\n";
+        }
+
+        for (const auto& cfg_name : config_names) {
+            auto it = link_sets.per_config.find(cfg_name);
+            if (it == link_sets.per_config.end()) continue;
+            for (const auto& opt : it->second.first) {
+                out << "    $<$<AND:$<" << cid << ":MSVC>,$<CONFIG:" << cfg_name << ">>:" << opt << ">\n";
+            }
+            for (const auto& opt : it->second.second) {
+                out << "    $<$<AND:$<NOT:$<" << cid << ":MSVC>>,$<CONFIG:" << cfg_name << ">>:" << opt << ">\n";
+            }
         }
 
         for (const auto& cfg_name : gc_configs) {

@@ -231,3 +231,60 @@ postbuild = printf "x\ty\n" "C:\out\app.exe"
     CHECK(c.find("$<$<CONFIG:Release>:x\\\\\\\\ty\\\\\\\\n>") != std::string::npos);
     CHECK(c.find("$<$<CONFIG:Release>:C:/out/app.exe>") != std::string::npos);
 }
+// ============================================================================
+// Per-configuration compile/link settings
+// ============================================================================
+
+static const char* kPerConfigHeader = R"(
+[solution]
+name = T
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp
+)";
+
+TEST_CASE("bugfix2_cmake: warning level that differs per configuration is emitted per configuration",
+          "[bugfix2_cmake]") {
+    auto result = generate_cmake(std::string(kPerConfigHeader) + R"(
+[config:Debug|x64]
+warning_level = Level4
+[config:Release|x64]
+warning_level = Level1
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:/W4>") != std::string::npos);
+    CHECK(c.find("$<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/W1>") != std::string::npos);
+    CHECK(c.find("\n    $<$<CXX_COMPILER_ID:MSVC>:/W4>") == std::string::npos);
+}
+
+TEST_CASE("bugfix2_cmake: settings that agree across configurations stay shared", "[bugfix2_cmake]") {
+    auto result = generate_cmake(std::string(kPerConfigHeader) + R"(
+warning_level = Level3
+rtti = false
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("\n    $<$<CXX_COMPILER_ID:MSVC>:/W3>\n") != std::string::npos);
+    CHECK(c.find("\n    $<$<CXX_COMPILER_ID:MSVC>:/GR->\n") != std::string::npos);
+}
+
+TEST_CASE("bugfix2_cmake: UTF-8 and linker flags that differ per configuration are guarded", "[bugfix2_cmake]") {
+    auto result = generate_cmake(std::string(kPerConfigHeader) + R"(
+[config:Debug|x64]
+utf8 = true
+subsystem = Console
+[config:Release|x64]
+utf8 = false
+subsystem = Windows
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:/utf-8>") != std::string::npos);
+    CHECK(c.find("$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Debug>>:/SUBSYSTEM:CONSOLE>") != std::string::npos);
+    CHECK(c.find("$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release>>:/SUBSYSTEM:WINDOWS>") != std::string::npos);
+}
+
