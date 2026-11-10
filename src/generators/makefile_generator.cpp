@@ -292,6 +292,17 @@ std::string sanitize_object_stem(const std::string& source_identity) {
     return result + ".o";
 }
 
+// A path written as a make target or prerequisite: spaces are escaped so make keeps it one word.
+// Recipes refer to such files through quoted automatic variables ("$<").
+std::string make_escape_spaces(const std::string& path) {
+    std::string result;
+    for (char c : path) {
+        if (c == ' ') result += '\\';
+        result += c;
+    }
+    return result;
+}
+
 bool has_extension_case_insensitive(const std::string& path, const std::string& ext) {
     if (path.size() < ext.size()) {
         return false;
@@ -611,6 +622,16 @@ std::string MakefileGenerator::make_object_path(const SourceFile& src, const std
     if (const auto* object_file = find_config_setting(src.settings.object_file, config_key);
         object_file && !object_file->empty()) {
         std::string obj_path = to_unix_path(*object_file);
+        // MSBuild-style macros (object_file = $(IntDir)name.obj) name the configuration's
+        // intermediate directory; make has no such variables.
+        const auto [config_name, platform_name] = parse_config_key(config_key);
+        for (const auto& [token, value] : {std::pair<std::string, std::string>{"$(IntDir)", int_dir},
+                                           {"$(Configuration)", config_name},
+                                           {"$(Platform)", platform_name}}) {
+            for (size_t pos = 0; (pos = obj_path.find(token, pos)) != std::string::npos; pos += value.size()) {
+                obj_path.replace(pos, token.size(), value);
+            }
+        }
         if (has_extension_case_insensitive(obj_path, ".obj")) {
             obj_path.replace(obj_path.size() - 4, 4, ".o");
         }
@@ -645,6 +666,14 @@ std::string MakefileGenerator::strip_lib_extension(const std::string& lib) {
         result = result.substr(0, result.size() - 2);
     }
 
+    // Remove shared-library extensions (libz.so -> -lz)
+    if (result.size() > 3 && result.substr(result.size() - 3) == ".so") {
+        result = result.substr(0, result.size() - 3);
+    }
+    if (result.size() > 6 && result.substr(result.size() - 6) == ".dylib") {
+        result = result.substr(0, result.size() - 6);
+    }
+
     // Remove lib prefix if present (e.g., libpthread -> pthread)
     if (result.size() > 3 && result.substr(0, 3) == "lib") {
         result = result.substr(3);
@@ -664,6 +693,28 @@ const std::set<std::string>& MakefileGenerator::pic_static_libraries(const Solut
         it = pic_cache_.emplace(config_key, static_libraries_linked_into_shared_libraries(solution, config_key)).first;
     }
     return it->second;
+}
+
+// pch_header is a buildscript setting, so a relative name is looked up next to the buildscript and
+// then in the include directories (sources usually name it the way they include it). A header found
+// in neither place is returned unchanged.
+static std::string resolve_pch_header(const std::string& header, const Project& project,
+                                      const Configuration& config) {
+    namespace fs = std::filesystem;
+    if (header.empty() || fs::path(header).is_absolute() || project.buildscript_path.empty()) return header;
+    std::vector<fs::path> candidates{fs::path(project.buildscript_path) / header};
+    for (const auto& inc : config.cl_compile.additional_include_directories) {
+        for (const auto& part : split_semicolons(inc)) {
+            fs::path dir(part);
+            if (dir.is_relative()) dir = fs::path(project.buildscript_path) / dir;
+            candidates.push_back(dir / header);
+        }
+    }
+    for (const auto& candidate : candidates) {
+        std::error_code ec;
+        if (fs::is_regular_file(candidate, ec)) return candidate.lexically_normal().generic_string();
+    }
+    return header;
 }
 
 // Determine if PCH is enabled for a configuration and return the PCH header path
@@ -1697,6 +1748,18 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     }
     out << "PYTHON ?= python3\n\n";
 
+    // Language a C/C++ source is compiled as: its extension unless `compile_as` (per file, else the
+    // configuration's) asks for the other language. Returned as a representative extension.
+    auto compile_language_ext = [&](const SourceFile& src) {
+        std::string ext = file_types::lowercase_extension(src.path);
+        if (src.type != FileType::ClCompile) return ext;
+        const std::string* compile_as = find_config_setting(src.settings.compile_as, config_key);
+        if (!compile_as || compile_as->empty()) compile_as = &config.cl_compile.compile_as;
+        if (*compile_as == "CompileAsCpp" && file_types::is_c_source(ext)) return std::string(".cpp");
+        if (*compile_as == "CompileAsC" && file_types::is_cpp_source(ext)) return std::string(".c");
+        return ext;
+    };
+
     // Determine compiler
     bool has_cpp_files = false;
     bool has_c_files = false;
@@ -1705,7 +1768,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     for (const auto& src : project.sources) {
         if (!source_applies_to_platform(src, parse_config_key(config_key).second)) continue;
         if (src.type == FileType::ClCompile) {
-            std::string ext = file_types::lowercase_extension(src.path);
+            std::string ext = compile_language_ext(src);
             if (file_types::is_cpp_source(ext)) {
                 has_cpp_files = true;
             } else if (file_types::is_c_source(ext)) {
@@ -2057,7 +2120,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
     if (has_pch && !pch_header.empty()) {
         // Compute relative path to PCH header
-        pch_header_path = compute_relative_path(pch_header, makefile_dir);
+        pch_header_path = compute_relative_path(resolve_pch_header(pch_header, project, config), makefile_dir);
 
         // PCH output path: $(OBJ_DIR)/pch_filename.gch
         pch_output_path = int_dir + fs::path(pch_header).filename().string() + ".gch";
@@ -2067,7 +2130,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
         // Write PCH variables
         out << "# Precompiled header\n";
-        out << "PCH_HEADER = " << pch_header_path << "\n";
+        out << "PCH_HEADER = " << make_escape_spaces(pch_header_path) << "\n";
         out << "PCH_OUTPUT = " << pch_output_path << "\n\n";
     }
 
@@ -2075,6 +2138,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     std::vector<std::string> obj_files;
     std::vector<std::pair<std::string, std::string>> source_to_obj; // (source, object)
     std::vector<bool> source_uses_pch; // Track which files use PCH
+    std::vector<std::string> source_lang_ext; // Language the file compiles as (see compile_language_ext)
+    std::vector<std::string> source_extra_flags; // Per-file flags: -x for compile_as, per-file defines
 
     for (const auto& src : project.sources) {
         if (!source_applies_to_platform(src, parse_config_key(config_key).second)) continue;
@@ -2098,12 +2163,27 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             std::string src_relative = compute_relative_path(src.path, makefile_dir);
             std::string obj_path = make_object_path(src, src_relative, config_key, int_dir, makefile_dir);
 
-            // Determine if this file uses PCH
-            bool uses_pch = has_pch && (mode == "Use" || (mode.empty() && !header.empty()));
+            const std::string lang_ext = compile_language_ext(src);
+
+            // Determine if this file uses PCH. The header is precompiled as C++, which a C
+            // translation unit cannot use: C files compile without it.
+            bool uses_pch = has_pch && (mode == "Use" || (mode.empty() && !header.empty())) &&
+                            !file_types::is_c_source(lang_ext);
+            std::string extra_flags;
+            if (lang_ext != file_types::lowercase_extension(src.path)) {
+                extra_flags += file_types::is_c_source(lang_ext) ? " -x c" : " -x c++";
+            }
+            if (const auto* defines = find_config_setting(src.settings.preprocessor_defines, config_key)) {
+                for (const auto& def : *defines) {
+                    if (!def.empty()) extra_flags += " -D" + def;
+                }
+            }
 
             obj_files.push_back(obj_path);
             source_to_obj.push_back({src_relative, obj_path});
             source_uses_pch.push_back(uses_pch);
+            source_lang_ext.push_back(lang_ext);
+            source_extra_flags.push_back(extra_flags);
         }
     }
 
@@ -2123,11 +2203,15 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     // extra runs at make time. Changes made only on the make command line or in the environment
     // (make CXXFLAGS+=...) are not tracked; buildscript changes always go through regeneration.
     bool stamp_cxx = false, stamp_c = false, stamp_objcxx = false, stamp_nasm = false;
-    for (const auto& so : source_to_obj) {
-        std::string e = file_types::lowercase_extension(so.first);
-        if (file_types::is_cpp_source(e)) stamp_cxx = true;
-        else if (file_types::is_c_source(e)) stamp_c = true;
-        else if (file_types::is_objcxx_source(e)) stamp_objcxx = true;
+    // Per-file flags are recorded in the stamp of the file's language, so changing them rebuilds.
+    std::string per_file_cxx, per_file_c, per_file_objcxx;
+    for (size_t i = 0; i < source_to_obj.size(); ++i) {
+        const std::string& e = source_lang_ext[i];
+        const std::string per_file = source_extra_flags[i].empty()
+            ? "" : " [" + source_to_obj[i].second + ":" + source_extra_flags[i] + "]";
+        if (file_types::is_cpp_source(e)) { stamp_cxx = true; per_file_cxx += per_file; }
+        else if (file_types::is_c_source(e)) { stamp_c = true; per_file_c += per_file; }
+        else if (file_types::is_objcxx_source(e)) { stamp_objcxx = true; per_file_objcxx += per_file; }
         else if (e == ".asm" || e == ".nasm") stamp_nasm = true;
     }
     const bool stamp_link = config.config_type == "Application" || config.config_type == "DynamicLibrary" ||
@@ -2143,9 +2227,9 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         for (char ch : config_key) cfg_tag += std::isalnum(static_cast<unsigned char>(ch)) ? ch : '-';
         auto stamp_file = [&](const char* lang) { return std::string("sighmake-") + lang + "." + cfg_tag + ".flags"; };
         std::string objcxx_extra = config.cl_compile.objcxx_flags.empty() ? "" : " " + config.cl_compile.objcxx_flags;
-        if (stamp_cxx) stamps.push_back({"SIGHMAKE_CXX_STAMP", stamp_file("cxx"), cxx_cmd + " " + cxxflags + pch_stamp_suffix});
-        if (stamp_c) stamps.push_back({"SIGHMAKE_C_STAMP", stamp_file("c"), cc_cmd + " " + cflags + pch_stamp_suffix});
-        if (stamp_objcxx) stamps.push_back({"SIGHMAKE_OBJCXX_STAMP", stamp_file("objcxx"), cxx_cmd + " " + cxxflags + objcxx_extra + pch_stamp_suffix});
+        if (stamp_cxx) stamps.push_back({"SIGHMAKE_CXX_STAMP", stamp_file("cxx"), cxx_cmd + " " + cxxflags + pch_stamp_suffix + per_file_cxx});
+        if (stamp_c) stamps.push_back({"SIGHMAKE_C_STAMP", stamp_file("c"), cc_cmd + " " + cflags + pch_stamp_suffix + per_file_c});
+        if (stamp_objcxx) stamps.push_back({"SIGHMAKE_OBJCXX_STAMP", stamp_file("objcxx"), cxx_cmd + " " + cxxflags + objcxx_extra + pch_stamp_suffix + per_file_objcxx});
         if (stamp_nasm) stamps.push_back({"SIGHMAKE_NASM_STAMP", stamp_file("nasm"), nasm_cmd + " " + nasmflags_text});
         if (stamp_link) {
             std::string link_text;
@@ -2207,19 +2291,34 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "\n";
     }
 
+    // Build events. A command may span several lines; each becomes its own recipe line. An event
+    // with use_in_build = false is not run.
+    const std::string pre_build_command = config.pre_build_event.use_in_build ? config.pre_build_event.command : "";
+    const std::string pre_link_command = config.pre_link_event.use_in_build ? config.pre_link_event.command : "";
+    const std::string post_build_command = config.post_build_event.use_in_build ? config.post_build_event.command : "";
+    auto write_event_command = [&out](const std::string& command) {
+        std::istringstream lines(command);
+        for (std::string line; std::getline(lines, line);) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.find_first_not_of(" \t") == std::string::npos) continue;
+            out << "\t" << line << "\n";
+        }
+    };
+
     // Phony targets
     out << ".PHONY: all clean";
-    if (!config.pre_build_event.command.empty()) out << " prebuild";
+    if (!pre_build_command.empty()) out << " prebuild";
     if (emits_target_receipt) out << " sighmake-target-receipt";
     out << "\n\n";
 
     out << ".DEFAULT_GOAL := all\n\n";
 
     // Pre-build event
-    if (!config.pre_build_event.command.empty()) {
+    if (!pre_build_command.empty()) {
         out << "# Pre-build event\n";
         out << "prebuild:\n";
-        out << "\t" << config.pre_build_event.command << "\n\n";
+        write_event_command(pre_build_command);
+        out << "\n";
     }
 
     // Default target
@@ -2243,11 +2342,11 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "# Precompiled header compilation\n";
         out << "$(PCH_OUTPUT): $(PCH_HEADER)" << (cxx_stamped ? " $(SIGHMAKE_CXX_STAMP)" : "") << "\n";
         out << "\t@mkdir -p $(dir $@)\n";
-        out << "\t$(CXX) $(CXXFLAGS) -x c++-header -o $@ $<\n\n";
+        out << "\t$(CXX) $(CXXFLAGS) -x c++-header -MMD -MP -MF $@.d -o $@ \"$<\"\n\n";
     }
 
     // Link rule
-    if (!config.pre_build_event.command.empty()) {
+    if (!pre_build_command.empty()) {
         out << "$(OBJS)";
         if (has_pch && !pch_header_path.empty()) {
             out << " $(PCH_OUTPUT)";
@@ -2268,8 +2367,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     out << "\t@mkdir -p $(dir $@)\n";
 
     // Pre-link event
-    if (!config.pre_link_event.command.empty()) {
-        out << "\t" << config.pre_link_event.command << "\n";
+    if (!pre_link_command.empty()) {
+        write_event_command(pre_link_command);
     }
 
     if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
@@ -2321,11 +2420,6 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         }
     }
 
-    // Post-build event
-    if (!config.post_build_event.command.empty()) {
-        out << "\t" << config.post_build_event.command << "\n";
-    }
-
     // Strip symbols from executables and shared libraries (`strip`, default Release only).
     // On Linux, debug symbols are embedded in the binary unlike Windows .pdb files
     if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
@@ -2345,6 +2439,11 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 #endif
             }
         }
+    }
+
+    // Post-build event (sees the finished binary, after stripping)
+    if (!post_build_command.empty()) {
+        write_event_command(post_build_command);
     }
 
     if (emits_target_receipt) {
@@ -2388,7 +2487,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         const auto& [src, obj] = source_to_obj[i];
         bool uses_pch = source_uses_pch[i];
 
-        std::string ext = file_types::lowercase_extension(src);
+        const std::string& ext = source_lang_ext[i];
 
         std::string compiler;
         std::string flags;
@@ -2411,7 +2510,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         }
 
         // Write dependency line - add PCH dependency if file uses it
-        out << obj << ": " << src;
+        out << obj << ": " << make_escape_spaces(src);
         if (!is_nasm && uses_pch && has_pch) {
             out << " $(PCH_OUTPUT)";
         }
@@ -2421,16 +2520,16 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "\t@mkdir -p $(dir $@)\n";
 
         if (is_nasm) {
-            out << "\t" << compiler << " " << flags << " -o $@ $<\n\n";
+            out << "\t" << compiler << " " << flags << " -o $@ \"$<\"\n\n";
         } else {
-            out << "\t" << compiler << " " << flags;
+            out << "\t" << compiler << " " << flags << source_extra_flags[i];
 
             // Add -include flag to force PCH inclusion for files that use it
             if (uses_pch && has_pch && !pch_include_base.empty()) {
                 out << " -include \"" << pch_include_base << "\"";
             }
 
-            out << " -MMD -MP -c -o $@ $<\n\n";
+            out << " -MMD -MP -c -o $@ \"$<\"\n\n";
         }
     }
 
@@ -2448,6 +2547,10 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     if (!obj_files.empty()) {
         out << "# Include dependencies\n";
         out << "-include $(OBJS:.o=.d)\n";
+    }
+    if (has_pch && !pch_header_path.empty()) {
+        // Headers included by the precompiled header rebuild it (and so every object using it)
+        out << "-include $(PCH_OUTPUT).d\n";
     }
 
     if (emits_target_receipt && !write_target_receipt_support(project, output_path)) {
@@ -2796,16 +2899,12 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
 
         for (const auto& proj : solution.projects) {
             if (proj.is_package_project) continue;
-            for (const auto& [config_key, config] : proj.configurations) {
-                size_t pipe_pos = config_key.find('|');
-                std::string cfg_name = (pipe_pos != std::string::npos)
-                    ? config_key.substr(0, pipe_pos) : config_key;
-                std::string plat = (pipe_pos != std::string::npos)
-                    ? config_key.substr(pipe_pos + 1) : "";
-
-                if (cfg_name != install_config) continue;
-                if (is_windows_platform(plat)) continue;
-                if (is_android_platform(plat)) continue;  // Device binaries - never installed on the host
+            // The configuration whose makefile is generated (Android device binaries are never
+            // installed on the host).
+            if (const auto install_key = find_makefile_config_key(proj, install_config, false)) {
+                const std::string& config_key = *install_key;
+                const Configuration& config = proj.configurations.at(config_key);
+                const std::string& cfg_name = install_config;
 
                 std::string target_name = config.target_name.empty() ? proj.name : config.target_name;
                 std::string target_ext = config.target_ext;
@@ -2821,7 +2920,8 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
                     target_ext.clear();
                 }
                 const std::string binary_name = target_name + target_ext;
-                std::string out_dir = config.out_dir.empty() ? "build/" + cfg_name : config.out_dir;
+                std::string out_dir = config.out_dir.empty() ? "build/" + cfg_name
+                                                             : anchor_variable_dir(config.out_dir, proj, config_key);
                 // Make path relative to build dir
                 fs::path out_path = fs::path(out_dir);
                 std::string rel_out = out_path.is_absolute()
@@ -2834,7 +2934,6 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
                 } else if (config.config_type == "DynamicLibrary") {
                     lib_targets.push_back({rel_out + binary_name, binary_name});
                 }
-                break;  // Only need one non-Windows platform config per project
             }
         }
 
