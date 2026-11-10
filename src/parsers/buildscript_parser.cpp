@@ -4483,7 +4483,10 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
 
         // Work queue: (dependency_name, effective_visibility)
         std::vector<std::pair<std::string, DependencyVisibility>> to_process;
-        std::set<std::string> processed;
+        // Dependencies already handled, mapped to whether they were added to this project. One reached
+        // first only through an INTERFACE edge is handled again when it is also reached through a
+        // PUBLIC or PRIVATE edge, so the order of the edges does not decide what the project receives.
+        std::map<std::string, bool> processed;
 
         // Initialize with direct dependencies
         for (const auto& dep : proj.project_references) {
@@ -4497,8 +4500,10 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
             auto [dep_name, visibility] = to_process.back();
             to_process.pop_back();
 
-            if (processed.count(dep_name)) continue;
-            processed.insert(dep_name);
+            const bool adds_locally = visibility != DependencyVisibility::INTERFACE;
+            auto seen = processed.find(dep_name);
+            if (seen != processed.end() && (seen->second || !adds_locally)) continue;
+            processed[dep_name] = adds_locally;
 
             // Find the dependency project
             Project* dep = nullptr;
@@ -4613,7 +4618,8 @@ void BuildscriptParser::propagate_target_link_libraries(Solution& solution) {
                 if (!trans_dep.link_library_dependencies || !dependency_applies_to_platform(trans_dep, platform)) {
                     continue;
                 }
-                if (!processed.count(trans_dep.name)) {
+                auto trans_seen = processed.find(trans_dep.name);
+                if (trans_seen == processed.end() || !trans_seen->second) {
                     // Determine effective visibility for transitive dependency
                     DependencyVisibility effective_vis;
 

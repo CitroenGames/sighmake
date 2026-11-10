@@ -182,3 +182,28 @@ defines = APP_DEFINE
     CHECK(parser_contains(app->configurations.at("Debug|Linux").cl_compile.preprocessor_definitions, "APP_DEFINE"));
     CHECK_FALSE(parser_contains(lib->configurations.at("Debug|Linux").cl_compile.preprocessor_definitions, "APP_DEFINE"));
 }
+
+TEST_CASE("A dependency reached publicly is not hidden by an earlier INTERFACE edge", "[bugfix_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug
+platforms = Linux
+
+[project:Base]
+type = lib
+public_defines = BASE_API
+
+[project:Mid]
+type = lib
+target_link_libraries(Base PUBLIC)
+
+[project:App]
+type = exe
+target_link_libraries(Mid)
+target_link_libraries(INTERFACE Base)
+)");
+    const Project* app = find_parser_project(sol, "App");
+    REQUIRE(app);
+    CHECK(parser_contains(app->configurations.at("Debug|Linux").cl_compile.preprocessor_definitions, "BASE_API"));
+}
