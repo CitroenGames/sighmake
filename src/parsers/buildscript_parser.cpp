@@ -1729,6 +1729,11 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
     // Check for per-file settings: file.cpp:setting = value
     // Or: file.cpp:setting[Debug|Win32] = value
     size_t colon_pos = key.find(':');
+    // A Windows drive-letter colon ("C:/dir/file.cpp:setting") is part of the path, not the separator
+    if (colon_pos == 1 && std::isalpha(static_cast<unsigned char>(key[0])) && key.size() > 2 &&
+        (key[2] == '/' || key[2] == '\\')) {
+        colon_pos = key.find(':', 2);
+    }
     if (colon_pos != std::string::npos && colon_pos > 0) {
         std::string file_path = trim(key.substr(0, colon_pos));
         std::string rest = trim(key.substr(colon_pos + 1));

@@ -142,3 +142,21 @@ TEST_CASE("Text after an opening triple quote is part of the multi-line value", 
     CHECK(cmd.find("touch b") != std::string::npos);
 }
 
+TEST_CASE("A per-file setting on a drive-letter path splits at the setting colon", "[bugfix2_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+C:/proj/file.cpp:defines = FROM_DRIVE
+)");
+    REQUIRE(sol.projects.size() == 1);
+    const SourceFile* file = bf2_source(sol.projects[0], "file.cpp");
+    REQUIRE(file != nullptr);
+    REQUIRE(file->settings.preprocessor_defines.count("*") == 1);
+    CHECK(bf2_contains(file->settings.preprocessor_defines.at("*"), "FROM_DRIVE"));
+    (void)bf2_has_suffix;
+}
