@@ -1031,7 +1031,8 @@ void CMakeGenerator::write_target_properties(std::ostream& out, const Project& p
 // Precompiled headers
 // ============================================================================
 
-void CMakeGenerator::write_pch_settings(std::ostream& out, const Project& project, const Solution& /*solution*/) {
+void CMakeGenerator::write_pch_settings(std::ostream& out, const Project& project, const Solution& /*solution*/,
+                                        const std::string& project_dir) {
     std::string config_type;
     for (const auto& [key, config] : project.configurations) {
         if (!config.config_type.empty()) {
@@ -1054,7 +1055,28 @@ void CMakeGenerator::write_pch_settings(std::ostream& out, const Project& projec
 
     if (!pch_enabled || pch_header.empty()) return;
 
-    out << "\ntarget_precompile_headers(" << project.name << " PRIVATE " << pch_header << ")\n";
+    // pch_header is the name sources #include: look for it next to the sources and in the include
+    // directories. A header that is not found is included by name through the include path.
+    std::string pch_arg;
+    std::vector<fs::path> search_dirs;
+    if (fs::path(pch_header).is_absolute()) search_dirs.emplace_back();
+    for (const auto& src : project.sources) search_dirs.push_back(fs::path(src.path).parent_path());
+    for (const auto& [key, config] : project.configurations) {
+        for (const auto& inc : config.cl_compile.additional_include_directories) {
+            for (const auto& part : split_semicolons(inc)) search_dirs.emplace_back(part);
+        }
+    }
+    for (const auto& dir : search_dirs) {
+        std::error_code ec;
+        fs::path candidate = dir / pch_header;
+        if (fs::is_regular_file(candidate, ec)) {
+            pch_arg = cmake_arg(compute_relative_path(candidate.string(), project_dir));
+            break;
+        }
+    }
+    if (pch_arg.empty()) pch_arg = cmake_arg("<" + to_cmake_path(pch_header) + ">");
+
+    out << "\ntarget_precompile_headers(" << project.name << " PRIVATE " << pch_arg << ")\n";
 
     // Files that skip PCH
     for (const auto& src : project.sources) {
@@ -1069,8 +1091,7 @@ void CMakeGenerator::write_pch_settings(std::ostream& out, const Project& projec
             }
         }
         if (skip_pch) {
-            std::string filename = fs::path(src.path).filename().string();
-            out << "set_source_files_properties(" << filename
+            out << "set_source_files_properties(" << cmake_arg(compute_relative_path(src.path, project_dir))
                 << " PROPERTIES SKIP_PRECOMPILE_HEADERS ON)\n";
         }
     }
@@ -1358,7 +1379,7 @@ bool CMakeGenerator::generate_project_cmakelists(const Project& project, const S
     write_target_properties(out, project, solution);
 
     // PCH
-    write_pch_settings(out, project, solution);
+    write_pch_settings(out, project, solution, project_dir);
 
     // Per-file settings
     write_per_file_settings(out, project, solution, project_dir);

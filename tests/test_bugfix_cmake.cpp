@@ -353,3 +353,50 @@ libdirs = dbglib
     CHECK(c.find("target_link_directories(App PRIVATE\n    $<$<CONFIG:Debug>:${CMAKE_CURRENT_SOURCE_DIR}/../dbglib>")
           != std::string::npos);
 }
+
+// ============================================================================
+// CMake generator: precompiled headers
+// ============================================================================
+
+TEST_CASE("bugfix_cmake: PCH header and skip list resolve to the real files", "[bugfix_cmake]") {
+    // target_precompile_headers and set_source_files_properties resolve relative paths against the
+    // generated project directory, not against the sources
+    auto result = generate_cmake(R"(
+[solution]
+name = T
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = src/main.cpp, src/pch.cpp
+pch = Use
+pch_header = pch.h
+src/pch.cpp:pch = Create
+)", {{"src/main.cpp", "#include \"pch.h\"\nint main() { return 0; }\n"},
+     {"src/pch.cpp", "#include \"pch.h\"\n"},
+     {"src/pch.h", "#pragma once\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("target_precompile_headers(App PRIVATE ../src/pch.h)") != std::string::npos);
+    CHECK(c.find("set_source_files_properties(../src/pch.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)") !=
+          std::string::npos);
+}
+
+TEST_CASE("bugfix_cmake: a PCH header that is not a project file is included by name", "[bugfix_cmake]") {
+    auto result = generate_cmake(R"(
+[solution]
+name = T
+configurations = Debug, Release
+platforms = x64
+
+[project:App]
+type = exe
+sources = main.cpp
+pch = Use
+pch_header = stdafx.h
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    const auto& c = result.project_content;
+    INFO(c);
+    CHECK(c.find("target_precompile_headers(App PRIVATE <stdafx.h>)") != std::string::npos);
+}
