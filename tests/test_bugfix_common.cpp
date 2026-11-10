@@ -5,6 +5,7 @@
 #include "common/updater.hpp"
 #include "common/toolset_registry.hpp"
 #include "generators/deps_exporter.hpp"
+#include "parsers/buildscript_parser.hpp"
 
 using namespace vcxproj;
 namespace fs = std::filesystem;
@@ -184,3 +185,18 @@ TEST_CASE("CMake --build passes a configuration name with spaces as one argument
     CHECK(read_text(log).find("[--config]\n[Debug DLL]\n") != std::string::npos);
 }
 #endif
+
+TEST_CASE("Dependency report shows the declared type, not an Android-only override", "[bugfix_common]") {
+    BugfixTempDir dir("sighmake_bugfix_common_deps_type");
+    std::ofstream(dir.path / "main.cpp") << "int main() { return 0; }\n";
+    BuildscriptParser parser;
+    Solution sol = parser.parse_string(
+        "[solution]\nname = Demo\nconfigurations = Debug, Release\nplatforms = Linux, Android\n\n"
+        "[project:Game]\ntype = exe\nsources = main.cpp\nif(Android) {\n    type = dll\n}\n",
+        dir.path.string());
+    REQUIRE(sol.projects.size() == 1);
+    REQUIRE(export_dependencies_html(sol, dir.path.string()));
+    const std::string html = read_text(dir.path / "Demo_dependencies.html");
+    CHECK(html.find("<div class=\"card exe\">") != std::string::npos);
+    CHECK(html.find("type-badge badge-dll") == std::string::npos);
+}

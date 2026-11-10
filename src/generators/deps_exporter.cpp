@@ -25,6 +25,9 @@ std::string escape_html(const std::string& str) {
 }
 
 std::string get_project_type(const Project& proj) {
+    // The project's own `type`; the first configuration may carry a platform-scoped override
+    // (`type = dll` inside `if(Android) { ... }`, and "Debug|Android" sorts first).
+    if (!proj.project_level_defaults.config_type.empty()) return proj.project_level_defaults.config_type;
     if (proj.configurations.empty()) return "";
     return proj.configurations.begin()->second.config_type;
 }
