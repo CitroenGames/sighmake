@@ -1972,9 +1972,14 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
     std::string saved_base_path = state.base_path;
     state.base_path = include_base.string();
 
-    // Save and restore current_project and current_file to prevent included files from affecting parent context
-    Project* saved_current_project = state.current_project;
-    SourceFile* saved_current_file = state.current_file;
+    // Save and restore current_project and current_file to prevent included files from affecting parent context.
+    // They are saved as an index and a path: projects declared by the included file can reallocate the
+    // project list, which would leave saved pointers dangling.
+    const size_t saved_project_index = state.current_project
+        ? static_cast<size_t>(state.current_project - state.solution->projects.data())
+        : state.solution->projects.size();
+    const bool had_current_project = state.current_project != nullptr;
+    const std::string saved_current_file_path = state.current_file ? state.current_file->path : std::string();
     std::string saved_current_config = state.current_config;
     auto saved_current_targets = state.current_config_targets;
     auto saved_current_section = state.current_section;
@@ -1988,8 +1993,16 @@ void BuildscriptParser::process_include(const std::string& include_path, ParseSt
     state.include_stack.pop_back();
     state.line_number = saved_line_number;
     state.base_path = saved_base_path;
-    state.current_project = saved_current_project;
-    state.current_file = saved_current_file;
+    state.current_project = had_current_project ? &state.solution->projects[saved_project_index] : nullptr;
+    state.current_file = nullptr;
+    if (state.current_project && !saved_current_file_path.empty()) {
+        for (auto& src : state.current_project->sources) {
+            if (src.path == saved_current_file_path) {
+                state.current_file = &src;
+                break;
+            }
+        }
+    }
     state.current_config = saved_current_config;
     state.current_config_targets = saved_current_targets;
     state.current_section = saved_current_section;

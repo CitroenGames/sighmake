@@ -160,3 +160,25 @@ if(Android) {
     CHECK(core->solution_folder == "Libs");
     CHECK(app->solution_folder.empty());
 }
+
+TEST_CASE("Settings after an include that declares a project go to the including project", "[bugfix_parser]") {
+    const fs::path root = make_parser_temp_dir("include_project");
+    write_parser_file(root / "lib" / "lib.buildscript", "[project:Lib]\ntype = lib\n");
+    write_parser_file(root / "main.buildscript", R"([solution]
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+include = lib/lib.buildscript
+defines = APP_DEFINE
+)");
+    BuildscriptParser parser;
+    const Solution sol = parser.parse((root / "main.buildscript").string());
+    const Project* app = find_parser_project(sol, "App");
+    const Project* lib = find_parser_project(sol, "Lib");
+    REQUIRE(app);
+    REQUIRE(lib);
+    CHECK(parser_contains(app->configurations.at("Debug|Linux").cl_compile.preprocessor_definitions, "APP_DEFINE"));
+    CHECK_FALSE(parser_contains(lib->configurations.at("Debug|Linux").cl_compile.preprocessor_definitions, "APP_DEFINE"));
+}
