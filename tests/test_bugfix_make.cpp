@@ -342,3 +342,29 @@ postbuild = cp $@ App.copy
     CHECK(fs::file_size(p.dir / "build" / "App.copy") == fs::file_size(p.dir / "bin" / "App"));
 #endif
 }
+
+TEST_CASE("Makefile expands $(IntDir) in per-file object_file", "[bugfix_make]") {
+    BugfixMakeProject p("object_file_intdir", R"(
+[solution]
+name = O
+configurations = Debug, Release
+platforms = Linux
+
+[project:App]
+type = exe
+outdir = bin/$(Configuration)
+intdir = obj/$(Configuration)
+sources = main.cpp
+main.cpp:object_file = $(IntDir)custom_main.obj
+)", {{"main.cpp", "int main() { return 0; }\n"}});
+    REQUIRE(p.generated);
+    const std::string debug = p.makefile("App.Debug");
+    const std::string release = p.makefile("App.Release");
+    CHECK(debug.find("$(IntDir)") == std::string::npos);
+    CHECK(debug.find("../obj/Debug/custom_main.o") != std::string::npos);
+    CHECK(release.find("../obj/Release/custom_main.o") != std::string::npos);
+#ifndef _WIN32
+    CHECK(p.make("App.Debug") == 0);
+    CHECK(fs::exists(p.dir / "obj" / "Debug" / "custom_main.o"));
+#endif
+}

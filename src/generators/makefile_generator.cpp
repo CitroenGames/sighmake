@@ -622,6 +622,16 @@ std::string MakefileGenerator::make_object_path(const SourceFile& src, const std
     if (const auto* object_file = find_config_setting(src.settings.object_file, config_key);
         object_file && !object_file->empty()) {
         std::string obj_path = to_unix_path(*object_file);
+        // MSBuild-style macros (object_file = $(IntDir)name.obj) name the configuration's
+        // intermediate directory; make has no such variables.
+        const auto [config_name, platform_name] = parse_config_key(config_key);
+        for (const auto& [token, value] : {std::pair<std::string, std::string>{"$(IntDir)", int_dir},
+                                           {"$(Configuration)", config_name},
+                                           {"$(Platform)", platform_name}}) {
+            for (size_t pos = 0; (pos = obj_path.find(token, pos)) != std::string::npos; pos += value.size()) {
+                obj_path.replace(pos, token.size(), value);
+            }
+        }
         if (has_extension_case_insensitive(obj_path, ".obj")) {
             obj_path.replace(obj_path.size() - 4, 4, ".o");
         }
