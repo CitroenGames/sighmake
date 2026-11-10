@@ -709,7 +709,7 @@ Project VcprojReader::read_vcproj(const std::string& filepath) {
                     std::string name = child.attribute("Name").as_string();
                     std::string sub_path = filter_path;
                     if (!name.empty()) {
-                        sub_path = filter_path.empty() ? name : filter_path + "\\" + name;
+                        sub_path = filter_path.empty() ? name : filter_path + "/" + name;
                     }
                     collect_files(child, sub_path);
                     continue;
