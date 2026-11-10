@@ -330,3 +330,60 @@ target_compile_definitions(App PRIVATE ${EXTRA_DEFS})
     CHECK(bugfix3_find(sol, "fromfile") != nullptr);
     fs::remove_all(dir, ec);
 }
+
+TEST_CASE("CMake reader implements the list() subcommands", "[bugfix3_make]") {
+    CMakeParser parser;
+    Solution sol = parser.parse_string(R"(
+project(T)
+set(LST a;b;c)
+list(LENGTH LST N)
+list(REMOVE_ITEM LST b)
+list(INSERT LST 0 z)
+list(SORT LST)
+list(TRANSFORM LST PREPEND "D_")
+list(GET LST 0 -1 PAIR)
+list(FIND LST D_c IDX)
+set(FILES src/a.cpp;src/main.cpp;src/b.cpp)
+list(FILTER FILES EXCLUDE REGEX "main")
+list(JOIN LST "+" JOINED)
+list(REMOVE_DUPLICATES DUPS)
+add_executable(App main.cpp)
+target_compile_definitions(App PRIVATE ${LST} N_${N} PAIR_${PAIR} IDX_${IDX} J_${JOINED})
+target_sources(App PRIVATE ${FILES})
+)");
+    const Project* p = bugfix3_find(sol, "App");
+    REQUIRE(p != nullptr);
+    const auto& defs = p->project_level_preprocessor_definitions;
+    CHECK(bugfix3_has(defs, "D_a"));
+    CHECK(bugfix3_has(defs, "D_c"));
+    CHECK(bugfix3_has(defs, "D_z"));
+    CHECK_FALSE(bugfix3_has(defs, "D_b"));
+    CHECK(bugfix3_has(defs, "N_3"));
+    CHECK(bugfix3_has(defs, "PAIR_D_a"));
+    CHECK(bugfix3_has(defs, "IDX_1"));
+    CHECK(bugfix3_has(defs, "J_D_a+D_c+D_z"));
+    bool main_twice = false;
+    int mains = 0;
+    for (const auto& src : p->sources) {
+        if (src.path.find("main.cpp") != std::string::npos) ++mains;
+        CHECK(src.path.find("src/main.cpp") == std::string::npos);
+    }
+    main_twice = mains > 1;
+    CHECK_FALSE(main_twice);
+}
+
+TEST_CASE("CMake reader propagates set(... PARENT_SCOPE) out of a function", "[bugfix3_make]") {
+    CMakeParser parser;
+    Solution sol = parser.parse_string(R"(
+project(T)
+function(setres value)
+  set(RESULT ${value} PARENT_SCOPE)
+endfunction()
+setres(fromfunc)
+add_executable(App main.cpp)
+target_compile_definitions(App PRIVATE R_${RESULT})
+)");
+    const Project* p = bugfix3_find(sol, "App");
+    REQUIRE(p != nullptr);
+    CHECK(bugfix3_has(p->project_level_preprocessor_definitions, "R_fromfunc"));
+}

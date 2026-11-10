@@ -806,33 +806,163 @@ void CMakeParser::handle_set_target_properties(const std::vector<std::string>& a
 
 void CMakeParser::handle_list(const std::vector<std::string>& args, ParseState& state) {
     if (args.size() < 2) return;
-    std::string subcmd = args[0];
-    std::string list_name = args[1];
-    
-    std::string current_val = state.variables[list_name];
-    std::vector<std::string> current_list;
-    
-    // Split current value by ;
-    std::stringstream ss(current_val);
-    std::string item;
-    while (std::getline(ss, item, ';')) {
-        current_list.push_back(item);
-    }
-    
+    const std::string& subcmd = args[0];
+    const std::string& list_name = args[1];
+
+    auto split = [](const std::string& text) {
+        std::vector<std::string> items;
+        std::stringstream ss(text);
+        std::string item;
+        while (std::getline(ss, item, ';')) items.push_back(item);
+        return items;
+    };
+    auto join = [](const std::vector<std::string>& items) {
+        std::string joined;
+        for (size_t k = 0; k < items.size(); ++k) {
+            if (k > 0) joined += ";";
+            joined += items[k];
+        }
+        return joined;
+    };
+    // A list index: negative values count from the end. Returns false when out of range.
+    auto index_of = [](const std::string& text, size_t size, size_t& out) {
+        try {
+            long long value = std::stoll(text);
+            if (value < 0) value += static_cast<long long>(size);
+            if (value < 0 || value >= static_cast<long long>(size)) return false;
+            out = static_cast<size_t>(value);
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
+    };
+
+    std::vector<std::string> list = split(state.variables[list_name]);
+    bool modified = false;
+
     if (subcmd == "APPEND") {
+        for (size_t i = 2; i < args.size(); ++i) list.push_back(args[i]);
+        modified = true;
+    } else if (subcmd == "PREPEND") {
+        list.insert(list.begin(), args.begin() + 2, args.end());
+        modified = true;
+    } else if (subcmd == "INSERT" && args.size() >= 3) {
+        long long at = 0;
+        try { at = std::stoll(args[2]); } catch (const std::exception&) { return; }
+        if (at < 0) at += static_cast<long long>(list.size());
+        if (at < 0 || at > static_cast<long long>(list.size())) return;
+        list.insert(list.begin() + at, args.begin() + 3, args.end());
+        modified = true;
+    } else if (subcmd == "REMOVE_ITEM") {
+        list.erase(std::remove_if(list.begin(), list.end(),
+                                  [&](const std::string& item) {
+                                      return std::find(args.begin() + 2, args.end(), item) != args.end();
+                                  }),
+                   list.end());
+        modified = true;
+    } else if (subcmd == "REMOVE_AT") {
+        std::set<size_t> remove;
         for (size_t i = 2; i < args.size(); ++i) {
-            current_list.push_back(args[i]);
+            size_t at = 0;
+            if (index_of(args[i], list.size(), at)) remove.insert(at);
+        }
+        std::vector<std::string> kept;
+        for (size_t k = 0; k < list.size(); ++k) {
+            if (!remove.count(k)) kept.push_back(list[k]);
+        }
+        list.swap(kept);
+        modified = true;
+    } else if (subcmd == "REMOVE_DUPLICATES") {
+        std::set<std::string> seen;
+        std::vector<std::string> kept;
+        for (const auto& item : list) {
+            if (seen.insert(item).second) kept.push_back(item);
+        }
+        list.swap(kept);
+        modified = true;
+    } else if (subcmd == "SORT") {
+        std::sort(list.begin(), list.end());
+        for (size_t i = 2; i + 1 < args.size(); ++i) {
+            if (args[i] == "ORDER" && args[i + 1] == "DESCENDING") std::reverse(list.begin(), list.end());
+        }
+        modified = true;
+    } else if (subcmd == "REVERSE") {
+        std::reverse(list.begin(), list.end());
+        modified = true;
+    } else if (subcmd == "POP_BACK" || subcmd == "POP_FRONT") {
+        if (!list.empty()) {
+            if (args.size() > 2) state.variables[args[2]] = subcmd == "POP_BACK" ? list.back() : list.front();
+            if (subcmd == "POP_BACK") list.pop_back();
+            else list.erase(list.begin());
+        }
+        modified = true;
+    } else if (subcmd == "FILTER" && args.size() >= 5 && args[3] == "REGEX") {
+        const bool include = args[2] == "INCLUDE";
+        try {
+            std::regex re(args[4]);
+            std::vector<std::string> kept;
+            for (const auto& item : list) {
+                if (std::regex_search(item, re) == include) kept.push_back(item);
+            }
+            list.swap(kept);
+            modified = true;
+        } catch (const std::regex_error&) {
+            return;
+        }
+    } else if (subcmd == "TRANSFORM" && args.size() >= 3) {
+        const std::string& action = args[2];
+        const std::string arg = args.size() > 3 ? args[3] : std::string();
+        for (auto& item : list) {
+            if (action == "APPEND") item += arg;
+            else if (action == "PREPEND") item = arg + item;
+            else if (action == "TOUPPER") item = to_upper(item);
+            else if (action == "TOLOWER") item = to_lower(item);
+            else if (action == "STRIP") {
+                const size_t first = item.find_first_not_of(" \t");
+                const size_t last = item.find_last_not_of(" \t");
+                item = first == std::string::npos ? std::string() : item.substr(first, last - first + 1);
+            }
+        }
+        modified = action == "APPEND" || action == "PREPEND" || action == "TOUPPER" || action == "TOLOWER" ||
+                   action == "STRIP";
+    } else if (subcmd == "LENGTH" && args.size() >= 3) {
+        state.variables[args[2]] = std::to_string(list.size());
+    } else if (subcmd == "GET" && args.size() >= 4) {
+        std::vector<std::string> picked;
+        bool ok = true;
+        for (size_t i = 2; i + 1 < args.size(); ++i) {
+            size_t at = 0;
+            if (!index_of(args[i], list.size(), at)) { ok = false; break; }
+            picked.push_back(list[at]);
+        }
+        state.variables[args.back()] = ok ? join(picked) : "NOTFOUND";
+    } else if (subcmd == "FIND" && args.size() >= 4) {
+        auto found = std::find(list.begin(), list.end(), args[2]);
+        state.variables[args[3]] = found == list.end() ? "-1" : std::to_string(found - list.begin());
+    } else if (subcmd == "JOIN" && args.size() >= 4) {
+        std::string joined;
+        for (size_t k = 0; k < list.size(); ++k) {
+            if (k > 0) joined += args[2];
+            joined += list[k];
+        }
+        state.variables[args[3]] = joined;
+    } else if (subcmd == "SUBLIST" && args.size() >= 5) {
+        try {
+            const long long begin = std::stoll(args[2]);
+            long long length = std::stoll(args[3]);
+            std::vector<std::string> part;
+            if (begin >= 0 && begin <= static_cast<long long>(list.size())) {
+                if (length < 0 || begin + length > static_cast<long long>(list.size())) {
+                    length = static_cast<long long>(list.size()) - begin;
+                }
+                part.assign(list.begin() + begin, list.begin() + begin + length);
+            }
+            state.variables[args[4]] = join(part);
+        } catch (const std::exception&) {
         }
     }
-    // Other subcommands (REMOVE_ITEM, etc.) ignored for now
-    
-    // Join back
-    std::string new_val;
-    for (const auto& it : current_list) {
-        if (!new_val.empty()) new_val += ";";
-        new_val += it;
-    }
-    state.variables[list_name] = new_val;
+
+    if (modified) state.variables[list_name] = join(list);
 }
 
 void CMakeParser::handle_target_compile_options(const std::vector<std::string>& args, ParseState& state) {
@@ -2059,6 +2189,7 @@ void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, Pa
                         if (it != state.functions.end()) {
                             // Execute function
                             ParseState func_state = state; // Copy global state
+                            func_state.parent_scope_vars.clear();
                             
                             // Map arguments
                             for (size_t k = 0; k < it->second.params.size() && k < args.size(); ++k) {
@@ -2075,6 +2206,11 @@ void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, Pa
                             
                             size_t func_i = 0;
                             execute_tokens(it->second.body, func_i, func_state);
+
+                            // set(... PARENT_SCOPE) inside the function sets the caller's variable
+                            for (const auto& [name, value] : func_state.parent_scope_vars) {
+                                state.variables[name] = value;
+                            }
                             
                             // Propagate changes back for parent scope variables if explicitly set?
                             // CMake functions have new scope, macros don't.
