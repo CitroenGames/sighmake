@@ -543,6 +543,46 @@ target_link_libraries(PRIVATE Lib)
     CHECK(forced_off.project_content.find("POSITION_INDEPENDENT_CODE OFF") != std::string::npos);
 }
 
+TEST_CASE("CMakeGenerator links shared libraries with -Bsymbolic-functions", "[cmake_generator]") {
+    auto shared = generate_cmake(kCMakePicGraph, "Plugin");
+    const std::string& content = shared.project_content;
+    // Guarded in CMake (not by the generating host): ELF only, and only when the linker accepts it.
+    const size_t guard = content.find("if(NOT APPLE AND NOT WIN32)\n    include(CheckLinkerFlag)");
+    const size_t check = content.find(
+        "check_linker_flag(CXX \"-Wl,-Bsymbolic-functions\" SIGHMAKE_LINKER_BSYMBOLIC_FUNCTIONS_CXX)");
+    const size_t use = content.find("target_link_options(Plugin PRIVATE -Wl,-Bsymbolic-functions)");
+    CHECK(guard != std::string::npos);
+    CHECK(check != std::string::npos);
+    CHECK(use != std::string::npos);
+    CHECK(guard < check);
+    CHECK(check < use);
+
+    // Executables and static libraries, PIC or not, do not get it.
+    for (const char* name : {"App", "IntoShared", "ExeOnly"}) {
+        INFO(name);
+        auto other = generate_cmake(kCMakePicGraph, name);
+        REQUIRE(!other.project_content.empty());
+        CHECK(other.project_content.find("Bsymbolic") == std::string::npos);
+    }
+}
+
+TEST_CASE("CMakeGenerator semantic_interposition = true also drops -Bsymbolic-functions", "[cmake_generator]") {
+    auto result = generate_cmake(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64
+
+[project:Lib]
+type = dll
+sources = main.cpp
+semantic_interposition = true
+)", "Lib");
+    REQUIRE(!result.project_content.empty());
+    CHECK(result.project_content.find("Bsymbolic") == std::string::npos);
+    CHECK(result.project_content.find("CheckLinkerFlag") == std::string::npos);
+}
+
 TEST_CASE("CMakeGenerator custom target name", "[cmake_generator]") {
     auto result = generate_cmake(R"(
 [solution]

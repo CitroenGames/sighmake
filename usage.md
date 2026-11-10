@@ -1560,11 +1560,27 @@ the variable on the make command line overrides both, e.g.
 with an old Clang through `CXX=`. Apple targets do not use the flag; Mach-O has
 no such interposition model.
 
+ELF shared libraries (`dll`/`shared` on Linux and Android) also link with
+`-Wl,-Bsymbolic-functions`: calls from the library to its own exported functions
+bind inside the library at link time instead of going through the PLT, which
+saves an indirect call and lets the dynamic loader resolve fewer symbols. Data
+symbols keep the default binding, so copy relocations from executables still
+work. The flag is the link-time half of the same trade-off as
+`-fno-semantic-interposition` (a function of the library can no longer be
+replaced from outside), so the same `semantic_interposition = true` turns both
+off; there is no separate key. The generated Makefile asks the linker once, when
+make reads it, and sets `SIGHMAKE_BSYMBOLIC_FUNCTIONS` to the flag only when the
+link succeeds (GNU ld, gold, lld and mold accept it); `make
+SIGHMAKE_BSYMBOLIC_FUNCTIONS=` turns it off for one build. Executables and
+static libraries do not get the flag, and neither do Apple or Windows targets.
+
 The CMake generator makes the same decision: `POSITION_INDEPENDENT_CODE ON` for
 the targets above (a static library is PIC when any of its configurations needs
 it), `POSITION_INDEPENDENT_CODE OFF` for `position_independent = false`, and
 `-fno-semantic-interposition` behind a GCC / Clang 10+ check on non-Apple,
-non-Windows hosts.
+non-Windows hosts. Shared libraries get `-Wl,-Bsymbolic-functions` through
+`target_link_options` on non-Apple, non-Windows hosts when
+`check_linker_flag` accepts it.
 
 ### CMake
 
@@ -1979,7 +1995,7 @@ the primary names shown here in hand-written buildscripts.
 | `compile_as` | `Default`, `CompileAsC`, or `CompileAsCpp`. |
 | `pch`, `pch_header`, `pch_output` | Precompiled-header policy. |
 | `position_independent` (`pic`) | Project-level, Make and CMake only: `auto` (default), `true`, or `false`. See [Position-independent code](#position-independent-code). |
-| `semantic_interposition` | Project-level, Make and CMake only. `true` keeps the compiler's default ELF interposition model for position-independent code (no `-fno-semantic-interposition`). Default `false`. |
+| `semantic_interposition` | Project-level, Make and CMake only. `true` keeps the default ELF interposition model: no `-fno-semantic-interposition` on position-independent code and no `-Wl,-Bsymbolic-functions` on shared libraries. Default `false`. |
 
 For Visual Studio C/C++ projects, use `support_just_my_code` instead of adding
 `/JMC-` to `cflags`. It emits `<SupportJustMyCode>false</SupportJustMyCode>`

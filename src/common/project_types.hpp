@@ -459,9 +459,10 @@ struct Project {
     // -fPIC, "false" turns it off for static libraries and executables (shared libraries always
     // need it). See project_uses_position_independent_code().
     std::string position_independent = "auto";
-    // `semantic_interposition = true` keeps the compiler's default ELF interposition model for
-    // position-independent code (needed when symbols are replaced through LD_PRELOAD). The default
-    // (false) adds -fno-semantic-interposition to every position-independent compile.
+    // `semantic_interposition = true` keeps the default ELF interposition model (needed when
+    // symbols are replaced through LD_PRELOAD). The default (false) adds -fno-semantic-interposition
+    // to every position-independent compile and links ELF shared libraries with
+    // -Wl,-Bsymbolic-functions.
     bool semantic_interposition = false;
 };
 

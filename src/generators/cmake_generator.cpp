@@ -932,6 +932,20 @@ void CMakeGenerator::write_target_properties(std::ostream& out, const Project& p
         out << "endif()\n";
     }
 
+    // ELF shared libraries: -Wl,-Bsymbolic-functions binds calls between the library's own functions
+    // at link time, when the linker accepts it. The same `semantic_interposition = true` opts out.
+    if (config_type == "DynamicLibrary" && !project.semantic_interposition) {
+        const std::string lang = detected_lang == "C" ? "C" : "CXX";
+        const std::string result_var = "SIGHMAKE_LINKER_BSYMBOLIC_FUNCTIONS_" + lang;
+        out << "if(NOT APPLE AND NOT WIN32)\n";
+        out << "    include(CheckLinkerFlag)\n";
+        out << "    check_linker_flag(" << lang << " \"-Wl,-Bsymbolic-functions\" " << result_var << ")\n";
+        out << "    if(" << result_var << ")\n";
+        out << "        target_link_options(" << project.name << " PRIVATE -Wl,-Bsymbolic-functions)\n";
+        out << "    endif()\n";
+        out << "endif()\n";
+    }
+
     // Per-config output directories
     auto config_names = get_config_names(solution);
     bool has_outdir = false;

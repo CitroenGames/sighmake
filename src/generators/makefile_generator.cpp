@@ -1796,6 +1796,14 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         pic_flags = "-fPIC ";
         if (no_semantic_interposition) pic_flags += "$(SIGHMAKE_NO_SEMANTIC_INTERPOSITION) ";
     }
+    // ELF shared libraries also link with -Wl,-Bsymbolic-functions: calls between functions of the
+    // library bind inside it at link time instead of through the PLT. Like -fno-semantic-interposition
+    // this gives up replacing the library's functions from outside (LD_PRELOAD), so the same
+    // `semantic_interposition = true` opts out. Data symbols keep default binding (copy relocations).
+    const bool bsymbolic_functions = config.config_type == "DynamicLibrary" && elf_target &&
+                                     !project.semantic_interposition;
+    const std::string shared_link_flags =
+        bsymbolic_functions ? "-shared $(SIGHMAKE_BSYMBOLIC_FUNCTIONS)" : "-shared";
 
     // Compiler flags
     std::string cxxflags = get_compiler_flags(config, project, makefile_dir, false, config_name, pic_flags);
@@ -1959,6 +1967,18 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         } else {
             out << "SIGHMAKE_NO_SEMANTIC_INTERPOSITION ?= -fno-semantic-interposition\n";
         }
+    }
+    if (bsymbolic_functions) {
+        // The linker is asked once when make reads this file (GNU ld, gold, lld and mold accept the
+        // flag; anything else leaves the variable empty). Setting the variable on the make command
+        // line (empty to disable) overrides the probe.
+        const std::string& link_cmd = links_with_cxx ? cxx_cmd : cc_cmd;
+        out << "# Shared library calls bind locally (semantic_interposition = true opts out)\n";
+        out << "ifeq ($(origin SIGHMAKE_BSYMBOLIC_FUNCTIONS),undefined)\n";
+        out << "  SIGHMAKE_BSYMBOLIC_FUNCTIONS := $(shell echo | " << link_cmd
+            << " -x c - -shared -nostdlib -Wl,-Bsymbolic-functions -o /dev/null 2>/dev/null"
+            << " && echo -Wl,-Bsymbolic-functions)\n";
+        out << "endif\n";
     }
     if (has_cpp_files || has_objcxx_files) {
         out << "CXXFLAGS = " << cxxflags << "\n";
@@ -2125,7 +2145,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                 link_text = ar_cmd + " rcs";
             } else {
                 link_text = (links_with_cxx ? cxx_cmd : cc_cmd) +
-                    (config.config_type == "DynamicLibrary" ? " -shared" : "") + " " + ldflags +
+                    (config.config_type == "DynamicLibrary" ? " " + shared_link_flags : "") + " " + ldflags +
                     (android ? " $(ANDROID_LINK_FLAGS)" : "") + " " + ldlibs;
             }
             stamps.push_back({"SIGHMAKE_LINK_STAMP", stamp_file("link"), link_text});
@@ -2265,13 +2285,14 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             // packager (lib<name>.so) expect; ANDROID_LINK_FLAGS carries the page-size alignment.
             out << "\t$(shell mkdir -p $(dir $@))$(file >$@.rsp,$(OBJS) " << ldlibs << ")\n";
             if (config.config_type == "DynamicLibrary") {
-                out << "\t" << compiler << " -shared -Wl,-soname,$(notdir $@) $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp\n";
+                out << "\t" << compiler << " " << shared_link_flags
+                    << " -Wl,-soname,$(notdir $@) $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp\n";
             } else {
                 out << "\t" << compiler << " $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp\n";
             }
             out << "\t@rm -f $@.rsp\n";
         } else if (config.config_type == "DynamicLibrary") {
-            out << "\t" << compiler << " -shared $(LDFLAGS) -o $@ $(OBJS) " << ldlibs << "\n";
+            out << "\t" << compiler << " " << shared_link_flags << " $(LDFLAGS) -o $@ $(OBJS) " << ldlibs << "\n";
         } else {
             out << "\t" << compiler << " $(LDFLAGS) -o $@ $(OBJS) " << ldlibs << "\n";
         }

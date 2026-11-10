@@ -510,6 +510,81 @@ semantic_interposition = true
     CHECK(mk.find("SIGHMAKE_NO_SEMANTIC_INTERPOSITION") == std::string::npos);
 }
 
+TEST_CASE("MakefileGenerator links ELF shared libraries with -Bsymbolic-functions", "[makefile_generator]") {
+    auto result = generate_makefile(kMakefilePicGraph, kMakefilePicSources);
+    REQUIRE(result.files.count("Plugin.Release"));
+    const std::string& plugin = result.files["Plugin.Release"];
+#ifdef __APPLE__
+    // Mach-O: no ELF symbol binding to change, the flag is not used.
+    CHECK(plugin.find("Bsymbolic") == std::string::npos);
+    CHECK(plugin.find("SIGHMAKE_BSYMBOLIC_FUNCTIONS") == std::string::npos);
+#else
+    // The linker is asked once; the variable is empty when it rejects the flag.
+    CHECK(plugin.find("ifeq ($(origin SIGHMAKE_BSYMBOLIC_FUNCTIONS),undefined)") != std::string::npos);
+    CHECK(plugin.find("-shared -nostdlib -Wl,-Bsymbolic-functions -o /dev/null 2>/dev/null"
+                      " && echo -Wl,-Bsymbolic-functions)") != std::string::npos);
+    const size_t def = plugin.find("SIGHMAKE_BSYMBOLIC_FUNCTIONS :=");
+    const size_t use = plugin.find("-shared $(SIGHMAKE_BSYMBOLIC_FUNCTIONS) $(LDFLAGS) -o $@ $(OBJS)");
+    CHECK(def != std::string::npos);
+    CHECK(use != std::string::npos);
+    CHECK(def < use);
+#endif
+    // Executables and static libraries (even PIC ones) are not shared libraries.
+    for (const char* name : {"App.Release", "IntoShared.Release", "Inner.Release", "ExeOnly.Release"}) {
+        INFO(name);
+        REQUIRE(result.files.count(name));
+        CHECK(result.files[name].find("Bsymbolic") == std::string::npos);
+        CHECK(result.files[name].find("SIGHMAKE_BSYMBOLIC_FUNCTIONS") == std::string::npos);
+    }
+}
+
+TEST_CASE("MakefileGenerator links Android shared libraries with -Bsymbolic-functions", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux, Android
+
+[project:Engine]
+type = dll
+sources = main.cpp
+
+[project:Game]
+type = exe
+sources = main.cpp
+target_link_libraries(PRIVATE Engine)
+)");
+    // Android is ELF on every host, macOS included.
+    REQUIRE(result.files.count("Engine.Release.Android"));
+    const std::string& mk = result.files["Engine.Release.Android"];
+    CHECK(mk.find("ifeq ($(origin SIGHMAKE_BSYMBOLIC_FUNCTIONS),undefined)") != std::string::npos);
+    CHECK(mk.find("-shared $(SIGHMAKE_BSYMBOLIC_FUNCTIONS) -Wl,-soname,$(notdir $@)") != std::string::npos);
+    REQUIRE(result.files.count("Game.Release.Android"));
+    CHECK(result.files["Game.Release.Android"].find("SIGHMAKE_BSYMBOLIC_FUNCTIONS") == std::string::npos);
+}
+
+TEST_CASE("MakefileGenerator semantic_interposition = true also drops -Bsymbolic-functions", "[makefile_generator]") {
+    auto result = generate_makefile(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux, Android
+
+[project:Preloadable]
+type = dll
+sources = main.cpp
+semantic_interposition = true
+)");
+    for (const char* name : {"Preloadable.Release", "Preloadable.Release.Android"}) {
+        INFO(name);
+        REQUIRE(result.files.count(name));
+        const std::string& mk = result.files[name];
+        CHECK(mk.find("Bsymbolic") == std::string::npos);
+        CHECK(mk.find("SIGHMAKE_BSYMBOLIC_FUNCTIONS") == std::string::npos);
+        CHECK(mk.find(" -shared ") != std::string::npos);
+    }
+}
+
 TEST_CASE("BuildscriptParser warns on invalid position_independent and falls back to auto", "[makefile_generator]") {
     BuildscriptParser parser;
     Solution solution = parser.parse_string(R"(
