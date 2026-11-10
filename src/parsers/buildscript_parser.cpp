@@ -1340,6 +1340,27 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
                 state.set_file_properties_file = find_or_create_source(file_path, state);
                 state.in_set_file_properties = true;
                 state.current_file = nullptr;  // Clear current file context
+
+                // Settings on the opening line, and the closing ')' of the single-line form
+                std::string rest = trimmed.substr(comma_pos + 1);
+                const bool single_line = parens_balanced(trimmed) && rest.rfind(')') != std::string::npos;
+                if (single_line) rest = rest.substr(0, rest.rfind(')'));
+                std::vector<std::pair<std::string, std::string>> settings;
+                for (const auto& part : split(rest, ',')) {
+                    const size_t eq = part.find('=');
+                    if (eq != std::string::npos) {
+                        settings.emplace_back(trim(part.substr(0, eq)), trim(part.substr(eq + 1)));
+                    } else if (!settings.empty()) {
+                        settings.back().second += ", " + part;  // a list value such as defines = A, B
+                    }
+                }
+                for (const auto& [setting_key, setting_value] : settings) {
+                    parse_key_value(setting_key, setting_value, state);
+                }
+                if (single_line) {
+                    state.in_set_file_properties = false;
+                    state.set_file_properties_file = nullptr;
+                }
             }
         }
         return;

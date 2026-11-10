@@ -253,3 +253,32 @@ masm[x86] = asm/fast32.asm
     CHECK_FALSE(file->settings.excluded.count("Debug|Win32"));
     CHECK(file->settings.excluded.count("Debug|x64"));
 }
+
+TEST_CASE("Single-line set_file_properties applies its settings and ends", "[bugfix_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+sources = src/main.cpp, src/legacy.c
+set_file_properties(src/legacy.c, compile_as = CompileAsC)
+defines = PROJECT_WIDE
+set_file_properties(src/main.cpp,
+    defines = A, B
+)
+)");
+    REQUIRE(sol.projects.size() == 1);
+    const Project& app = sol.projects[0];
+    const SourceFile* legacy = find_parser_source(app, "legacy.c");
+    const SourceFile* main_cpp = find_parser_source(app, "main.cpp");
+    REQUIRE(legacy);
+    REQUIRE(main_cpp);
+    CHECK(legacy->settings.compile_as.count("*") == 1);
+    CHECK(legacy->settings.preprocessor_defines.empty());
+    CHECK(parser_contains(app.configurations.at("Debug|Linux").cl_compile.preprocessor_definitions, "PROJECT_WIDE"));
+    REQUIRE(main_cpp->settings.preprocessor_defines.count("*") == 1);
+    CHECK(main_cpp->settings.preprocessor_defines.at("*") == std::vector<std::string>{"A", "B"});
+}
