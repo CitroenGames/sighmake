@@ -66,6 +66,11 @@ std::optional<std::string> ToolsetRegistry::resolve(const std::string& input) co
         return it->second;
     }
 
+    // Known toolset ID in any case (e.g., "V143" -> "v143")
+    if (toolsets_.count(lower_input)) {
+        return lower_input;
+    }
+
     // Unknown toolset - return as-is for forward compatibility
     return input;
 }
