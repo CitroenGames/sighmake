@@ -25,6 +25,50 @@ std::string cmake_arg(const std::string& value) {
     if (!value.empty() && value.find_first_of(" \t\n\"()#\\") == std::string::npos) return value;
     return cmake_quote(value);
 }
+
+std::string command_to_cmake(const std::string& command) {
+    std::string result = command;
+    std::replace(result.begin(), result.end(), '\\', '/');
+    return result;
+}
+
+// Writes `COMMAND` lines. `commands` holds one (configuration, command text) pair per configuration;
+// with `all_same` the first entry is written once for every configuration, otherwise each command is
+// guarded so it only exists in its own configuration.
+void write_command_lines(std::ostream& out, const std::vector<std::pair<std::string, std::string>>& commands,
+                         bool all_same) {
+    for (const auto& [cfg_name, command] : commands) {
+        if (command.empty()) continue;
+        // Each line is a separate command
+        std::istringstream lines(command_to_cmake(unescape_newlines(command)));
+        std::string line;
+        while (std::getline(lines, line)) {
+            line = trim(line);
+            if (line.empty()) continue;
+            if (all_same) {
+                out << "    COMMAND " << line << "\n";
+                continue;
+            }
+            // Configuration-specific: every word becomes empty in the other configurations,
+            // which drops the command there
+            out << "    COMMAND";
+            std::istringstream words(line);
+            std::string word;
+            while (words >> word) {
+                std::string escaped;
+                for (char c : word) {
+                    if (c == '>') escaped += "$<ANGLE-R>";
+                    else if (c == ',') escaped += "$<COMMA>";
+                    else if (c == ';') escaped += "$<SEMICOLON>";
+                    else escaped += c;
+                }
+                out << " " << cmake_arg("$<$<CONFIG:" + cfg_name + ">:" + escaped + ">");
+            }
+            out << "\n";
+        }
+        if (all_same) break;
+    }
+}
 }
 
 
@@ -1208,37 +1252,11 @@ void CMakeGenerator::write_build_events(std::ostream& out, const Project& projec
         if (!message_source) return;
 
         out << "\nadd_custom_command(TARGET " << project.name << " " << when << "\n";
+        std::vector<std::pair<std::string, std::string>> commands;
         for (const auto& [cfg_name, event] : events) {
-            if (!event || event->command.empty()) continue;
-            // Each line is a separate command
-            std::istringstream lines(to_cmake_path(unescape_newlines(event->command)));
-            std::string line;
-            while (std::getline(lines, line)) {
-                line = trim(line);
-                if (line.empty()) continue;
-                if (all_same) {
-                    out << "    COMMAND " << line << "\n";
-                    continue;
-                }
-                // Configuration-specific: every word becomes empty in the other configurations,
-                // which drops the command there
-                out << "    COMMAND";
-                std::istringstream words(line);
-                std::string word;
-                while (words >> word) {
-                    std::string escaped;
-                    for (char c : word) {
-                        if (c == '>') escaped += "$<ANGLE-R>";
-                        else if (c == ',') escaped += "$<COMMA>";
-                        else if (c == ';') escaped += "$<SEMICOLON>";
-                        else escaped += c;
-                    }
-                    out << " " << cmake_arg("$<$<CONFIG:" + cfg_name + ">:" + escaped + ">");
-                }
-                out << "\n";
-            }
-            if (all_same) break;
+            commands.emplace_back(cfg_name, event ? event->command : std::string());
         }
+        write_command_lines(out, commands, all_same);
         if (!message_source->message.empty()) {
             out << "    COMMENT " << cmake_quote(message_source->message) << "\n";
         }
@@ -1255,39 +1273,129 @@ void CMakeGenerator::write_build_events(std::ostream& out, const Project& projec
 // ============================================================================
 
 void CMakeGenerator::write_custom_build_rules(std::ostream& out, const Project& project,
-                                               const std::string& project_dir) {
+                                               const Solution& solution, const std::string& project_dir) {
+    std::string config_type;
+    for (const auto& [key, config] : project.configurations) {
+        if (!config.config_type.empty()) {
+            config_type = config.config_type;
+            break;
+        }
+    }
+    auto config_names = get_config_names(solution);
+    int rule_index = 0;
+
+    // Paths and commands of a rule are relative to the buildscript, like in the Visual Studio generator
+    auto from_script = [&](const std::string& path) {
+        fs::path p(path);
+        if (p.is_relative() && !project.buildscript_path.empty()) p = fs::path(project.buildscript_path) / p;
+        return p.string();
+    };
+    std::string working_dir = "${CMAKE_CURRENT_SOURCE_DIR}";
+    if (!project.buildscript_path.empty()) {
+        std::string rel = compute_relative_path(project.buildscript_path, project_dir);
+        if (rel != ".") working_dir += "/" + rel;
+    }
+
     for (const auto& src : project.sources) {
         if (src.type != FileType::CustomBuild) continue;
 
         std::string rel_path = compute_relative_path(src.path, project_dir);
 
-        // Use the first config's custom build settings
-        std::string command, outputs, description;
-        for (const auto& [cfg_key, cmd] : src.custom_command) {
-            command = unescape_newlines(cmd);
-            break;
+        // Value of a per-configuration setting for a configuration name (ALL_CONFIGS applies to every one)
+        auto value_for = [&](const std::map<std::string, std::string>& values, const std::string& cfg_name) {
+            std::string fallback;
+            for (const auto& [cfg_key, value] : values) {
+                if (cfg_key == ALL_CONFIGS) fallback = value;
+                else if (parse_config_key(cfg_key).first == cfg_name) return value;
+            }
+            return fallback;
+        };
+
+        std::vector<std::pair<std::string, std::string>> commands;
+        std::vector<std::pair<std::string, std::string>> outputs;
+        std::string description;
+        bool commands_same = true;
+        bool outputs_same = true;
+        for (const auto& cfg_name : config_names) {
+            std::string command = value_for(src.custom_command, cfg_name);
+            std::string output = value_for(src.custom_outputs, cfg_name);
+            if (!commands.empty() && command != commands.front().second) commands_same = false;
+            if (!outputs.empty() && output != outputs.front().second) outputs_same = false;
+            commands.emplace_back(cfg_name, command);
+            outputs.emplace_back(cfg_name, output);
+            if (description.empty()) description = value_for(src.custom_message, cfg_name);
         }
-        for (const auto& [cfg_key, out_val] : src.custom_outputs) {
-            outputs = out_val;
-            break;
+        if (commands.empty()) {
+            // No solution configurations: fall back to whatever the rule declares
+            for (const auto& [cfg_key, cmd] : src.custom_command) {
+                commands.emplace_back(parse_config_key(cfg_key).first, cmd);
+                outputs.emplace_back(parse_config_key(cfg_key).first, value_for(src.custom_outputs, parse_config_key(cfg_key).first));
+                break;
+            }
+            if (!src.custom_message.empty()) description = src.custom_message.begin()->second;
         }
-        for (const auto& [cfg_key, msg] : src.custom_message) {
-            description = msg;
-            break;
+        if (std::all_of(commands.begin(), commands.end(), [](const auto& c) { return c.second.empty(); })) continue;
+
+        // Outputs are written relative to the project directory (CMake would take them relative to the
+        // build directory), one list per configuration
+        auto output_list = [&](const std::string& value) {
+            std::vector<std::string> list;
+            for (const auto& part : split_semicolons(value)) {
+                std::string t = trim(part);
+                if (t.empty()) continue;
+                std::string rel = compute_relative_path(from_script(t), project_dir);
+                if (!fs::path(rel).is_absolute()) rel = "${CMAKE_CURRENT_SOURCE_DIR}/" + rel;
+                list.push_back(rel);
+            }
+            return list;
+        };
+        std::vector<std::string> output_items;
+        for (size_t i = 0; i < outputs.size(); ++i) {
+            for (const auto& item : output_list(outputs[i].second)) {
+                output_items.push_back(outputs_same ? item : "$<$<CONFIG:" + outputs[i].first + ">:" + item + ">");
+            }
+            if (outputs_same) break;
         }
 
-        if (command.empty()) continue;
-
-        out << "\nadd_custom_command(\n";
-        if (!outputs.empty()) {
-            out << "    OUTPUT " << to_cmake_path(outputs) << "\n";
+        std::vector<std::string> depends{cmake_arg(rel_path)};
+        const std::string inputs = value_for(src.custom_inputs, config_names.empty() ? std::string() : config_names.front());
+        for (const auto& part : split_semicolons(inputs)) {
+            std::string t = trim(part);
+            if (!t.empty()) depends.push_back(cmake_arg(compute_relative_path(from_script(t), project_dir)));
         }
-        out << "    COMMAND " << to_cmake_path(command) << "\n";
-        out << "    DEPENDS " << rel_path << "\n";
+
+        const bool real_output = !output_items.empty();
+        const std::string target_name = project.name + "_custom_" + std::to_string(rule_index++);
+        if (real_output) {
+            out << "\nadd_custom_command(\n    OUTPUT";
+            for (const auto& item : output_items) out << " " << cmake_arg(item);
+            out << "\n";
+        } else {
+            out << "\nadd_custom_target(" << target_name << " ALL\n";
+        }
+        write_command_lines(out, commands, commands_same);
+        out << "    WORKING_DIRECTORY " << cmake_arg(working_dir) << "\n";
+        out << "    DEPENDS";
+        for (const auto& d : depends) out << " " << d;
+        out << "\n";
         if (!description.empty()) {
-            out << "    COMMENT \"" << description << "\"\n";
+            out << "    COMMENT " << cmake_quote(description) << "\n";
         }
         out << ")\n";
+
+        if (!real_output) {
+            out << "add_dependencies(" << project.name << " " << target_name << ")\n";
+        } else if (config_type == "Utility" || config_type == "ExternalCMake" || config_type == "AndroidApk") {
+            // An INTERFACE target would hand its generated sources to every consumer
+            out << "add_custom_target(" << target_name << " ALL DEPENDS";
+            for (const auto& item : output_items) out << " " << cmake_arg(item);
+            out << ")\n";
+            out << "add_dependencies(" << project.name << " " << target_name << ")\n";
+        } else {
+            out << "target_sources(" << project.name << " PRIVATE\n";
+            for (const auto& item : output_items) out << "    " << cmake_arg(item) << "\n";
+            out << ")\n";
+        }
     }
 }
 
@@ -1424,7 +1532,7 @@ bool CMakeGenerator::generate_project_cmakelists(const Project& project, const S
     write_build_events(out, project, solution);
 
     // Custom build rules
-    write_custom_build_rules(out, project, project_dir);
+    write_custom_build_rules(out, project, solution, project_dir);
 
     std::cout << "  Generated: " << cmake_path << "\n";
     return true;
