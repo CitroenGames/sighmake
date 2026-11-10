@@ -48,8 +48,8 @@ struct CStandard {
 
 inline const CStandard* find_c_standard(const std::string& value) {
     static const CStandard kCStandards[] = {
-        {"89", "stdc89", "-std=c89", "90"},
-        {"90", "stdc89", "-std=c89", "90"},
+        {"89", nullptr,  "-std=c89", "90"},
+        {"90", nullptr,  "-std=c89", "90"},
         {"99", nullptr,  "-std=c99", "99"},
         {"11", "stdc11", "-std=c11", "11"},
         {"17", "stdc17", "-std=c17", "17"},
@@ -89,14 +89,16 @@ inline std::string cpp_standard_to_cmake(const std::string& value) {
     return "17";
 }
 
-// MSVC LanguageStandard_C value. MSVC ships stdc89/stdc11/stdc17; other standards
-// warn and fall back. Unknown values return "" (compiler default).
+// MSVC LanguageStandard_C value. MSBuild accepts only Default, stdc11, stdc17 and stdclatest.
+// C89/C90/C99 have no MSVC mode: warn and return "" (leave the property unset = Default).
+// Other unsupported standards fall back to stdc11. Unknown values return "" (compiler default).
 inline std::string c_standard_to_msvc(const std::string& value) {
     if (const auto* info = find_c_standard(value)) {
         if (info->msvc) return info->msvc;
-        if (value == "99") {
-            std::cerr << "Warning: C99 (stdc99) is not fully supported by MSVC. "
-                      << "Falling back to stdc11.\n";
+        if (value == "89" || value == "90" || value == "99") {
+            std::cerr << "Warning: MSVC has no C" << value << " mode (LanguageStandard_C accepts only "
+                      << "Default, stdc11, stdc17, stdclatest). Using the compiler default.\n";
+            return "";
         } else {
             std::cerr << "Warning: C" << value << " is not supported by MSVC. "
                       << "Falling back to stdc11.\n";
