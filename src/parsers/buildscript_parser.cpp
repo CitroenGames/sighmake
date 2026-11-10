@@ -650,6 +650,15 @@ Solution BuildscriptParser::parse(const std::string& filepath) {
     return solution;
 }
 
+// Insert the entries of `defaults` that `target` lacks at the front of `target`, keeping their order.
+static void merge_missing_entries_front(std::vector<std::string>& target, const std::vector<std::string>& defaults) {
+    std::vector<std::string> missing;
+    for (const auto& entry : defaults) {
+        if (std::find(target.begin(), target.end(), entry) == target.end()) missing.push_back(entry);
+    }
+    target.insert(target.begin(), missing.begin(), missing.end());
+}
+
 Solution BuildscriptParser::parse_string(const std::string& content, const std::string& base_path) {
     Solution solution;
     solution.uuid = generate_uuid();
@@ -855,18 +864,17 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
             if (!cl.multi_processor_compilation && d.multi_processor_compilation)
                 cl.multi_processor_compilation = d.multi_processor_compilation;
 
-            // Vector settings: copy if empty
-            if (cl.additional_include_directories.empty() && !d.additional_include_directories.empty())
-                cl.additional_include_directories = d.additional_include_directories;
+            // Vector settings: copy if empty. Lists that accumulate (includes, libs, libdirs) get the
+            // project-level entries they are missing in front, so a [config:...] section that adds its
+            // own entries to a configuration discovered after the project settings still keeps them.
+            merge_missing_entries_front(cl.additional_include_directories, d.additional_include_directories);
             if (cl.forced_include_files.empty() && !d.forced_include_files.empty())
                 cl.forced_include_files = d.forced_include_files;
             if (cl.disable_specific_warnings.empty() && !d.disable_specific_warnings.empty())
                 cl.disable_specific_warnings = d.disable_specific_warnings;
 
-            if (cfg.link.additional_dependencies.empty() && !defs.link.additional_dependencies.empty())
-                cfg.link.additional_dependencies = defs.link.additional_dependencies;
-            if (cfg.link.additional_library_directories.empty() && !defs.link.additional_library_directories.empty())
-                cfg.link.additional_library_directories = defs.link.additional_library_directories;
+            merge_missing_entries_front(cfg.link.additional_dependencies, defs.link.additional_dependencies);
+            merge_missing_entries_front(cfg.link.additional_library_directories, defs.link.additional_library_directories);
             if (cfg.link.additional_options.empty() && !defs.link.additional_options.empty())
                 cfg.link.additional_options = defs.link.additional_options;
             if (!cfg.link.fixed_base_address && defs.link.fixed_base_address)
@@ -2692,6 +2700,7 @@ bool BuildscriptParser::parse_project_source_setting(const std::string& key, con
                     auto& deps = proj.configurations[config_key].link.additional_dependencies;
                     deps.push_back(path);
                 }
+                proj.project_level_defaults.link.additional_dependencies.push_back(path);
             }
         }
     } else {
@@ -3075,6 +3084,8 @@ bool BuildscriptParser::parse_project_linker_setting(const std::string& key, con
             auto& deps = proj.configurations[config_key].link.additional_dependencies;
             deps.insert(deps.end(), libs.begin(), libs.end());
         }
+        auto& def_deps = proj.project_level_defaults.link.additional_dependencies;
+        def_deps.insert(def_deps.end(), libs.begin(), libs.end());
     } else if (key == "subsystem" || key == "sub_system") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].link.sub_system = value;

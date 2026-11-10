@@ -307,3 +307,36 @@ warning_level = Level4
     CHECK_FALSE(parser_contains(sol.projects[0].configurations.at("Debug|Linux").cl_compile.preprocessor_definitions,
                                 "FROM_FRAGMENT"));
 }
+
+TEST_CASE("Project-level libraries and includes reach configurations discovered from later sections", "[bugfix_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[project:App]
+type = exe
+link_libs = pthread
+libs = dl
+includes = include
+libdirs = lib
+
+[config:Debug|Linux]
+optimization = Disabled
+includes = debug_include
+
+[config:Release|Linux]
+optimization = MaxSpeed
+)", "/work/parser_proj");
+    REQUIRE(sol.projects.size() == 1);
+    const Project& app = sol.projects[0];
+    for (const char* key : {"Debug|Linux", "Release|Linux"}) {
+        INFO(key);
+        const auto& cfg = app.configurations.at(key);
+        CHECK(parser_contains(cfg.link.additional_dependencies, "pthread"));
+        CHECK(parser_contains(cfg.link.additional_dependencies, "dl"));
+        CHECK(parser_contains(cfg.cl_compile.additional_include_directories,
+                              BuildscriptParser::resolve_path("include", "/work/parser_proj")));
+        CHECK(parser_contains(cfg.link.additional_library_directories,
+                              BuildscriptParser::resolve_path("lib", "/work/parser_proj")));
+    }
+    CHECK(parser_contains(app.configurations.at("Debug|Linux").cl_compile.additional_include_directories,
+                          BuildscriptParser::resolve_path("debug_include", "/work/parser_proj")));
+}
