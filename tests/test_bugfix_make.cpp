@@ -95,3 +95,60 @@ legacy.c:compile_as = CompileAsCpp
     CHECK(p.make("App.Debug") == 0);
 #endif
 }
+
+TEST_CASE("Makefile C sources in a C++ PCH project do not force-include the C++ PCH", "[bugfix_make]") {
+    BugfixMakeProject p("pch_c", R"(
+[solution]
+name = PCH
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+outdir = bin
+intdir = obj/App
+sources = main.cpp, c.c, pch.cpp
+pch = Use
+pch_header = pch.h
+pch.cpp:pch = Create
+)", {{"pch.h", "#pragma once\n#ifdef __cplusplus\n#include <vector>\n#endif\n"},
+     {"pch.cpp", "#include \"pch.h\"\n"},
+     {"main.cpp", "extern \"C\" int cfn(void);\nint main() { std::vector<int> v; return cfn() + (int)v.size(); }\n"},
+     {"c.c", "int cfn(void) { return 0; }\n"}});
+    REQUIRE(p.generated);
+    const std::string mk = p.makefile("App.Debug");
+    CHECK(mk.find("$(CC) $(CFLAGS) -include") == std::string::npos);
+    CHECK(mk.find("$(CXX) $(CXXFLAGS) -include") != std::string::npos);
+#ifndef _WIN32
+    CHECK(p.make("App.Debug") == 0);
+#endif
+}
+
+TEST_CASE("Makefile resolves pch_header relative to the buildscript and include directories", "[bugfix_make]") {
+    // The test runs with a working directory other than the buildscript's directory, like
+    // `sighmake sub/app.buildscript` does.
+    BugfixMakeProject p("pch_resolve", R"(
+[solution]
+name = PCH
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+outdir = bin
+intdir = obj/App
+sources = main.cpp, pch.cpp
+includes = include
+pch = Use
+pch_header = pch.h
+pch.cpp:pch = Create
+)", {{"include/pch.h", "#pragma once\n#include <vector>\n"},
+     {"pch.cpp", "#include \"pch.h\"\n"},
+     {"main.cpp", "int main() { std::vector<int> v; return (int)v.size(); }\n"}});
+    REQUIRE(p.generated);
+    const std::string mk = p.makefile("App.Debug");
+    CHECK(mk.find("PCH_HEADER = ../include/pch.h\n") != std::string::npos);
+#ifndef _WIN32
+    CHECK(p.make("App.Debug") == 0);
+#endif
+}

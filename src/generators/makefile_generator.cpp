@@ -666,6 +666,28 @@ const std::set<std::string>& MakefileGenerator::pic_static_libraries(const Solut
     return it->second;
 }
 
+// pch_header is a buildscript setting, so a relative name is looked up next to the buildscript and
+// then in the include directories (sources usually name it the way they include it). A header found
+// in neither place is returned unchanged.
+static std::string resolve_pch_header(const std::string& header, const Project& project,
+                                      const Configuration& config) {
+    namespace fs = std::filesystem;
+    if (header.empty() || fs::path(header).is_absolute() || project.buildscript_path.empty()) return header;
+    std::vector<fs::path> candidates{fs::path(project.buildscript_path) / header};
+    for (const auto& inc : config.cl_compile.additional_include_directories) {
+        for (const auto& part : split_semicolons(inc)) {
+            fs::path dir(part);
+            if (dir.is_relative()) dir = fs::path(project.buildscript_path) / dir;
+            candidates.push_back(dir / header);
+        }
+    }
+    for (const auto& candidate : candidates) {
+        std::error_code ec;
+        if (fs::is_regular_file(candidate, ec)) return candidate.lexically_normal().generic_string();
+    }
+    return header;
+}
+
 // Determine if PCH is enabled for a configuration and return the PCH header path
 std::pair<bool, std::string> MakefileGenerator::get_pch_info(const Configuration& config) {
     bool has_pch = !config.cl_compile.pch.mode.empty() &&
@@ -2069,7 +2091,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
     if (has_pch && !pch_header.empty()) {
         // Compute relative path to PCH header
-        pch_header_path = compute_relative_path(pch_header, makefile_dir);
+        pch_header_path = compute_relative_path(resolve_pch_header(pch_header, project, config), makefile_dir);
 
         // PCH output path: $(OBJ_DIR)/pch_filename.gch
         pch_output_path = int_dir + fs::path(pch_header).filename().string() + ".gch";
@@ -2112,10 +2134,12 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             std::string src_relative = compute_relative_path(src.path, makefile_dir);
             std::string obj_path = make_object_path(src, src_relative, config_key, int_dir, makefile_dir);
 
-            // Determine if this file uses PCH
-            bool uses_pch = has_pch && (mode == "Use" || (mode.empty() && !header.empty()));
-
             const std::string lang_ext = compile_language_ext(src);
+
+            // Determine if this file uses PCH. The header is precompiled as C++, which a C
+            // translation unit cannot use: C files compile without it.
+            bool uses_pch = has_pch && (mode == "Use" || (mode.empty() && !header.empty())) &&
+                            !file_types::is_c_source(lang_ext);
             std::string extra_flags;
             if (lang_ext != file_types::lowercase_extension(src.path)) {
                 extra_flags += file_types::is_c_source(lang_ext) ? " -x c" : " -x c++";
