@@ -49,7 +49,15 @@ libs = deps/libfoo.a, pthread
     REQUIRE(sol.projects.size() == 1);
     const auto& deps = sol.projects[0].configurations.at("Debug|Linux").link.additional_dependencies;
     CHECK(bf2_contains(deps, "pthread"));
-    CHECK(bf2_contains(deps, fs::path("/tmp/bf2/sub/deps/libfoo.a").lexically_normal().string()));
+    // The path is rebased onto the buildscript directory; compare separator-insensitively because
+    // Windows adds a drive letter and may use backslashes.
+    bool rebased = false;
+    for (std::string dep : deps) {
+        std::replace(dep.begin(), dep.end(), '\\', '/');
+        const std::string tail = "/bf2/sub/deps/libfoo.a";
+        if (dep.size() >= tail.size() && dep.compare(dep.size() - tail.size(), tail.size(), tail) == 0) rebased = true;
+    }
+    CHECK(rebased);
 }
 
 TEST_CASE("A later unconditional type does not clobber a platform-conditional type", "[bugfix2_parser]") {

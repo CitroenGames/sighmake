@@ -154,7 +154,13 @@ sources = main.cpp
     CHECK(master.find("install -m 755 ../out/bin/App \"$(DESTDIR)$(PREFIX)/bin/App\"") != std::string::npos);
     CHECK(master.find("rm -f \"$(DESTDIR)$(PREFIX)/bin/App\"") != std::string::npos);
     CHECK(lib_mk.find("\"../my libs/libextra.a\"") != std::string::npos);
+#ifdef __APPLE__
+    CHECK(lib_mk.find("\"-Wl,-exported_symbols_list,../my defs/exports.map\"") != std::string::npos);
+    const char* lib_file = "usr/local/lib/Lib.dylib";
+#else
     CHECK(lib_mk.find("\"-Wl,--version-script=../my defs/exports.map\"") != std::string::npos);
+    const char* lib_file = "usr/local/lib/Lib.so";
+#endif
 #ifndef _WIN32
     REQUIRE(std::system(("cc -c \"" + (p.dir / "my libs/extra.c").string() + "\" -o \"" +
                          (p.dir / "my libs/extra.o").string() + "\" && ar rcs \"" +
@@ -163,7 +169,7 @@ sources = main.cpp
     const fs::path dest = p.dir / "dest dir";
     CHECK(p.make("install DESTDIR=\"" + dest.string() + "\"") == 0);
     CHECK(fs::exists(dest / "usr/local/bin/App"));
-    CHECK(fs::exists(dest / "usr/local/lib/Lib.so"));
+    CHECK(fs::exists(dest / lib_file));
     CHECK(p.make("uninstall DESTDIR=\"" + dest.string() + "\"") == 0);
     CHECK(!fs::exists(dest / "usr/local/bin/App"));
 #endif

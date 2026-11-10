@@ -104,7 +104,7 @@ TEST_CASE("Stale outputs: a generated file the user replaced is not deleted", "[
     generate_again(generator, dir.path, two_libs(true));
     REQUIRE(fs::exists(build / "Gone.Release"));
     // The user replaced the generated project Makefile with their own (no sighmake header).
-    std::ofstream(build / "Gone.Release", std::ios::trunc) << "all:\n\techo mine\n";
+    std::ofstream(build / "Gone.Release", std::ios::trunc | std::ios::binary) << "all:\n\techo mine\n";
 
     auto second = generate_again(generator, dir.path, two_libs(false));
     CHECK_FALSE(has(second.report.removed, "Gone.Release"));
