@@ -78,3 +78,26 @@ c_standard = )") + std_value + "\n", gen);
     }
 }
 
+TEST_CASE("vcxproj reader: ResourceCompile %(PreprocessorDefinitions) is not replaced by ClCompile defines", "[bugfix2_vs]") {
+    Bugfix2VsTempDir dir("rc_defs");
+    bugfix2_vs_write_file(dir.path / "App.vcxproj", R"(<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{11111111-2222-3333-4444-555555555555}</ProjectGuid>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile><PreprocessorDefinitions>CL_ONLY;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+    <ResourceCompile><PreprocessorDefinitions>RC_ONLY;%(PreprocessorDefinitions)</PreprocessorDefinitions></ResourceCompile>
+  </ItemDefinitionGroup>
+</Project>
+)");
+    VcxprojReader reader;
+    Project project = reader.read_vcxproj((dir.path / "App.vcxproj").string());
+    REQUIRE(project.configurations.count("Debug|x64"));
+    CHECK(project.configurations.at("Debug|x64").resource_compile.preprocessor_definitions ==
+          std::vector<std::string>{"RC_ONLY"});
+}
+

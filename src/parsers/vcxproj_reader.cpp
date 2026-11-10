@@ -1084,16 +1084,9 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
                 std::istringstream ss(val);
                 std::string item;
                 while (std::getline(ss, item, ';')) {
-                    if (!item.empty()) {
-                        // Resolve %(PreprocessorDefinitions) macro by substituting ClCompile defines
-                        if (item == "%(PreprocessorDefinitions)") {
-                            // Use the ClCompile preprocessor definitions from this same config
-                            for (const auto& def : cfg.cl_compile.preprocessor_definitions) {
-                                settings.preprocessor_definitions.push_back(def);
-                            }
-                        } else {
-                            settings.preprocessor_definitions.push_back(item);
-                        }
+                    // %(PreprocessorDefinitions) refers to the ResourceCompile tool's own inherited list
+                    if (!item.empty() && item != "%(PreprocessorDefinitions)") {
+                        settings.preprocessor_definitions.push_back(item);
                     }
                 }
             }
