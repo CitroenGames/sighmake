@@ -956,61 +956,14 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 cfg.link.randomized_base_address = defs.link.randomized_base_address;
             if (!cfg.link.strip.has_value() && defs.link.strip.has_value())
                 cfg.link.strip = defs.link.strip;
+            if (cfg.link.debug_symbols.empty() && !defs.link.debug_symbols.empty())
+                cfg.link.debug_symbols = defs.link.debug_symbols;
         }
     }
 
-    // Phase 1.5: Auto-populate Debug/Release if no config sections were defined
-    if (!state.user_defined_config_sections) {
-        for (auto& project : solution.projects) {
-            for (const auto& config_key : solution.get_config_keys()) {
-                auto& cfg = project.configurations[config_key];
-                auto [config, platform] = parse_config_key(config_key);
-
-                // Apply rich defaults for Debug and Release
-                if (config == "Debug") {
-                    // Debug configuration defaults
-                    if (cfg.cl_compile.optimization.empty()) {
-                        cfg.cl_compile.optimization = defaults::optimization(true);
-                    }
-                    if (cfg.cl_compile.runtime_library.empty()) {
-                        cfg.cl_compile.runtime_library = defaults::runtime_library(true);
-                    }
-                    if (cfg.cl_compile.debug_information_format.empty()) {
-                        cfg.cl_compile.debug_information_format =
-                            defaults::debug_information_format(true, platform);
-                    }
-                    if (!cfg.explicit_bools.count("link.generate_debug_info"))
-                        cfg.link.generate_debug_info = true;
-                    if (!cfg.explicit_bools.count("link_incremental"))
-                        cfg.link_incremental = true;
-                } else if (config == "Release") {
-                    // Release configuration defaults
-                    if (cfg.cl_compile.optimization.empty()) {
-                        cfg.cl_compile.optimization = defaults::optimization(false);
-                    }
-                    if (cfg.cl_compile.runtime_library.empty()) {
-                        cfg.cl_compile.runtime_library = defaults::runtime_library(false);
-                    }
-                    if (cfg.cl_compile.debug_information_format.empty()) {
-                        cfg.cl_compile.debug_information_format =
-                            defaults::debug_information_format(false, platform);
-                    }
-                    if (!cfg.cl_compile.function_level_linking.has_value())
-                        cfg.cl_compile.function_level_linking = true;
-                    if (!cfg.cl_compile.intrinsic_functions.has_value())
-                        cfg.cl_compile.intrinsic_functions = true;
-                    if (!cfg.link.enable_comdat_folding.has_value())
-                        cfg.link.enable_comdat_folding = true;
-                    if (!cfg.link.optimize_references.has_value())
-                        cfg.link.optimize_references = true;
-                    if (!cfg.explicit_bools.count("link.generate_debug_info"))
-                        cfg.link.generate_debug_info = true;  // Even Release should have debug symbols
-                }
-            }
-        }
-    }
-
-    // Phase 2: Ensure all projects have configurations set up and apply defaults
+    // Phase 2: Ensure all projects have configurations set up and apply defaults.
+    // These defaults depend only on the configuration name (Debug / Release / other),
+    // never on whether the buildscript contains [config:...] sections.
     for (auto& project : solution.projects) {
         for (const auto& config_key : solution.get_config_keys()) {
             auto& cfg = project.configurations[config_key];
@@ -1049,7 +1002,11 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
             if (config == "Debug") {
                 if (!cfg.explicit_bools.count("link.generate_debug_info"))
                     cfg.link.generate_debug_info = true;
+                if (!cfg.explicit_bools.count("link_incremental"))
+                    cfg.link_incremental = true;
             } else {
+                if (config == "Release" && !cfg.explicit_bools.count("link.generate_debug_info"))
+                    cfg.link.generate_debug_info = true;  // Release keeps a .pdb like the VS template
                 if (!cfg.cl_compile.function_level_linking.has_value())
                     cfg.cl_compile.function_level_linking = true;
                 if (!cfg.cl_compile.intrinsic_functions.has_value())
@@ -3306,6 +3263,11 @@ bool BuildscriptParser::parse_project_linker_setting(const std::string& key, con
             proj.configurations[config_key].link.strip = val;
         }
         proj.project_level_defaults.link.strip = val;
+    } else if (key == "debug_symbols") {
+        for (const auto& config_key : state.solution->get_config_keys()) {
+            proj.configurations[config_key].link.debug_symbols = to_lower(value);
+        }
+        proj.project_level_defaults.link.debug_symbols = to_lower(value);
     } else if (key == "large_address_aware") {
         bool val = (value == "true" || value == "yes" || value == "1");
         for (const auto& config_key : state.solution->get_config_keys()) {
@@ -3867,6 +3829,8 @@ bool BuildscriptParser::parse_config_setting(const std::string& key, const std::
         cfg.link.randomized_base_address = (value == "true" || value == "yes" || value == "1");
     } else if (key == "strip") {
         cfg.link.strip = (value == "true" || value == "yes" || value == "1");
+    } else if (key == "debug_symbols") {
+        cfg.link.debug_symbols = to_lower(value);
     } else if (key == "disable_warnings" || key == "disable_specific_warnings") {
         cfg.cl_compile.disable_specific_warnings = split(value, ',');
     } else if (key == "large_address_aware") {

@@ -722,8 +722,8 @@ target_link_libraries(
     const std::string& mk = g.files["Plugin.Release.Android"];
     // lib<name>.so naming for loaders and APK packaging
     CHECK(mk.find("libplugin.so") != std::string::npos);
-    CHECK(mk.find("$(shell mkdir -p $(dir $@))$(file >$@.rsp,$(OBJS) -Wl,--start-group $(LDLIBS) -Wl,--end-group)") != std::string::npos);
-    CHECK(mk.find("-shared $(SIGHMAKE_BSYMBOLIC_FUNCTIONS) -Wl,-soname,$(notdir $@) $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp") != std::string::npos);
+    CHECK(mk.find("$(shell mkdir -p $(dir $@))$(file >$@.rsp,$(OBJS) -Wl,--start-group $(SIGHMAKE_LDLIBS) -Wl,--end-group $(LDLIBS))") != std::string::npos);
+    CHECK(mk.find("-shared $(SIGHMAKE_BSYMBOLIC_FUNCTIONS) -Wl,-soname,$(notdir $@) $(SIGHMAKE_LDFLAGS) $(ANDROID_LINK_FLAGS) $(LDFLAGS) -o $@ @$@.rsp") != std::string::npos);
     CHECK(mk.find("@rm -f $@.rsp") != std::string::npos);
     CHECK(mk.find("ANDROID_MAX_PAGE_SIZE ?= 16384") != std::string::npos);
     CHECK(mk.find("-Wl,-z,max-page-size=$(ANDROID_MAX_PAGE_SIZE)") != std::string::npos);
@@ -744,7 +744,7 @@ type = exe
 sources = main.cpp
 )");
     const std::string& mk = g.files["Tool.Release.Android"];
-    CHECK(mk.find("$(CXX) $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp") != std::string::npos);
+    CHECK(mk.find("$(CXX) $(SIGHMAKE_LDFLAGS) $(ANDROID_LINK_FLAGS) $(LDFLAGS) -o $@ @$@.rsp") != std::string::npos);
     CHECK(mk.find("-soname") == std::string::npos);
     CHECK(mk.find("-shared") == std::string::npos);
 }

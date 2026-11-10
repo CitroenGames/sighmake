@@ -95,7 +95,7 @@ legacy.c:compile_as = CompileAsCpp
      {"legacy.c", "extern \"C\" int legacy() { bool b = true; return b ? 0 : 1; }\n"}});
     REQUIRE(p.generated);
     const std::string mk = p.makefile("App.Debug");
-    CHECK(mk.find("$(CXX) $(CXXFLAGS) -x c++") != std::string::npos);
+    CHECK(mk.find("$(CXX) $(SIGHMAKE_CXXFLAGS) -x c++") != std::string::npos);
 #ifndef _WIN32
     CHECK(p.make("App.Debug") == 0);
 #endif
@@ -122,8 +122,8 @@ pch.cpp:pch = Create
      {"c.c", "int cfn(void) { return 0; }\n"}});
     REQUIRE(p.generated);
     const std::string mk = p.makefile("App.Debug");
-    CHECK(mk.find("$(CC) $(CFLAGS) -include") == std::string::npos);
-    CHECK(mk.find("$(CXX) $(CXXFLAGS) -include") != std::string::npos);
+    CHECK(mk.find("$(CC) $(SIGHMAKE_CFLAGS) -include") == std::string::npos);
+    CHECK(mk.find("$(CXX) $(SIGHMAKE_CXXFLAGS) -include") != std::string::npos);
 #ifndef _WIN32
     CHECK(p.make("App.Debug") == 0);
 #endif
@@ -231,7 +231,7 @@ sources = main.cpp
 )", {{"main.cpp", "int main() { return 0; }\n"}});
     REQUIRE(p.generated);
     const std::string master = p.makefile("Makefile");
-    CHECK(master.find("install -m 755 ../bin/Release/App ") != std::string::npos);
+    CHECK(master.find("$(INSTALL) -m 755 ../bin/Release/App ") != std::string::npos);
     CHECK(master.find("$(Configuration)") == std::string::npos);
 #ifndef _WIN32
     CHECK(p.make("install DESTDIR=\"" + (p.dir / "dest").string() + "\"") == 0);
@@ -334,7 +334,7 @@ postbuild = cp $@ App.copy
 )", {{"main.cpp", "int main() { return 0; }\n"}});
     REQUIRE(p.generated);
     const std::string mk = p.makefile("App.Release");
-    const size_t strip_pos = mk.find("\tstrip $@");
+    const size_t strip_pos = mk.find("\t$(STRIP) $@");
     const size_t post_pos = mk.find("\tcp $@ App.copy");
     REQUIRE(strip_pos != std::string::npos);
     REQUIRE(post_pos != std::string::npos);

@@ -115,6 +115,9 @@ sighmake --build . --config Release --parallel 8
 
 On Windows, the default generator writes Visual Studio files under `build/`.
 On Linux and macOS, the default generator writes Makefiles under `build/`.
+The Makefiles follow GNU conventions: `CXX`/`CC` and user `CXXFLAGS`/`LDFLAGS` from the environment or
+command line are honored, and `install`, `install-strip` (`DESTDIR`, `PREFIX`, `BINDIR`, `LIBDIR`) are provided.
+See [Make](usage.md#make) and [Stripping and debug information](usage.md#stripping-and-debug-information).
 
 ### C# Quick Start
 

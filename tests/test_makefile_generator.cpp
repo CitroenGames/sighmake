@@ -216,7 +216,9 @@ TEST_CASE("MakefileGenerator NDEBUG default is per config and recorded in the fl
 }
 
 static std::string makefile_variable_line(const std::string& makefile, const std::string& name) {
-    const auto start = makefile.find("\n" + name + " = ");
+    // The project's compiler flags live in SIGHMAKE_CXXFLAGS/SIGHMAKE_CFLAGS; CXXFLAGS/CFLAGS are the user's
+    const std::string var = (name == "CXXFLAGS" || name == "CFLAGS") ? "SIGHMAKE_" + name : name;
+    const auto start = makefile.find("\n" + var + " = ");
     if (start == std::string::npos) return {};
     const auto end = makefile.find('\n', start + 1);
     return makefile.substr(start + 1, end - start - 1);
@@ -234,9 +236,9 @@ TEST_CASE("MakefileGenerator compiles Release without -g because its outputs are
     const std::string rel_flags = makefile_variable_line(rel, "CXXFLAGS");
     REQUIRE(!rel_flags.empty());
     CHECK_FALSE(has_flag(rel_flags, "-g"));
-    CHECK(rel.find("\tstrip $@") != std::string::npos);
+    CHECK(rel.find("\t$(STRIP) $@") != std::string::npos);
     CHECK(has_flag(makefile_variable_line(dbg, "CXXFLAGS"), "-g"));
-    CHECK(dbg.find("\tstrip $@") == std::string::npos);
+    CHECK(dbg.find("\t$(STRIP) $@") == std::string::npos);
 }
 
 TEST_CASE("MakefileGenerator Release C and C++ compiles and static libraries skip -g", "[makefile_generator][debug_info]") {
@@ -264,14 +266,14 @@ TEST_CASE("MakefileGenerator strip = false keeps Release symbols and -g", "[make
     const std::string rel = makefile_for_config("strip = false\n", "Release");
     REQUIRE(!rel.empty());
     CHECK(has_flag(makefile_variable_line(rel, "CXXFLAGS"), "-g"));
-    CHECK(rel.find("\tstrip $@") == std::string::npos);
+    CHECK(rel.find("\t$(STRIP) $@") == std::string::npos);
 }
 
 TEST_CASE("MakefileGenerator strip = true strips Debug and drops its -g", "[makefile_generator][debug_info]") {
     const std::string dbg = makefile_for_config("strip = true\n", "Debug");
     REQUIRE(!dbg.empty());
     CHECK_FALSE(has_flag(makefile_variable_line(dbg, "CXXFLAGS"), "-g"));
-    CHECK(dbg.find("\tstrip $@") != std::string::npos);
+    CHECK(dbg.find("\t$(STRIP) $@") != std::string::npos);
 }
 
 TEST_CASE("MakefileGenerator strip in a config section applies to that configuration only", "[makefile_generator][debug_info]") {
@@ -282,10 +284,10 @@ TEST_CASE("MakefileGenerator strip in a config section applies to that configura
     REQUIRE(!rel.empty());
     REQUIRE(!dbg.empty());
     CHECK(has_flag(makefile_variable_line(rel, "CXXFLAGS"), "-g"));
-    CHECK(rel.find("\tstrip $@") == std::string::npos);
+    CHECK(rel.find("\t$(STRIP) $@") == std::string::npos);
     CHECK(has_flag(makefile_variable_line(dbg, "CXXFLAGS"), "-g"));
     CHECK(has_flag(makefile_variable_line(dbg, "CXXFLAGS"), "-O0"));
-    CHECK(dbg.find("\tstrip $@") == std::string::npos);
+    CHECK(dbg.find("\t$(STRIP) $@") == std::string::npos);
 }
 
 TEST_CASE("MakefileGenerator strip in a config section overrides the project-level value", "[makefile_generator][debug_info]") {
@@ -297,9 +299,9 @@ TEST_CASE("MakefileGenerator strip in a config section overrides the project-lev
     const std::string dbg = makefile_for_config(script, "Debug");
     REQUIRE(!rel.empty());
     REQUIRE(!dbg.empty());
-    CHECK(rel.find("\tstrip $@") != std::string::npos);
+    CHECK(rel.find("\t$(STRIP) $@") != std::string::npos);
     CHECK_FALSE(has_flag(makefile_variable_line(rel, "CXXFLAGS"), "-g"));
-    CHECK(dbg.find("\tstrip $@") == std::string::npos);
+    CHECK(dbg.find("\t$(STRIP) $@") == std::string::npos);
     CHECK(has_flag(makefile_variable_line(dbg, "CXXFLAGS"), "-g"));
 }
 
@@ -473,7 +475,7 @@ static const std::vector<std::string> kMakefilePicSources = {
     "exeonly.cpp", "orderonly.cpp", "inner.cpp", "intoshared.cpp", "plugin.cpp", "app.cpp"};
 
 static std::string cxxflags_line(const std::string& makefile) {
-    const size_t start = makefile.find("\nCXXFLAGS = ");
+    const size_t start = makefile.find("\nSIGHMAKE_CXXFLAGS = ");
     if (start == std::string::npos) return {};
     return makefile.substr(start + 1, makefile.find('\n', start + 1) - start - 1);
 }
@@ -520,7 +522,7 @@ TEST_CASE("MakefileGenerator adds -fno-semantic-interposition to PIC targets", "
     // Default GCC toolchain: the flag is set directly and can be overridden on the make command line.
     CHECK(mk.find("SIGHMAKE_NO_SEMANTIC_INTERPOSITION ?= -fno-semantic-interposition") != std::string::npos);
     const size_t def = mk.find("SIGHMAKE_NO_SEMANTIC_INTERPOSITION ?=");
-    const size_t use = mk.find("\nCXXFLAGS = ");
+    const size_t use = mk.find("\nSIGHMAKE_CXXFLAGS = ");
     CHECK(def < use);
 #endif
 }
@@ -618,7 +620,7 @@ TEST_CASE("MakefileGenerator links ELF shared libraries with -Bsymbolic-function
     CHECK(plugin.find("-shared -nostdlib -Wl,-Bsymbolic-functions -o /dev/null 2>/dev/null"
                       " && echo -Wl,-Bsymbolic-functions)") != std::string::npos);
     const size_t def = plugin.find("SIGHMAKE_BSYMBOLIC_FUNCTIONS :=");
-    const size_t use = plugin.find("-shared $(SIGHMAKE_BSYMBOLIC_FUNCTIONS) $(LDFLAGS) -o $@ $(OBJS)");
+    const size_t use = plugin.find("-shared $(SIGHMAKE_BSYMBOLIC_FUNCTIONS) $(SIGHMAKE_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS)");
     CHECK(def != std::string::npos);
     CHECK(use != std::string::npos);
     CHECK(def < use);
@@ -1194,8 +1196,8 @@ c_standard = 11
 sources = main.cpp, helper.c
 )", {"main.cpp", "helper.c"});
 
-    CHECK(result.content.find("CXXFLAGS = -std=c++20") != std::string::npos);
-    CHECK(result.content.find("CFLAGS = -std=c11") != std::string::npos);
+    CHECK(result.content.find("SIGHMAKE_CXXFLAGS = -std=c++20") != std::string::npos);
+    CHECK(result.content.find("SIGHMAKE_CFLAGS = -std=c11") != std::string::npos);
 }
 
 // ============================================================================
@@ -1352,9 +1354,9 @@ prebuild = echo prebuild_step
     CHECK(result.content.find("$(TARGET): $(OBJS) | prebuild") != std::string::npos);
     CHECK(result.content.find("$(TARGET): prebuild $(OBJS)") == std::string::npos);
 #ifdef __APPLE__
-    CHECK(result.content.find("-o $@ $(OBJS) $(LDLIBS)") != std::string::npos);
+    CHECK(result.content.find("-o $@ $(OBJS) $(SIGHMAKE_LDLIBS) $(LDLIBS)") != std::string::npos);
 #else
-    CHECK(result.content.find("-o $@ $(OBJS) -Wl,--start-group $(LDLIBS) -Wl,--end-group") != std::string::npos);
+    CHECK(result.content.find("-o $@ $(OBJS) -Wl,--start-group $(SIGHMAKE_LDLIBS) -Wl,--end-group $(LDLIBS)") != std::string::npos);
 #endif
     CHECK(result.content.find("$^") == std::string::npos);
 }
@@ -1373,7 +1375,7 @@ sources = main.mm
 
     REQUIRE(!result.content.empty());
     CHECK(result.content.find("CXX = ") != std::string::npos);
-    CHECK(result.content.find("\t$(CXX) $(LDFLAGS) -o $@") != std::string::npos);
+    CHECK(result.content.find("\t$(CXX) $(SIGHMAKE_LDFLAGS) $(LDFLAGS) -o $@") != std::string::npos);
 }
 
 TEST_CASE("MakefileGenerator quotes include paths with spaces", "[makefile_generator]") {

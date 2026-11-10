@@ -102,7 +102,7 @@ an input file produces an "Unexpected argument" error.
 | `-D <NAME>=<VALUE>` | Define a value used by `${NAME}` substitutions while parsing a buildscript. Repeat for multiple variables. |
 | `-t`, `--toolset <name>` | Set the default MSVC toolset for projects that do not specify one. |
 | `--target-os <os>` | Evaluate `if(...)` blocks and `[tag]` conditions for this OS instead of the machine running sighmake: `windows`, `linux`, `macos` (`osx`, `darwin`), `ios`, or `android`. See [Cross-generating for another OS](#cross-generating-for-another-os). |
-| `--cxx <compiler>`, `--cc <compiler>` | Makefile generator: the C++ / C compiler driver written as `CXX` / `CC` (default `g++` / `gcc`, `clang++` / `clang` on macOS). Overrides the `cxx` / `cc` solution keys. `make CXX=...` still overrides the generated value. |
+| `--cxx <compiler>`, `--cc <compiler>` | Makefile generator: the C++ / C compiler driver written as the default of `CXX` / `CC` (default `g++` / `gcc`, `clang++` / `clang` on macOS). Overrides the `cxx` / `cc` solution keys. `CXX=...` / `CC=...` in the environment or on the make command line still override the generated value. |
 | `--export-deps` | Write `<Solution>_dependencies.html` in the output root. |
 | `--keep-stale` | Keep generated files of earlier runs that this run no longer writes, instead of removing them. See [Stale outputs](#stale-outputs). |
 | `--prune-unlisted` | Also remove files that look like sighmake outputs but are in no generation manifest (outputs of a sighmake version without manifests). See [Stale outputs](#stale-outputs). |
@@ -555,9 +555,25 @@ When omitted, the parser supplies these baseline values:
 | Other runtime | `MultiThreadedDLL` |
 | Debug info | `EditAndContinue` for `Debug|Win32`; `ProgramDatabase` otherwise |
 
-Non-Debug configurations also default to function-level linking, intrinsic
-functions, reference optimization, and COMDAT folding when those settings are
-unset. Explicit settings take precedence.
+#### Defaults per configuration name (Visual Studio generator)
+
+These depend only on the configuration name, and apply the same way whether or not the
+buildscript contains any `[config:...]` section. A section only overrides what it sets;
+an explicit value, including an explicit `false`, always wins.
+
+| Setting | `Debug` | `Release` | Other names (`Profile`, ...) |
+| --- | --- | --- | --- |
+| `optimization` | `Disabled` | `MaxSpeed` | `MaxSpeed` |
+| `runtime_library` | `MultiThreadedDebugDLL` | `MultiThreadedDLL` | `MultiThreadedDLL` |
+| Debug info format | `EditAndContinue` (Win32), `ProgramDatabase` otherwise | `ProgramDatabase` | `ProgramDatabase` |
+| `generate_debug_info` (`/DEBUG`, `.pdb`) | `true` | `true` | `false` |
+| `link_incremental` | `true` | `false` | `false` |
+| `function_level_linking`, `intrinsic_functions` | unset | `true` | `true` |
+| `optimize_references`, `enable_comdat_folding` | unset | `true` | `true` |
+| Use debug libraries | `true` | `false` | `false` |
+| Default define | `_DEBUG` | `NDEBUG` | none |
+
+Explicit settings take precedence.
 
 ### Conditional blocks
 
@@ -1500,23 +1516,63 @@ Each project gets one Makefile per configuration, named `<Project>.<Config>`
 `<Project>.<Config>` targets; a bare `make <Project>` builds only the default
 configuration (`Debug` when present, otherwise the first).
 
-The compiler is baked in at generation time: `CXX = g++` and `CC = gcc`, or
-`clang++`/`clang` when generating on macOS. Because these use `=` rather than
-`?=`, the `CC`/`CXX` environment variables are ignored. Override on the make
-command line instead:
+The Makefiles follow the usual GNU conventions, so they behave like any other
+`make` project:
+
+- **Toolchain.** The generated default (`g++` / `gcc` / `ar` / `strip`, or
+  `clang++` / `clang` when generating on macOS, or the `cxx` / `cc` solution keys)
+  applies only when nothing else is given. `CXX`, `CC`, `AR`, `STRIP` and
+  `OBJCOPY` from the environment or the make command line win:
+
+  ```text
+  CXX=clang++ CC=clang make -C build
+  make -C build CXX=clang++ CC=clang
+  ```
+
+  Android Makefiles keep the NDK toolchain they derive from `ANDROID_NDK_HOME`.
+  `PYTHON ?= python3` can be overridden the same way.
+- **User flags.** `CPPFLAGS`, `CXXFLAGS`, `CFLAGS`, `LDFLAGS` and `LDLIBS` belong to
+  the person running `make`. They are appended to the project's flags (which
+  live in `SIGHMAKE_CXXFLAGS`, `SIGHMAKE_CFLAGS`, `SIGHMAKE_LDFLAGS` and
+  `SIGHMAKE_LDLIBS`), after them, so they can override `-O`/`-g`; `LDLIBS` ends
+  the link line. Objective-C++ sources use `CXXFLAGS`. The compile line is
+  `$(CXX) $(SIGHMAKE_CXXFLAGS) <per-file flags> $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c ...`:
+
+  ```text
+  make -C build CXXFLAGS="-O1 -g" LDFLAGS=-fuse-ld=lld
+  CPPFLAGS=-DTRACE make -C build
+  ```
+- **Rebuilds.** Objects and binaries rebuild when the project's flags change (a
+  stamp file written at generation time) and when the user's flags or the
+  toolchain change: a second stamp per language and per link
+  (`sighmake-<lang>.<config>.user`, in the intermediate directory) is rewritten
+  by `make` only when the effective `$(CXX) $(CPPFLAGS) $(CXXFLAGS)` (or `$(CC)`
+  ... `$(CFLAGS)`, or `$(CXX) $(LDFLAGS) $(LDLIBS)`) text differs from the stored
+  one. Running `make` twice with the same flags rebuilds nothing; dropping a flag
+  rebuilds. Other variables read only by build events are not tracked.
+- **Targets.** `all` is the default goal; `clean`, `install`, `install-strip` and
+  `uninstall` (below) are phony.
+
+The master Makefile provides `install`, `install-strip` and `uninstall` for host
+executables and shared libraries, with the usual variables: `DESTDIR` (staging
+root), `PREFIX` (default `/usr/local`; the GNU spelling `prefix` also works),
+`BINDIR` (default `$(PREFIX)/bin`, executables), `LIBDIR` (default
+`$(PREFIX)/lib`, shared libraries; `bindir` / `libdir` also work) and `INSTALL`
+(default `install`; `$(INSTALL) -d` creates directories, `-m 755` installs
+programs and shared libraries). `install-strip` installs the same files and then
+strips the installed copies with `$(STRIP)` (`--strip-unneeded` for shared
+libraries, `-x` for macOS dylibs), which is the way to ship small binaries from a
+configuration that keeps its symbols (`strip = false`); the build outputs stay
+untouched. The targets install the `Release` configuration when one exists,
+otherwise the default configuration. Static libraries and Android binaries are not
+installed by these targets, and the targets exist only when a non-Android platform
+is present.
 
 ```text
-make -C build CXX=clang++ CC=clang
+make -C build install DESTDIR=/tmp/stage PREFIX=/usr
+make -C build install-strip prefix=/opt/app
+make -C build install BINDIR=/usr/games LIBDIR=/usr/lib64
 ```
-
-`PYTHON ?= python3` can be overridden the same way.
-
-The master Makefile also provides `install` and `uninstall` for host executables
-and shared libraries. `PREFIX` defaults to `/usr/local`; `DESTDIR` is honored.
-The targets install the `Release` configuration when one exists, otherwise the
-default configuration. Static libraries and Android binaries are not installed
-by these targets, and the targets exist only when a non-Android platform is
-present.
 
 When both desktop and Android platforms exist, desktop configurations keep names
 such as `Release` while Android configurations use `Release.Android`.
@@ -1593,39 +1649,70 @@ non-Windows hosts. Shared libraries get `-Wl,-Bsymbolic-functions` through
 
 #### Stripping and debug information
 
-A configuration either strips its binaries or compiles debug information, never
-both. The `strip` key decides which. It is accepted at project level (every
-configuration) and in a `[config:...]` section (that configuration only, which
-wins), and defaults to `true` for the configuration named `Release` and `false`
-for every other.
+Two Make-only keys decide what happens to symbols; both are accepted at project
+level (every configuration) and in a `[config:...]` section (that configuration
+only, which wins). Visual Studio and CMake output ignore them.
 
-| `strip` | Compiles | Executables and shared libraries |
-| --- | --- | --- |
-| `true` (default for `Release`) | Without `-g`, even when `debug_info` is set. | Stripped after linking (`strip`; `strip -x` for macOS shared libraries; `$(STRIP) --strip-unneeded` on Android). |
-| `false` (default otherwise) | With `-g` when `debug_info` is set. | Keep their symbols. |
+- `debug_symbols = embedded | separate | none` chooses the mode directly.
+  Aliases: `inline`, `full` (embedded); `split`, `external` (separate);
+  `stripped`, `off` (none). Unknown values are ignored.
+- `strip = true | false` is the older switch: `true` means `none`, `false` means
+  `embedded`.
 
-Debug information compiled into a stripped configuration never reaches a binary
-and only costs compile time, memory and disk; in template-heavy C++ it can be a
-third of the compile time and of the compiler's peak memory. Static libraries
-are never stripped themselves, but their objects follow the same rule, because
-in a stripping configuration they end up in stripped binaries.
+An explicit `debug_symbols` wins over `strip`. With neither key, `Release` is
+`none` and every other configuration is `embedded`, exactly as before.
 
-To keep symbols in Release (for example to profile or debug an optimized
-build), turn stripping off for that configuration:
+| Mode | Compiles | Executables and shared libraries | Where the symbols are |
+| --- | --- | --- | --- |
+| `embedded` (default for non-`Release`; `strip = false`) | With `-g`. | Unchanged, symbols stay in the binary. | In the binary. |
+| `separate` | With `-g`. | Linux/Android: `$(OBJCOPY) --only-keep-debug $@ $@.debug`, `$(STRIP) --strip-unneeded $@`, `$(OBJCOPY) --add-gnu-debuglink=$@.debug $@` (`llvm-objcopy` / `llvm-strip` from the NDK on Android). macOS: `dsymutil $@ -o $@.dSYM`, then `strip` (`strip -x` for dylibs). | `<binary>.debug` next to the binary (macOS: the `<binary>.dSYM` bundle). |
+| `none` (default for `Release`; `strip = true`) | Without `-g`, even when `debug_info` is set. | Stripped after linking (`$(STRIP)`; `-x` for macOS shared libraries; `--strip-unneeded` on Android). | Nowhere. |
+
+How debuggers find a separate file: gdb and lldb read the `.gnu_debuglink` entry
+(file name and CRC) added to the stripped ELF binary and look for `<name>.debug`
+next to it, in a `.debug/` subdirectory, or under `/usr/lib/debug`; the file must
+stay beside the binary (or be installed under `/usr/lib/debug`) when the
+binary is moved. On macOS, lldb and Instruments locate the `.dSYM` bundle by the
+binary's UUID, next to it or through Spotlight. Check with
+`readelf --string-dump=.gnu_debuglink App` and `readelf -S App App.debug`
+(`.debug_info` only in the latter). `make clean` removes the debug file too;
+`install` does not install it, install it next to the binary yourself or use
+`install-strip` plus your packaging's debug-package split.
+
+Industry practice (CMake's `Release` is optimization plus `-DNDEBUG`, no `-g`, no
+link-time stripping; stripping belongs to installation) is available with
+`strip = false` or `debug_symbols = embedded` for a configuration, plus
+`make install-strip`; `separate` gives the shipping binary and the debug file
+from one build.
+
+Debug information compiled into a configuration whose binaries are stripped never
+reaches a binary and only costs compile time, memory and disk; in template-heavy
+C++ it can be a third of the compile time and of the compiler's peak memory.
+Static libraries are never stripped or split themselves, but their objects follow
+the same `-g` rule, because they end up in the binaries.
+
+To keep symbols in Release (for example to profile or debug an optimized build):
 
 ```ini
 [config:Release|Linux]
-strip = false
+strip = false          # or: debug_symbols = embedded
 ```
 
-`strip = true` at project level, or in another configuration, strips that
-configuration and drops its `-g` too. A project that wants `-g` on its static
-libraries while its binaries stay stripped can still pass it through `cflags`.
-`debug_info` and `generate_debug_info` keep their meaning for Visual Studio
-(`/Zi`, `/DEBUG` and a `.pdb`); the CMake generator does not use `strip`.
+To ship a stripped Release binary with a separate debug file:
 
-Changing `strip` changes the compile command line, so the next build recompiles
-the configuration's objects.
+```ini
+debug_symbols = separate
+```
+
+`strip = true` or `debug_symbols = none` at project level, or in another
+configuration, strips that configuration and drops its `-g` too. A project that
+wants `-g` on its static libraries while its binaries stay stripped can still pass
+it through `cflags`. `debug_info` and `generate_debug_info` keep their meaning for
+Visual Studio (`/Zi`, `/DEBUG` and a `.pdb`); the CMake generator does not use
+`strip` or `debug_symbols`.
+
+Changing either key changes the compile command line or the link stamp, so the
+next build recompiles or relinks the configuration.
 
 Build-event commands are written verbatim as recipe lines, so `$` keeps its
 meaning to make: write `$$` for a literal shell `$` (for example `$$HOME`), and
@@ -2052,7 +2139,7 @@ the primary names shown here in hand-written buildscripts.
 | `optimization` | `Disabled`, `MinSpace`, `MaxSpeed`, or `Full`. |
 | `warning_level` | `Level0` through `Level4`. |
 | `runtime_library` | `MultiThreaded`, `MultiThreadedDebug`, `MultiThreadedDLL`, or `MultiThreadedDebugDLL`. |
-| `debug_info` | `EditAndContinue`, `ProgramDatabase`, or `OldStyle`. Makefiles compile `-g` for it unless the configuration strips its outputs (`strip`). |
+| `debug_info` | `EditAndContinue`, `ProgramDatabase`, or `OldStyle`. Makefiles compile `-g` for it unless the configuration strips its outputs (`strip`, `debug_symbols = none`). |
 | `exceptions` | `true`/`Sync`, `Async`, or `false`. |
 | `rtti` | Boolean runtime type information. |
 | `support_just_my_code` | Optional Boolean for Visual Studio C/C++ Just My Code debugging. Unset preserves MSBuild defaults. |
@@ -2113,6 +2200,7 @@ configuration section when setting them explicitly.
 | `module_def` | Module definition/version-script path. |
 | `generate_debug_info` | Emit linker debug information. |
 | `strip` | Make only. Strip executables and shared libraries and compile without `-g`. Default `true` for `Release`, `false` otherwise. See [Stripping and debug information](#stripping-and-debug-information). |
+| `debug_symbols` | Make only (Visual Studio and CMake ignore it). `embedded`, `separate` (symbols in `<binary>.debug` / `.dSYM`) or `none`; wins over `strip`. See [Stripping and debug information](#stripping-and-debug-information). |
 | `link_incremental` | Incremental linking. |
 | `whole_program_optimization` | Whole-program optimization/LTCG. |
 | `optimize_references` | Remove unreferenced functions/data. |
