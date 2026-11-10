@@ -1740,6 +1740,25 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
             setting = trim(rest.substr(0, bracket_start));
         }
         
+        if (config_key == ALL_CONFIGS && bracket_start == std::string::npos &&
+            state.current_section == ParseState::SectionContext::Config && !state.current_config.empty()) {
+            // Written inside a [config:...] section: applies to that configuration only
+            std::vector<std::string> targets = state.current_config_targets;
+            if (targets.empty()) {
+                if (state.current_config.find('|') != std::string::npos) {
+                    targets.push_back(normalize_selector(state.current_config));
+                } else {
+                    for (const auto& platform : state.solution->platforms) {
+                        targets.push_back(state.current_config + "|" + platform);
+                    }
+                }
+            }
+            for (const auto& target : targets) {
+                parse_file_setting(file_path, setting, target, resolved_value, state);
+            }
+            return;
+        }
+
         parse_file_setting(file_path, setting, config_key, resolved_value, state);
         return;
     }

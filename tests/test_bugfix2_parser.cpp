@@ -107,3 +107,27 @@ defines = ON_LINUX
     CHECK(sol.projects.at(0).configurations.count("Debug|Linux") == 1);
 }
 
+TEST_CASE("Per-file settings inside a config section apply to that configuration only", "[bugfix2_parser]") {
+    BuildscriptParser parser;
+    const Solution sol = parser.parse_string(R"(
+[solution]
+configurations = Debug, Release
+platforms = Linux
+
+[project:App]
+type = exe
+sources = main.cpp
+
+[config:Debug|Linux]
+main.cpp:defines = ONLY_DEBUG
+)");
+    REQUIRE(sol.projects.size() == 1);
+    const SourceFile* main = bf2_source(sol.projects[0], "main.cpp");
+    REQUIRE(main != nullptr);
+    const auto& defs = main->settings.preprocessor_defines;
+    CHECK(defs.count("*") == 0);
+    REQUIRE(defs.count("Debug|Linux") == 1);
+    CHECK(bf2_contains(defs.at("Debug|Linux"), "ONLY_DEBUG"));
+    CHECK(defs.count("Release|Linux") == 0);
+}
+
