@@ -746,6 +746,10 @@ void VpcParser::handle_file(std::vector<Token>& tokens, size_t& i, ParseState& s
     SourceFile sf;
     sf.path = resolved_path;
     sf.type = get_file_type(resolved_path);
+    for (size_t f = 0; f < state.folder_stack.size(); ++f) {
+        if (f > 0) sf.filter += '/';
+        sf.filter += state.folder_stack[f];
+    }
 
     // If platform-specific, mark in settings
     if (!platforms.empty()) {
