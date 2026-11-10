@@ -30,6 +30,9 @@ std::optional<std::string> resolve_build_platform(
     const std::vector<std::string>& available_platforms,
     const std::string& requested_platform);
 
+// Parse a -j / --parallel value: a positive integer, otherwise std::nullopt.
+std::optional<int> parse_parallel_jobs(const std::string& value);
+
 // Split an --abi value ("arm64-v8a,x86_64" or space separated) into ABI names.
 std::vector<std::string> split_abi_list(const std::string& abi_list);
 

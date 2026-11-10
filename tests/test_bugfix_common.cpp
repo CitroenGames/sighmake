@@ -3,6 +3,7 @@
 #include "common/build_runner.hpp"
 #include "common/build_cache.hpp"
 #include "common/updater.hpp"
+#include "common/toolset_registry.hpp"
 #include "generators/deps_exporter.hpp"
 
 using namespace vcxproj;
@@ -95,6 +96,25 @@ TEST_CASE("Updater orders a pre-release before its final release", "[bugfix_comm
     // Numeric parts still decide first.
     CHECK(compare_versions("1.3.0-rc1", "1.2.0") > 0);
     CHECK(compare_versions("0.0.0-dev", "0.1.0") < 0);
+}
+
+TEST_CASE("ToolsetRegistry resolves known toolset IDs case-insensitively", "[bugfix_common]") {
+    auto& reg = ToolsetRegistry::instance();
+    CHECK(reg.resolve("V143") == "v143");
+    CHECK(reg.resolve("V110_XP") == "v110_xp");
+    CHECK(reg.is_known(*reg.resolve("V142")));
+    CHECK(reg.resolve("v999") == "v999");
+}
+
+TEST_CASE("Parallel job counts must be positive integers", "[bugfix_common]") {
+    CHECK(parse_parallel_jobs("8") == 8);
+    CHECK(parse_parallel_jobs("1") == 1);
+    CHECK_FALSE(parse_parallel_jobs("auto").has_value());
+    CHECK_FALSE(parse_parallel_jobs("8x").has_value());
+    CHECK_FALSE(parse_parallel_jobs("0").has_value());
+    CHECK_FALSE(parse_parallel_jobs("-4").has_value());
+    CHECK_FALSE(parse_parallel_jobs("").has_value());
+    CHECK_FALSE(parse_parallel_jobs("99999999999999999999").has_value());
 }
 
 TEST_CASE("Dependency report does not count synthetic find_package projects", "[bugfix_common]") {

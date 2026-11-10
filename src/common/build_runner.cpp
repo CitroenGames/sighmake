@@ -41,6 +41,16 @@ std::optional<std::string> resolve_build_platform(
     return std::string("x64");
 }
 
+std::optional<int> parse_parallel_jobs(const std::string& value) {
+    if (value.empty() || value.size() > 9 ||
+        !std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+        return std::nullopt;
+    }
+    const int jobs = std::stoi(value);
+    if (jobs <= 0) return std::nullopt;
+    return jobs;
+}
+
 std::vector<std::string> split_abi_list(const std::string& abi_list) {
     std::vector<std::string> abis;
     std::string current;

@@ -239,7 +239,13 @@ int main(int argc, char* argv[]) {
             } else if (strcmp(argv[i], "--no-project-references") == 0 || strcmp(argv[i], "--no-deps") == 0) {
                 options.build_project_references = false;
             } else if ((strcmp(argv[i], "--parallel") == 0 || strcmp(argv[i], "-j") == 0) && i + 1 < argc) {
-                options.parallel = std::atoi(argv[++i]);
+                const char* option = argv[i];
+                auto jobs = vcxproj::parse_parallel_jobs(argv[++i]);
+                if (!jobs) {
+                    std::cerr << "Error: " << option << " requires a positive job count, got '" << argv[i] << "'\n";
+                    return 1;
+                }
+                options.parallel = *jobs;
             } else {
                 std::cerr << "Error: Unknown --build option: " << argv[i] << "\n";
                 return 1;
