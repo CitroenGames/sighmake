@@ -618,10 +618,13 @@ std::string MakefileGenerator::compute_relative_path(const std::string& path, co
 
 std::string MakefileGenerator::make_object_path(const SourceFile& src, const std::string& src_relative,
                                                 const std::string& config_key, const std::string& int_dir,
-                                                const std::filesystem::path& makefile_dir) {
+                                                const std::filesystem::path& makefile_dir,
+                                                const std::string& buildscript_dir) {
     if (const auto* object_file = find_config_setting(src.settings.object_file, config_key);
         object_file && !object_file->empty()) {
         std::string obj_path = to_unix_path(*object_file);
+        // $(IntDir) already expands to a path relative to the makefile directory.
+        const bool relative_to_makefile = obj_path.find("$(IntDir)") != std::string::npos;
         // MSBuild-style macros (object_file = $(IntDir)name.obj) name the configuration's
         // intermediate directory; make has no such variables.
         const auto [config_name, platform_name] = parse_config_key(config_key);
@@ -639,6 +642,11 @@ std::string MakefileGenerator::make_object_path(const SourceFile& src, const std
         std::filesystem::path path(obj_path);
         if (path.is_absolute()) {
             return compute_relative_path(obj_path, makefile_dir);
+        }
+
+        // Other relative paths are relative to the buildscript, like every other path setting.
+        if (!relative_to_makefile && !buildscript_dir.empty() && obj_path.rfind("$(", 0) != 0) {
+            return compute_relative_path((std::filesystem::path(buildscript_dir) / obj_path).string(), makefile_dir);
         }
 
         return obj_path;
@@ -2161,7 +2169,8 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             // Generate object file path
             // Convert source path to relative (using the same logic as output dirs)
             std::string src_relative = compute_relative_path(src.path, makefile_dir);
-            std::string obj_path = make_object_path(src, src_relative, config_key, int_dir, makefile_dir);
+            std::string obj_path = make_object_path(src, src_relative, config_key, int_dir, makefile_dir,
+                                                  project.buildscript_path);
 
             const std::string lang_ext = compile_language_ext(src);
 
