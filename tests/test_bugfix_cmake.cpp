@@ -214,3 +214,64 @@ set(b [[${b}]])
 project(${a${b}})
 )"));
 }
+
+// ============================================================================
+// CMake reader: if() conditions
+// ============================================================================
+
+TEST_CASE("bugfix_cmake: parenthesized if() conditions", "[bugfix_cmake]") {
+    CMakeParser parser;
+    auto sol = parser.parse_string(R"(
+project(T)
+add_executable(App main.cpp)
+set(V 10)
+if((V LESS 5) OR (V EQUAL 10))
+    target_compile_definitions(App PRIVATE OR_GROUPS)
+endif()
+if(NOT (V EQUAL 10 OR V EQUAL 11) AND V GREATER 1)
+    target_compile_definitions(App PRIVATE NOT_GROUP_WRONG)
+endif()
+if(V GREATER 1 AND (V LESS 3 OR (V GREATER 9 AND V LESS 11)))
+    target_compile_definitions(App PRIVATE NESTED)
+endif()
+)");
+    auto* p = find_project(sol, "App");
+    REQUIRE(p != nullptr);
+    const auto& defs = p->project_level_preprocessor_definitions;
+    CHECK(contains(defs, "OR_GROUPS"));
+    CHECK_FALSE(contains(defs, "NOT_GROUP_WRONG"));
+    CHECK(contains(defs, "NESTED"));
+}
+
+TEST_CASE("bugfix_cmake: if() comparison operators with _EQUAL variants", "[bugfix_cmake]") {
+    CMakeParser parser;
+    auto sol = parser.parse_string(R"(
+project(T)
+add_executable(App main.cpp)
+set(V 10)
+set(VER 3.20.1)
+if(V LESS_EQUAL 5)
+    target_compile_definitions(App PRIVATE LESS_EQUAL_WRONG)
+endif()
+if(V GREATER_EQUAL 10)
+    target_compile_definitions(App PRIVATE GREATER_EQUAL_OK)
+endif()
+if(VER VERSION_GREATER_EQUAL 4.0)
+    target_compile_definitions(App PRIVATE VERSION_GE_WRONG)
+endif()
+if(VER VERSION_LESS_EQUAL 3.20.1)
+    target_compile_definitions(App PRIVATE VERSION_LE_OK)
+endif()
+if(abc STRLESS abd)
+    target_compile_definitions(App PRIVATE STRLESS_OK)
+endif()
+)");
+    auto* p = find_project(sol, "App");
+    REQUIRE(p != nullptr);
+    const auto& defs = p->project_level_preprocessor_definitions;
+    CHECK_FALSE(contains(defs, "LESS_EQUAL_WRONG"));
+    CHECK(contains(defs, "GREATER_EQUAL_OK"));
+    CHECK_FALSE(contains(defs, "VERSION_GE_WRONG"));
+    CHECK(contains(defs, "VERSION_LE_OK"));
+    CHECK(contains(defs, "STRLESS_OK"));
+}

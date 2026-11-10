@@ -1841,8 +1841,16 @@ void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, Pa
                 i++; // Skip (
                 
                 std::vector<std::string> args;
-                while (i < tokens.size() && tokens[i].type != TokenType::CloseParen) {
-                    if (tokens[i].type == TokenType::String) {
+                // Nested parentheses are arguments of their own: if((A OR B) AND C)
+                int paren_depth = 0;
+                while (i < tokens.size() && (tokens[i].type != TokenType::CloseParen || paren_depth > 0)) {
+                    if (tokens[i].type == TokenType::OpenParen) {
+                        paren_depth++;
+                        args.push_back("(");
+                    } else if (tokens[i].type == TokenType::CloseParen) {
+                        paren_depth--;
+                        args.push_back(")");
+                    } else if (tokens[i].type == TokenType::String) {
                         // Resolve variables in arguments
                         args.push_back(resolve_variables(tokens[i].value, state));
                     } else if (tokens[i].type == TokenType::Identifier) {
@@ -2086,8 +2094,15 @@ void CMakeParser::handle_if(const std::vector<std::string>& args, size_t& i, con
                      std::vector<std::string> elseif_args;
                      if (i < tokens.size() && tokens[i].type == TokenType::OpenParen) {
                          i++;
-                         while (i < tokens.size() && tokens[i].type != TokenType::CloseParen) {
-                            if (tokens[i].type == TokenType::String) {
+                         int paren_depth = 0;
+                         while (i < tokens.size() && (tokens[i].type != TokenType::CloseParen || paren_depth > 0)) {
+                            if (tokens[i].type == TokenType::OpenParen) {
+                                paren_depth++;
+                                elseif_args.push_back("(");
+                            } else if (tokens[i].type == TokenType::CloseParen) {
+                                paren_depth--;
+                                elseif_args.push_back(")");
+                            } else if (tokens[i].type == TokenType::String) {
                                 elseif_args.push_back(resolve_variables(tokens[i].value, state));
                             } else if (tokens[i].type == TokenType::Identifier) {
                                 append_unquoted_argument(elseif_args, resolve_variables(tokens[i].value, state));
@@ -2224,6 +2239,27 @@ bool CMakeParser::evaluate_condition(const std::vector<std::string>& args, Parse
         return 0;
     };
 
+    // Parenthesized groups bind tightest: reduce each top-level group to its truth value.
+    if (std::find(args.begin(), args.end(), "(") != args.end()) {
+        std::vector<std::string> reduced;
+        for (size_t idx = 0; idx < args.size(); ++idx) {
+            if (args[idx] != "(") {
+                reduced.push_back(args[idx]);
+                continue;
+            }
+            int depth = 1;
+            size_t close = idx + 1;
+            for (; close < args.size(); ++close) {
+                if (args[close] == "(") depth++;
+                else if (args[close] == ")" && --depth == 0) break;
+            }
+            bool group = evaluate_condition({args.begin() + idx + 1, args.begin() + std::min(close, args.size())}, state);
+            reduced.push_back(group ? "TRUE" : "FALSE");
+            idx = close;
+        }
+        return evaluate_condition(reduced, state);
+    }
+
     // OR has the lowest precedence.
     for (size_t idx = 0; idx < args.size(); ++idx) {
         if (args[idx] == "OR") {
@@ -2254,14 +2290,22 @@ bool CMakeParser::evaluate_condition(const std::vector<std::string>& args, Parse
 
         if (op == "STREQUAL") return lhs == rhs;
         if (op == "EQUAL") return lhs == rhs;
+        if (op == "STRLESS") return lhs < rhs;
+        if (op == "STRGREATER") return lhs > rhs;
+        if (op == "STRLESS_EQUAL") return lhs <= rhs;
+        if (op == "STRGREATER_EQUAL") return lhs >= rhs;
         if (op == "VERSION_GREATER") return compare_version(lhs, rhs) > 0;
         if (op == "VERSION_LESS") return compare_version(lhs, rhs) < 0;
         if (op == "VERSION_EQUAL") return compare_version(lhs, rhs) == 0;
-        if (op == "LESS" || op == "GREATER") {
+        if (op == "VERSION_GREATER_EQUAL") return compare_version(lhs, rhs) >= 0;
+        if (op == "VERSION_LESS_EQUAL") return compare_version(lhs, rhs) <= 0;
+        if (op == "LESS" || op == "GREATER" || op == "LESS_EQUAL" || op == "GREATER_EQUAL") {
             try {
                 int a = std::stoi(lhs);
                 int b = std::stoi(rhs);
-                return op == "LESS" ? a < b : a > b;
+                if (op == "LESS") return a < b;
+                if (op == "GREATER") return a > b;
+                return op == "LESS_EQUAL" ? a <= b : a >= b;
             } catch (...) {
                 return false;
             }
