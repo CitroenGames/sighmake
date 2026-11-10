@@ -1217,6 +1217,24 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
         }
     }
 
+    // Visual Studio filters live in the sibling <project>.vcxproj.filters file: Include -> Filter.
+    std::map<std::string, std::string> file_filters;
+    {
+        pugi::xml_document filters_doc;
+        if (filters_doc.load_file((filepath + ".filters").c_str())) {
+            for (auto group : filters_doc.child("Project").children("ItemGroup")) {
+                for (auto item : group.children()) {
+                    const std::string kind = item.name();
+                    if (kind == "Filter") continue;
+                    const std::string include = item.attribute("Include").as_string();
+                    std::string filter = item.child("Filter").text().as_string();
+                    std::replace(filter.begin(), filter.end(), '\\', '/');
+                    if (!include.empty() && !filter.empty()) file_filters[include] = filter;
+                }
+            }
+        }
+    }
+
     // Parse source files
     for (auto item_group : root.children("ItemGroup")) {
         for (auto file_elem : item_group.children()) {
@@ -1248,6 +1266,8 @@ Project VcxprojReader::read_vcxproj(const std::string& filepath) {
                 project.has_masm_files = true;
             }
             else src.type = FileType::None;
+            if (auto filter_it = file_filters.find(src.path); filter_it != file_filters.end())
+                src.filter = filter_it->second;
 
             // Parse per-file settings
             for (auto child : file_elem.children()) {
@@ -2416,57 +2436,59 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         out << "type = " << config_type_to_buildscript_type(first_cfg.config_type, project.is_kernel_mode) << "\n";
     }
 
-    // Source files
-    std::vector<std::string> cpp_files, h_files, rc_files, masm_files, nasm_files, mc_files, idl_files;
-    std::vector<std::string> xaml_files, resx_files;
-    for (const auto& src : project.sources) {
-        if (src.type == FileType::ClCompile || src.type == FileType::CSharpCompile) {
-            cpp_files.push_back(src.path);
-        } else if (src.type == FileType::CSharpXaml) {
-            xaml_files.push_back(src.path);
-        } else if (src.type == FileType::CSharpResource) {
-            resx_files.push_back(src.path);
-        } else if (src.type == FileType::ClInclude) {
-            h_files.push_back(src.path);
-        } else if (src.type == FileType::ResourceCompile) {
-            rc_files.push_back(src.path);
-        } else if (src.type == FileType::MASM) {
-            masm_files.push_back(src.path);
-        } else if (src.type == FileType::NASM) {
-            nasm_files.push_back(src.path);
-        } else if (src.type == FileType::MessageCompile) {
-            mc_files.push_back(src.path);
-        } else if (src.type == FileType::Midl) {
-            idl_files.push_back(src.path);
+    // Source files, grouped by Visual Studio filter: files without a filter are written at project
+    // level, every other filter becomes a folder("...") block the parser reads back as SourceFile::filter.
+    auto write_source_group = [&](const std::string& filter, const std::string& ind) {
+        std::vector<std::string> cpp_files, h_files, rc_files, masm_files, nasm_files, mc_files, idl_files;
+        std::vector<std::string> xaml_files, resx_files;
+        for (const auto& src : project.sources) {
+            if (src.filter != filter) continue;
+            if (src.type == FileType::ClCompile || src.type == FileType::CSharpCompile) {
+                cpp_files.push_back(src.path);
+            } else if (src.type == FileType::CSharpXaml) {
+                xaml_files.push_back(src.path);
+            } else if (src.type == FileType::CSharpResource) {
+                resx_files.push_back(src.path);
+            } else if (src.type == FileType::ClInclude) {
+                h_files.push_back(src.path);
+            } else if (src.type == FileType::ResourceCompile) {
+                rc_files.push_back(src.path);
+            } else if (src.type == FileType::MASM) {
+                masm_files.push_back(src.path);
+            } else if (src.type == FileType::NASM) {
+                nasm_files.push_back(src.path);
+            } else if (src.type == FileType::MessageCompile) {
+                mc_files.push_back(src.path);
+            } else if (src.type == FileType::Midl) {
+                idl_files.push_back(src.path);
+            }
         }
-    }
-
-    if (!cpp_files.empty()) {
-        out << "sources = " << join_vector(cpp_files, ", ") << "\n";
-    }
-    if (!xaml_files.empty()) {
-        out << "xaml = " << join_vector(xaml_files, ", ") << "\n";
-    }
-    if (!resx_files.empty()) {
-        out << "embedded_resources = " << join_vector(resx_files, ", ") << "\n";
-    }
-    if (!h_files.empty()) {
-        out << "headers = " << join_vector(h_files, ", ") << "\n";
-    }
-    if (!rc_files.empty()) {
-        out << "resources = " << join_vector(rc_files, ", ") << "\n";
-    }
-    if (!masm_files.empty()) {
-        out << "masm = " << join_vector(masm_files, ", ") << "\n";
-    }
-    if (!nasm_files.empty()) {
-        out << "nasm = " << join_vector(nasm_files, ", ") << "\n";
-    }
-    if (!mc_files.empty()) {
-        out << "mc = " << join_vector(mc_files, ", ") << "\n";
-    }
-    if (!idl_files.empty()) {
-        out << "idl = " << join_vector(idl_files, ", ") << "\n";
+        auto emit = [&](const char* key, const std::vector<std::string>& files) {
+            if (!files.empty()) out << ind << key << " = " << join_vector(files, ", ") << "\n";
+        };
+        emit("sources", cpp_files);
+        emit("xaml", xaml_files);
+        emit("embedded_resources", resx_files);
+        emit("headers", h_files);
+        emit("resources", rc_files);
+        emit("masm", masm_files);
+        emit("nasm", nasm_files);
+        emit("mc", mc_files);
+        emit("idl", idl_files);
+    };
+    write_source_group("", "");
+    {
+        std::vector<std::string> filter_names;
+        for (const auto& src : project.sources) {
+            if (src.filter.empty()) continue;
+            if (std::find(filter_names.begin(), filter_names.end(), src.filter) == filter_names.end())
+                filter_names.push_back(src.filter);
+        }
+        for (const auto& filter : filter_names) {
+            out << "folder(\"" << filter << "\") {\n";
+            write_source_group(filter, "    ");
+            out << "}\n";
+        }
     }
 
     // Project references - write as target_link_libraries for clarity
@@ -2859,7 +2881,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             const auto& flk = first_cfg.link;
             const auto& clk = cfg.link;
             auto diff_str = [&](const char* key, const std::string& v, const std::string& first_v) {
-                if (!v.empty() && v != first_v) out << key << " = " << v << "\n";
+                if (v != first_v) out << key << " = " << v << "\n";
             };
             auto diff_bool = [&](const char* key, bool v, bool first_v) {
                 if (v != first_v) out << key << " = " << (v ? "true" : "false") << "\n";
@@ -2884,6 +2906,9 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
             diff_bool("treat_warning_as_error", ccl.treat_warning_as_error, fcl.treat_warning_as_error);
             diff_bool("safe_seh", clk.image_has_safe_exception_handlers, flk.image_has_safe_exception_handlers);
             diff_str("target_machine", clk.target_machine, flk.target_machine);
+            diff_bool("large_address_aware", clk.large_address_aware, flk.large_address_aware);
+            if (!ccl.disable_specific_warnings.empty() && ccl.disable_specific_warnings != fcl.disable_specific_warnings)
+                out << "disable_warnings = " << join_vector(ccl.disable_specific_warnings, ", ") << "\n";
         }
         if (!cfg.executable_path.empty())
             out << "executable_path = " << cfg.executable_path << "\n";

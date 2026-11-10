@@ -184,6 +184,7 @@ Solution CMakeParser::parse_string(const std::string& content, const std::string
     state.variables["CMAKE_SOURCE_DIR"] = base_path;
     state.variables["CMAKE_CURRENT_SOURCE_DIR"] = base_path;
     state.variables["CMAKE_BINARY_DIR"] = base_path;
+    state.variables["CMAKE_CURRENT_LIST_DIR"] = base_path;
     state.variables["CMAKE_CURRENT_BINARY_DIR"] = base_path;
     state.variables["PROJECT_SOURCE_DIR"] = base_path;
     state.variables["PROJECT_BINARY_DIR"] = base_path;
@@ -280,6 +281,18 @@ Solution CMakeParser::parse_string(const std::string& content, const std::string
                     ++it;
                 }
             }
+        }
+    }
+
+    // Definitions without a generator expression are recorded at project level; the generators
+    // only read the per-configuration lists, so they are applied to every configuration here
+    // (before the configuration specific ones, as the buildscript parser does).
+    for (auto& proj : solution.projects) {
+        if (proj.project_level_preprocessor_definitions.empty()) continue;
+        for (const auto& config_key : solution.get_config_keys()) {
+            auto& defines = proj.configurations[config_key].cl_compile.preprocessor_definitions;
+            defines.insert(defines.begin(), proj.project_level_preprocessor_definitions.begin(),
+                           proj.project_level_preprocessor_definitions.end());
         }
     }
 
@@ -474,6 +487,7 @@ void CMakeParser::handle_add_executable(const std::vector<std::string>& args, Pa
         proj->project_name = target_name;
         proj->uuid = generate_uuid();
         proj->root_namespace = target_name;
+        apply_directory_settings(*proj, state);
     }
 
     // Set type to Application for all configs
@@ -505,8 +519,8 @@ void CMakeParser::handle_add_library(const std::vector<std::string>& args, Parse
 
     // Handle ALIAS targets - they don't create real build artifacts
     if (args.size() > 2 && args[1] == "ALIAS") {
-        // Don't create a project for ALIAS targets
-        // They're just references to existing targets
+        // No project for an ALIAS target: remember it so links to it reach the real target
+        state.aliases[sanitize_target_name(args[0])] = resolve_alias(sanitize_target_name(args[2]), state);
         return;
     }
 
@@ -527,6 +541,7 @@ void CMakeParser::handle_add_library(const std::vector<std::string>& args, Parse
         proj->project_name = target_name;
         proj->uuid = generate_uuid();
         proj->root_namespace = target_name;
+        apply_directory_settings(*proj, state);
     }
 
     // Check for type
@@ -608,6 +623,7 @@ void CMakeParser::handle_add_subdirectory(const std::vector<std::string>& args, 
     // Update CMake variables for the new scope
     sub_state.variables["CMAKE_CURRENT_SOURCE_DIR"] = subdir_path.string();
     sub_state.variables["CMAKE_CURRENT_BINARY_DIR"] = binary_dir.string();
+    sub_state.variables["CMAKE_CURRENT_LIST_DIR"] = subdir_path.string();
     
     // Clear parent-scope vars before parsing subdirectory
     sub_state.parent_scope_vars.clear();
@@ -790,33 +806,163 @@ void CMakeParser::handle_set_target_properties(const std::vector<std::string>& a
 
 void CMakeParser::handle_list(const std::vector<std::string>& args, ParseState& state) {
     if (args.size() < 2) return;
-    std::string subcmd = args[0];
-    std::string list_name = args[1];
-    
-    std::string current_val = state.variables[list_name];
-    std::vector<std::string> current_list;
-    
-    // Split current value by ;
-    std::stringstream ss(current_val);
-    std::string item;
-    while (std::getline(ss, item, ';')) {
-        current_list.push_back(item);
-    }
-    
+    const std::string& subcmd = args[0];
+    const std::string& list_name = args[1];
+
+    auto split = [](const std::string& text) {
+        std::vector<std::string> items;
+        std::stringstream ss(text);
+        std::string item;
+        while (std::getline(ss, item, ';')) items.push_back(item);
+        return items;
+    };
+    auto join = [](const std::vector<std::string>& items) {
+        std::string joined;
+        for (size_t k = 0; k < items.size(); ++k) {
+            if (k > 0) joined += ";";
+            joined += items[k];
+        }
+        return joined;
+    };
+    // A list index: negative values count from the end. Returns false when out of range.
+    auto index_of = [](const std::string& text, size_t size, size_t& out) {
+        try {
+            long long value = std::stoll(text);
+            if (value < 0) value += static_cast<long long>(size);
+            if (value < 0 || value >= static_cast<long long>(size)) return false;
+            out = static_cast<size_t>(value);
+            return true;
+        } catch (const std::exception&) {
+            return false;
+        }
+    };
+
+    std::vector<std::string> list = split(state.variables[list_name]);
+    bool modified = false;
+
     if (subcmd == "APPEND") {
+        for (size_t i = 2; i < args.size(); ++i) list.push_back(args[i]);
+        modified = true;
+    } else if (subcmd == "PREPEND") {
+        list.insert(list.begin(), args.begin() + 2, args.end());
+        modified = true;
+    } else if (subcmd == "INSERT" && args.size() >= 3) {
+        long long at = 0;
+        try { at = std::stoll(args[2]); } catch (const std::exception&) { return; }
+        if (at < 0) at += static_cast<long long>(list.size());
+        if (at < 0 || at > static_cast<long long>(list.size())) return;
+        list.insert(list.begin() + at, args.begin() + 3, args.end());
+        modified = true;
+    } else if (subcmd == "REMOVE_ITEM") {
+        list.erase(std::remove_if(list.begin(), list.end(),
+                                  [&](const std::string& item) {
+                                      return std::find(args.begin() + 2, args.end(), item) != args.end();
+                                  }),
+                   list.end());
+        modified = true;
+    } else if (subcmd == "REMOVE_AT") {
+        std::set<size_t> remove;
         for (size_t i = 2; i < args.size(); ++i) {
-            current_list.push_back(args[i]);
+            size_t at = 0;
+            if (index_of(args[i], list.size(), at)) remove.insert(at);
+        }
+        std::vector<std::string> kept;
+        for (size_t k = 0; k < list.size(); ++k) {
+            if (!remove.count(k)) kept.push_back(list[k]);
+        }
+        list.swap(kept);
+        modified = true;
+    } else if (subcmd == "REMOVE_DUPLICATES") {
+        std::set<std::string> seen;
+        std::vector<std::string> kept;
+        for (const auto& item : list) {
+            if (seen.insert(item).second) kept.push_back(item);
+        }
+        list.swap(kept);
+        modified = true;
+    } else if (subcmd == "SORT") {
+        std::sort(list.begin(), list.end());
+        for (size_t i = 2; i + 1 < args.size(); ++i) {
+            if (args[i] == "ORDER" && args[i + 1] == "DESCENDING") std::reverse(list.begin(), list.end());
+        }
+        modified = true;
+    } else if (subcmd == "REVERSE") {
+        std::reverse(list.begin(), list.end());
+        modified = true;
+    } else if (subcmd == "POP_BACK" || subcmd == "POP_FRONT") {
+        if (!list.empty()) {
+            if (args.size() > 2) state.variables[args[2]] = subcmd == "POP_BACK" ? list.back() : list.front();
+            if (subcmd == "POP_BACK") list.pop_back();
+            else list.erase(list.begin());
+        }
+        modified = true;
+    } else if (subcmd == "FILTER" && args.size() >= 5 && args[3] == "REGEX") {
+        const bool include = args[2] == "INCLUDE";
+        try {
+            std::regex re(args[4]);
+            std::vector<std::string> kept;
+            for (const auto& item : list) {
+                if (std::regex_search(item, re) == include) kept.push_back(item);
+            }
+            list.swap(kept);
+            modified = true;
+        } catch (const std::regex_error&) {
+            return;
+        }
+    } else if (subcmd == "TRANSFORM" && args.size() >= 3) {
+        const std::string& action = args[2];
+        const std::string arg = args.size() > 3 ? args[3] : std::string();
+        for (auto& item : list) {
+            if (action == "APPEND") item += arg;
+            else if (action == "PREPEND") item = arg + item;
+            else if (action == "TOUPPER") item = to_upper(item);
+            else if (action == "TOLOWER") item = to_lower(item);
+            else if (action == "STRIP") {
+                const size_t first = item.find_first_not_of(" \t");
+                const size_t last = item.find_last_not_of(" \t");
+                item = first == std::string::npos ? std::string() : item.substr(first, last - first + 1);
+            }
+        }
+        modified = action == "APPEND" || action == "PREPEND" || action == "TOUPPER" || action == "TOLOWER" ||
+                   action == "STRIP";
+    } else if (subcmd == "LENGTH" && args.size() >= 3) {
+        state.variables[args[2]] = std::to_string(list.size());
+    } else if (subcmd == "GET" && args.size() >= 4) {
+        std::vector<std::string> picked;
+        bool ok = true;
+        for (size_t i = 2; i + 1 < args.size(); ++i) {
+            size_t at = 0;
+            if (!index_of(args[i], list.size(), at)) { ok = false; break; }
+            picked.push_back(list[at]);
+        }
+        state.variables[args.back()] = ok ? join(picked) : "NOTFOUND";
+    } else if (subcmd == "FIND" && args.size() >= 4) {
+        auto found = std::find(list.begin(), list.end(), args[2]);
+        state.variables[args[3]] = found == list.end() ? "-1" : std::to_string(found - list.begin());
+    } else if (subcmd == "JOIN" && args.size() >= 4) {
+        std::string joined;
+        for (size_t k = 0; k < list.size(); ++k) {
+            if (k > 0) joined += args[2];
+            joined += list[k];
+        }
+        state.variables[args[3]] = joined;
+    } else if (subcmd == "SUBLIST" && args.size() >= 5) {
+        try {
+            const long long begin = std::stoll(args[2]);
+            long long length = std::stoll(args[3]);
+            std::vector<std::string> part;
+            if (begin >= 0 && begin <= static_cast<long long>(list.size())) {
+                if (length < 0 || begin + length > static_cast<long long>(list.size())) {
+                    length = static_cast<long long>(list.size()) - begin;
+                }
+                part.assign(list.begin() + begin, list.begin() + begin + length);
+            }
+            state.variables[args[4]] = join(part);
+        } catch (const std::exception&) {
         }
     }
-    // Other subcommands (REMOVE_ITEM, etc.) ignored for now
-    
-    // Join back
-    std::string new_val;
-    for (const auto& it : current_list) {
-        if (!new_val.empty()) new_val += ";";
-        new_val += it;
-    }
-    state.variables[list_name] = new_val;
+
+    if (modified) state.variables[list_name] = join(list);
 }
 
 void CMakeParser::handle_target_compile_options(const std::vector<std::string>& args, ParseState& state) {
@@ -1160,7 +1306,7 @@ void CMakeParser::handle_target_link_libraries(const std::vector<std::string>& a
                 if (evaluated.empty()) continue;
 
                 // Process the evaluated library for this config
-                std::string sanitized_name = sanitize_target_name(evaluated);
+                std::string sanitized_name = resolve_alias(sanitize_target_name(evaluated), state);
 
                 // Check if it's an internal project reference
                 Project* dep_proj = find_project(sanitized_name, state);
@@ -1196,7 +1342,7 @@ void CMakeParser::handle_target_link_libraries(const std::vector<std::string>& a
         }
 
         // No generator expression - original logic
-        std::string sanitized_name = sanitize_target_name(arg);
+        std::string sanitized_name = resolve_alias(sanitize_target_name(arg), state);
 
         // 1. Check if it's an internal project reference
         Project* dep_proj = find_project(sanitized_name, state);
@@ -1323,6 +1469,7 @@ void CMakeParser::handle_include_directories(const std::vector<std::string>& arg
             p = fs::path(state.base_path) / p;
         }
 
+        state.directory_include_dirs.push_back(p.string());
         for (auto& proj : state.solution->projects) {
             for (const auto& config_key : state.solution->get_config_keys()) {
                 proj.configurations[config_key].cl_compile.additional_include_directories.push_back(p.string());
@@ -1339,12 +1486,124 @@ void CMakeParser::handle_link_directories(const std::vector<std::string>& args, 
             p = fs::path(state.base_path) / p;
         }
 
+        state.directory_link_dirs.push_back(p.string());
         for (auto& proj : state.solution->projects) {
             for (const auto& config_key : state.solution->get_config_keys()) {
                 proj.configurations[config_key].link.additional_library_directories.push_back(p.string());
             }
         }
     }
+}
+
+std::string CMakeParser::resolve_alias(const std::string& name, const ParseState& state) const {
+    auto it = state.aliases.find(name);
+    return it == state.aliases.end() ? name : it->second;
+}
+
+// Applies the directory-scope settings recorded so far to a target created in that scope.
+void CMakeParser::apply_directory_settings(Project& project, const ParseState& state) {
+    for (const auto& def : state.directory_definitions) project.project_level_preprocessor_definitions.push_back(def);
+    for (const auto& config_key : state.solution->get_config_keys()) {
+        auto& cfg = project.configurations[config_key];
+        for (const auto& dir : state.directory_include_dirs) cfg.cl_compile.additional_include_directories.push_back(dir);
+        for (const auto& dir : state.directory_link_dirs) cfg.link.additional_library_directories.push_back(dir);
+        for (const auto& opt : state.directory_compile_options) {
+            if (!cfg.cl_compile.additional_options.empty()) cfg.cl_compile.additional_options += " ";
+            cfg.cl_compile.additional_options += opt;
+        }
+    }
+}
+
+void CMakeParser::handle_add_compile_definitions(const std::vector<std::string>& args, ParseState& state) {
+    for (const auto& def : args) {
+        if (def.empty()) continue;
+        state.directory_definitions.push_back(def);
+        for (auto& proj : state.solution->projects) proj.project_level_preprocessor_definitions.push_back(def);
+    }
+}
+
+void CMakeParser::handle_add_definitions(const std::vector<std::string>& args, ParseState& state) {
+    std::vector<std::string> definitions;
+    for (const auto& arg : args) {
+        if (arg.size() > 2 && arg.compare(0, 2, "-D") == 0) {
+            definitions.push_back(arg.substr(2));
+        } else if (!arg.empty()) {
+            // Other flags go to the compiler command line unchanged
+            handle_add_compile_options({arg}, state);
+        }
+    }
+    handle_add_compile_definitions(definitions, state);
+}
+
+void CMakeParser::handle_add_compile_options(const std::vector<std::string>& args, ParseState& state) {
+    for (const auto& opt : args) {
+        if (opt.empty()) continue;
+        state.directory_compile_options.push_back(opt);
+        for (auto& proj : state.solution->projects) {
+            for (const auto& config_key : state.solution->get_config_keys()) {
+                std::string& opts = proj.configurations[config_key].cl_compile.additional_options;
+                if (!opts.empty()) opts += " ";
+                opts += opt;
+            }
+        }
+    }
+}
+
+// include(<file|module> [OPTIONAL] [RESULT_VARIABLE <var>] [NO_POLICY_SCOPE]): runs the file in
+// the current scope. Built-in modules (GNUInstallDirs, ...) are not available and are skipped.
+void CMakeParser::handle_include(const std::vector<std::string>& args, ParseState& state) {
+    if (args.empty()) return;
+    static int depth = 0;
+    if (depth >= 32) return;
+
+    const std::string& name = args[0];
+    fs::path file(name);
+    const bool is_path = name.find('/') != std::string::npos || name.find('\\') != std::string::npos ||
+                         fs::path(name).extension() == ".cmake";
+    if (is_path) {
+        if (file.is_relative()) {
+            file = fs::path(state.current_source_dir.empty() ? state.base_path : state.current_source_dir) / file;
+        }
+    } else {
+        file.clear();
+        auto module_path = state.variables.find("CMAKE_MODULE_PATH");
+        if (module_path != state.variables.end()) {
+            std::stringstream dirs(module_path->second);
+            std::string dir;
+            while (std::getline(dirs, dir, ';')) {
+                if (dir.empty()) continue;
+                fs::path candidate = fs::path(dir) / (name + ".cmake");
+                if (fs::is_regular_file(candidate)) { file = candidate; break; }
+            }
+        }
+    }
+    std::error_code ec;
+    if (file.empty() || !fs::is_regular_file(file, ec)) {
+        for (size_t i = 1; i + 1 < args.size(); ++i) {
+            if (args[i] == "RESULT_VARIABLE") state.variables[args[i + 1]] = "NOTFOUND";
+        }
+        return;
+    }
+    std::ifstream in(file);
+    if (!in) return;
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    for (size_t i = 1; i + 1 < args.size(); ++i) {
+        if (args[i] == "RESULT_VARIABLE") state.variables[args[i + 1]] = file.string();
+    }
+
+    const auto old_list_dir = state.variables.find("CMAKE_CURRENT_LIST_DIR");
+    const bool had_list_dir = old_list_dir != state.variables.end();
+    const std::string saved_list_dir = had_list_dir ? old_list_dir->second : std::string();
+    state.variables["CMAKE_CURRENT_LIST_DIR"] = file.parent_path().string();
+    state.variables["CMAKE_CURRENT_LIST_FILE"] = file.string();
+    ++depth;
+    auto tokens = tokenize(buffer.str());
+    size_t i = 0;
+    execute_tokens(tokens, i, state);
+    --depth;
+    if (had_list_dir) state.variables["CMAKE_CURRENT_LIST_DIR"] = saved_list_dir;
+    else state.variables.erase("CMAKE_CURRENT_LIST_DIR");
 }
 
 void CMakeParser::handle_file(const std::vector<std::string>& args, ParseState& state) {
@@ -1354,7 +1613,11 @@ void CMakeParser::handle_file(const std::vector<std::string>& args, ParseState& 
     if (mode == "GLOB" || mode == "GLOB_RECURSE") {
         std::string out_var = args[1];
         std::vector<std::string> patterns;
+        std::string relative_to;
         for (size_t i = 2; i < args.size(); ++i) {
+            if (args[i] == "CONFIGURE_DEPENDS" || args[i] == "FOLLOW_SYMLINKS") continue;
+            if (args[i] == "LIST_DIRECTORIES" && i + 1 < args.size()) { ++i; continue; }
+            if (args[i] == "RELATIVE" && i + 1 < args.size()) { relative_to = args[++i]; continue; }
             patterns.push_back(args[i]);
         }
 
@@ -1376,15 +1639,26 @@ void CMakeParser::handle_file(const std::vector<std::string>& args, ParseState& 
             }
             
             std::string regex_str = "^";
+            // Wildcards: * and ? (and [...] classes, which pass through); everything else literal
+            bool in_class = false;
             for (char c : filename_pattern) {
-                if (c == '*') regex_str += ".*";
-                else if (c == '.') regex_str += "\\.";
+                if (in_class) {
+                    regex_str += c;
+                    if (c == ']') in_class = false;
+                } else if (c == '[') { regex_str += c; in_class = true; }
+                else if (c == '*') regex_str += "[^/]*";
+                else if (c == '?') regex_str += "[^/]";
+                else if (std::string(".+()^$|{}\\").find(c) != std::string::npos) { regex_str += '\\'; regex_str += c; }
                 else regex_str += c;
             }
             regex_str += "$";
-            
+
             try {
+#if defined(_WIN32) || defined(__APPLE__)
                 std::regex re(regex_str, std::regex::icase);
+#else
+                std::regex re(regex_str);
+#endif
                 if (fs::exists(base_search_path)) {
                     if (recursive) {
                         for (const auto& entry : fs::recursive_directory_iterator(base_search_path)) {
@@ -1407,10 +1681,20 @@ void CMakeParser::handle_file(const std::vector<std::string>& args, ParseState& 
             } catch (...) {}
         }
 
+        // CMake returns the matches in lexicographic order, without duplicates
+        std::sort(found_files.begin(), found_files.end());
+        found_files.erase(std::unique(found_files.begin(), found_files.end()), found_files.end());
+
         std::string result;
         for (const auto& f : found_files) {
             if (!result.empty()) result += ";";
-            result += f;
+            if (relative_to.empty()) {
+                result += f;
+            } else {
+                fs::path base(relative_to);
+                if (base.is_relative()) base = fs::path(state.base_path) / base;
+                result += fs::relative(fs::path(f), base).generic_string();
+            }
         }
         state.variables[out_var] = result;
     }
@@ -1906,6 +2190,10 @@ void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, Pa
                     else if (command == "target_sources") handle_target_sources(args, state);
                     else if (command == "include_directories") handle_include_directories(args, state);
                     else if (command == "link_directories") handle_link_directories(args, state);
+                    else if (command == "add_compile_definitions") handle_add_compile_definitions(args, state);
+                    else if (command == "add_definitions") handle_add_definitions(args, state);
+                    else if (command == "add_compile_options") handle_add_compile_options(args, state);
+                    else if (command == "include") handle_include(args, state);
                     else if (command == "file") handle_file(args, state);
                     else if (command == "find_library") handle_find_library(args, state);
                     else if (command == "find_path") handle_find_path(args, state);
@@ -1926,6 +2214,7 @@ void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, Pa
                         if (it != state.functions.end()) {
                             // Execute function
                             ParseState func_state = state; // Copy global state
+                            func_state.parent_scope_vars.clear();
                             
                             // Map arguments
                             for (size_t k = 0; k < it->second.params.size() && k < args.size(); ++k) {
@@ -1942,6 +2231,11 @@ void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, Pa
                             
                             size_t func_i = 0;
                             execute_tokens(it->second.body, func_i, func_state);
+
+                            // set(... PARENT_SCOPE) inside the function sets the caller's variable
+                            for (const auto& [name, value] : func_state.parent_scope_vars) {
+                                state.variables[name] = value;
+                            }
                             
                             // Propagate changes back for parent scope variables if explicitly set?
                             // CMake functions have new scope, macros don't.

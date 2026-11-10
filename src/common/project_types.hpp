@@ -282,6 +282,10 @@ struct Configuration {
     // Template inheritance
     std::string template_name;  // Name of template this config inherits from (e.g., "Release")
     bool is_template = false;   // Whether this is used as a template by other configs
+
+    // Bool settings (see the parser's table) that a [config:...] section, selector or template
+    // assigned explicitly, so an explicit false is not mistaken for "unset" when defaults merge.
+    std::set<std::string> explicit_bools;
 };
 
 // Dependency visibility for transitive propagation (CMake-style)
