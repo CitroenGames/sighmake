@@ -81,8 +81,13 @@ void write_css(std::ofstream& out) {
     out << "</style>\n";
 }
 
+size_t count_real_projects(const Solution& solution) {
+    return static_cast<size_t>(std::count_if(solution.projects.begin(), solution.projects.end(),
+                                             [](const Project& proj) { return !proj.is_package_project; }));
+}
+
 void write_project_cards(std::ofstream& out, const Solution& solution) {
-    out << "<h2>Projects (" << solution.projects.size() << ")</h2>\n";
+    out << "<h2>Projects (" << count_real_projects(solution) << ")</h2>\n";
     out << "<div class=\"project-cards\">\n";
 
     for (const auto& proj : solution.projects) {
@@ -199,7 +204,7 @@ bool export_dependencies_html(const Solution& solution, const std::string& outpu
     // Header
     out << "<h1>" << escape_html(solution.name) << " &mdash; Dependency Report</h1>\n";
     out << "<p class=\"meta\">"
-        << solution.projects.size() << " projects, "
+        << count_real_projects(solution) << " projects, "
         << total_deps << " dependencies";
 
     if (!solution.configurations.empty()) {
