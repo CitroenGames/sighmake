@@ -282,3 +282,28 @@ set_file_properties(src/main.cpp,
     REQUIRE(main_cpp->settings.preprocessor_defines.count("*") == 1);
     CHECK(main_cpp->settings.preprocessor_defines.at("*") == std::vector<std::string>{"A", "B"});
 }
+
+TEST_CASE("include inside a [config:...] section applies the fragment to that configuration", "[bugfix_parser]") {
+    const fs::path root = make_parser_temp_dir("include_in_config");
+    write_parser_file(root / "release_flags.buildscript", "optimization = MinSpace\ndefines = FROM_FRAGMENT\n");
+    write_parser_file(root / "main.buildscript", R"([solution]
+configurations = Debug, Release
+platforms = Linux
+
+[project:App]
+type = exe
+
+[config:Release|Linux]
+include = release_flags.buildscript
+warning_level = Level4
+)");
+    BuildscriptParser parser;
+    const Solution sol = parser.parse((root / "main.buildscript").string());
+    REQUIRE(sol.projects.size() == 1);
+    const auto& release = sol.projects[0].configurations.at("Release|Linux");
+    CHECK(release.cl_compile.optimization == "MinSpace");
+    CHECK(parser_contains(release.cl_compile.preprocessor_definitions, "FROM_FRAGMENT"));
+    CHECK(release.cl_compile.warning_level == "Level4");
+    CHECK_FALSE(parser_contains(sol.projects[0].configurations.at("Debug|Linux").cl_compile.preprocessor_definitions,
+                                "FROM_FRAGMENT"));
+}

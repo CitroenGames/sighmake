@@ -1892,6 +1892,9 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
     // Regular key=value
     if (state.current_project == nullptr) {
         parse_solution_setting(key, resolved_value, state);
+    } else if (key == "include") {
+        // Included in the current context, also inside [config:...] and [file:...] sections
+        process_include(resolved_value, state);
     } else if (state.in_file_properties && !state.file_properties_files.empty()) {
         // If we're in a file_properties() block, apply to all files in the group
         for (const auto& file_path : state.file_properties_files) {
