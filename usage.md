@@ -1627,6 +1627,10 @@ libraries while its binaries stay stripped can still pass it through `cflags`.
 Changing `strip` changes the compile command line, so the next build recompiles
 the configuration's objects.
 
+Build-event commands are written verbatim as recipe lines, so `$` keeps its
+meaning to make: write `$$` for a literal shell `$` (for example `$$HOME`), and
+`$(VAR)` refers to a make variable.
+
 ### CMake
 
 ```text

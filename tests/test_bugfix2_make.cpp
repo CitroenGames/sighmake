@@ -133,15 +133,15 @@ platforms = Linux
 
 [project:Lib]
 type = dll
-outdir = out dir/lib
+outdir = out/lib
 intdir = obj
 sources = lib.cpp
-libs = my libs/libextra.a
+link_libs = my libs/libextra.a
 module_def = my defs/exports.map
 
 [project:App]
 type = exe
-outdir = out dir/bin
+outdir = out/bin
 intdir = obj/app
 sources = main.cpp
 )", {{"lib.cpp", "extern \"C\" int foo() { return 1; }\nextern \"C\" int bar() { return 2; }\n"},
@@ -149,12 +149,12 @@ sources = main.cpp
      {"my libs/extra.c", "int extra_fn() { return 3; }\n"},
      {"my defs/exports.map", "{ global: foo; local: *; };\n"}});
     REQUIRE(p.generated);
-    const std::string master = bugfix2_make_read(p.dir / "Makefile");
+    const std::string master = p.makefile("Makefile");
     const std::string lib_mk = p.makefile("Lib.Release");
-    CHECK(master.find("install -m 755 \"../out dir/bin/App\" \"$(DESTDIR)$(PREFIX)/bin/App\"") != std::string::npos);
+    CHECK(master.find("install -m 755 ../out/bin/App \"$(DESTDIR)$(PREFIX)/bin/App\"") != std::string::npos);
     CHECK(master.find("rm -f \"$(DESTDIR)$(PREFIX)/bin/App\"") != std::string::npos);
     CHECK(lib_mk.find("\"../my libs/libextra.a\"") != std::string::npos);
-    CHECK(lib_mk.find("--version-script=\"../my defs/exports.map\"") != std::string::npos);
+    CHECK(lib_mk.find("\"-Wl,--version-script=../my defs/exports.map\"") != std::string::npos);
 #ifndef _WIN32
     REQUIRE(std::system(("cc -c \"" + (p.dir / "my libs/extra.c").string() + "\" -o \"" +
                          (p.dir / "my libs/extra.o").string() + "\" && ar rcs \"" +
@@ -163,7 +163,7 @@ sources = main.cpp
     const fs::path dest = p.dir / "dest dir";
     CHECK(p.make("install DESTDIR=\"" + dest.string() + "\"") == 0);
     CHECK(fs::exists(dest / "usr/local/bin/App"));
-    CHECK(fs::exists(dest / "usr/local/lib/libLib.so"));
+    CHECK(fs::exists(dest / "usr/local/lib/Lib.so"));
     CHECK(p.make("uninstall DESTDIR=\"" + dest.string() + "\"") == 0);
     CHECK(!fs::exists(dest / "usr/local/bin/App"));
 #endif
@@ -198,7 +198,7 @@ if(Android) {
     const std::string linux_mk = p.makefile("Game.Debug");
     CHECK(linux_mk.find("Engine") == std::string::npos);
     CHECK(linux_mk.find("PROJECT_DEPS") == std::string::npos);
-    const std::string master = bugfix2_make_read(p.dir / "Makefile");
+    const std::string master = p.makefile("Makefile");
     std::istringstream in(master);
     for (std::string line; std::getline(in, line);) {
         if (line.rfind("Game.Debug:", 0) == 0) CHECK(line.find("Engine") == std::string::npos);
