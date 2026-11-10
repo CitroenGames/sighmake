@@ -151,8 +151,8 @@ sources = main.cpp
     REQUIRE(p.generated);
     const std::string master = p.makefile("Makefile");
     const std::string lib_mk = p.makefile("Lib.Release");
-    CHECK(master.find("install -m 755 ../out/bin/App \"$(DESTDIR)$(PREFIX)/bin/App\"") != std::string::npos);
-    CHECK(master.find("rm -f \"$(DESTDIR)$(PREFIX)/bin/App\"") != std::string::npos);
+    CHECK(master.find("$(INSTALL) -m 755 ../out/bin/App \"$(DESTDIR)$(BINDIR)/App\"") != std::string::npos);
+    CHECK(master.find("rm -f \"$(DESTDIR)$(BINDIR)/App\"") != std::string::npos);
     CHECK(lib_mk.find("\"../my libs/libextra.a\"") != std::string::npos);
 #ifdef __APPLE__
     CHECK(lib_mk.find("\"-Wl,-exported_symbols_list,../my defs/exports.map\"") != std::string::npos);

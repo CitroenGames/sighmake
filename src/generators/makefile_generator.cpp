@@ -122,12 +122,31 @@ std::string decorate_target_name(const std::string& name, const std::string& con
     return name;
 }
 
-// Whether a configuration strips its linked executables and shared libraries (`strip`, default
-// true for "Release" only). A stripping configuration also compiles without -g: the debug
-// information would never reach a binary and only costs compile time, memory and disk.
-// `strip = false` keeps the symbols and compiles with -g again.
+// What happens to debug symbols of a configuration's linked binaries.
+//   Embedded: compiled with -g, symbols stay in the binary.
+//   Separate: compiled with -g, symbols are split into a file next to the binary after linking.
+//   None:     compiled without -g, the binary is stripped after linking.
+enum class MakefileSymbols { Embedded, Separate, None };
+
+// `debug_symbols = embedded | separate | none` wins; without it the `strip` key decides (strip = true
+// is none, strip = false is embedded), and without either only "Release" is none. Unknown
+// debug_symbols values are ignored. `explicit_mode` tells whether debug_symbols chose the mode.
+MakefileSymbols makefile_symbols(const Configuration& config, const std::string& config_name,
+                                 bool* explicit_mode = nullptr) {
+    const std::string& v = config.link.debug_symbols;
+    if (explicit_mode) *explicit_mode = true;
+    if (v == "embedded" || v == "inline" || v == "full") return MakefileSymbols::Embedded;
+    if (v == "separate" || v == "split" || v == "external") return MakefileSymbols::Separate;
+    if (v == "none" || v == "stripped" || v == "off") return MakefileSymbols::None;
+    if (explicit_mode) *explicit_mode = false;
+    return config.link.strip.value_or(config_name == "Release") ? MakefileSymbols::None : MakefileSymbols::Embedded;
+}
+
+// Whether a configuration strips its linked executables and shared libraries at link time. Such a
+// configuration also compiles without -g: the debug information would never reach a binary and
+// only costs compile time, memory and disk.
 bool makefile_strips_outputs(const Configuration& config, const std::string& config_name) {
-    return config.link.strip.value_or(config_name == "Release");
+    return makefile_symbols(config, config_name) == MakefileSymbols::None;
 }
 
 // Default output/intermediate directories. Android builds get an ABI-specific
@@ -819,7 +838,9 @@ std::string MakefileGenerator::get_compiler_flags(const Configuration& config, c
     }
 
     // Debug information (not for configurations whose outputs are stripped)
-    if (!config.cl_compile.debug_information_format.empty() && !makefile_strips_outputs(config, config_name)) {
+    bool symbols_explicit = false;
+    const bool wants_symbols = makefile_symbols(config, config_name, &symbols_explicit) != MakefileSymbols::None;
+    if (wants_symbols && (symbols_explicit || !config.cl_compile.debug_information_format.empty())) {
         ss << "-g ";
     }
 
@@ -1845,6 +1866,15 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                                       config.config_type == "DynamicLibrary";
     const bool links_with_cxx = has_cpp_files || has_objcxx_files;
 
+    const MakefileSymbols symbols = makefile_symbols(config, parse_config_key(config_key).first);
+
+    // Toolchain variables: the environment and the make command line override the default. GNU make
+    // predefines CC/CXX/AR (origin "default"), so `?=` cannot be used for them; STRIP and OBJCOPY
+    // are not predefined and use `?=`.
+    auto tool_default = [&out](const char* var, const std::string& value) {
+        out << "ifeq ($(origin " << var << "),default)\n" << var << " = " << value << "\nendif\n";
+    };
+
     // Compiler variables (their literal text is also recorded in the command-line stamps)
     std::string cxx_cmd = "$(CXX)", cc_cmd = "$(CC)", ar_cmd = "ar";
     if (android) {
@@ -1859,6 +1889,9 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "CC = \"$(ANDROID_TOOLCHAIN)/clang\" --target=$(ANDROID_TRIPLE)$(ANDROID_API)\n";
         out << "AR = \"$(ANDROID_TOOLCHAIN)/llvm-ar\"\n";
         out << "STRIP = \"$(ANDROID_TOOLCHAIN)/llvm-strip\"\n";
+        if (links_binary && symbols == MakefileSymbols::Separate) {
+            out << "OBJCOPY = \"$(ANDROID_TOOLCHAIN)/llvm-objcopy\"\n";
+        }
         if (links_binary) {
             out << "# 16 KB page alignment (Android 15+ devices; NDK r27 does not do this by default).\n";
             out << "# Applies to the 64-bit ABIs; override with ANDROID_MAX_PAGE_SIZE=4096, or empty to disable.\n";
@@ -1873,14 +1906,14 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     } else {
         if (links_with_cxx && !solution.cxx_compiler.empty()) {
             cxx_cmd = solution.cxx_compiler;
-            out << "CXX = " << solution.cxx_compiler << "\n";
+            tool_default("CXX", solution.cxx_compiler);
         } else if (links_with_cxx) {
 #ifdef __APPLE__
             cxx_cmd = "clang++";
-            out << "CXX = clang++\n";
+            tool_default("CXX", "clang++");
 #else
             cxx_cmd = "g++";
-            out << "CXX = g++\n";
+            tool_default("CXX", "g++");
 #endif
         }
         // C and assembler-only binaries still need a linker driver. Also emit
@@ -1888,14 +1921,23 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         // complete instead of starting with an empty $(CC).
         if ((has_c_files || (links_binary && !links_with_cxx)) && !solution.c_compiler.empty()) {
             cc_cmd = solution.c_compiler;
-            out << "CC = " << solution.c_compiler << "\n";
+            tool_default("CC", solution.c_compiler);
         } else if (has_c_files || (links_binary && !links_with_cxx)) {
 #ifdef __APPLE__
             cc_cmd = "clang";
-            out << "CC = clang\n";
+            tool_default("CC", "clang");
 #else
             cc_cmd = "gcc";
-            out << "CC = gcc\n";
+            tool_default("CC", "gcc");
+#endif
+        }
+        if (config.config_type == "StaticLibrary") tool_default("AR", "ar");
+        if (links_binary && symbols != MakefileSymbols::Embedded) out << "STRIP ?= strip\n";
+        if (links_binary && symbols == MakefileSymbols::Separate) {
+#ifdef __APPLE__
+            out << "DSYMUTIL ?= dsymutil\n";
+#else
+            out << "OBJCOPY ?= objcopy\n";
 #endif
         }
     }
@@ -2109,13 +2151,13 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "endif\n";
     }
     if (has_cpp_files || has_objcxx_files) {
-        out << "CXXFLAGS = " << cxxflags << "\n";
+        out << "SIGHMAKE_CXXFLAGS = " << cxxflags << "\n";
     }
     if (has_c_files) {
-        out << "CFLAGS = " << cflags << "\n";
+        out << "SIGHMAKE_CFLAGS = " << cflags << "\n";
     }
     if (has_objcxx_files) {
-        out << "OBJCXXFLAGS = $(CXXFLAGS)";
+        out << "SIGHMAKE_OBJCXXFLAGS = $(SIGHMAKE_CXXFLAGS)";
         if (!config.cl_compile.objcxx_flags.empty()) {
             out << " " << config.cl_compile.objcxx_flags;
         }
@@ -2143,10 +2185,10 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     }
 
     if (!ldflags.empty()) {
-        out << "LDFLAGS = " << ldflags << "\n";
+        out << "SIGHMAKE_LDFLAGS = " << ldflags << "\n";
     }
     if (!ldlibs.empty()) {
-        out << "LDLIBS = " << ldlibs << "\n";
+        out << "SIGHMAKE_LDLIBS = " << ldlibs << "\n";
     }
     if (!dep_archives.empty()) {
         out << "PROJECT_DEPS =";
@@ -2310,6 +2352,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                     (config.config_type == "DynamicLibrary" ? " " + shared_link_flags : "") + " " + ldflags +
                     (android ? " $(ANDROID_LINK_FLAGS)" : "") + " " + ldlibs;
             }
+            if (symbols == MakefileSymbols::Separate && config.config_type != "StaticLibrary") link_text += " [debug_symbols=separate]";
             stamps.push_back({"SIGHMAKE_LINK_STAMP", stamp_file("link"), link_text});
         }
 
@@ -2339,15 +2382,43 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         }
         stamps.swap(written);
     }
-    auto stamp_var_for = [&](const std::string& e) -> const char* {
+    // Stamps for the flags the user supplies at make time (CPPFLAGS/CXXFLAGS/CFLAGS/LDFLAGS/LDLIBS
+    // and the toolchain variables). They cannot be written at generation time, so each is a file
+    // that make rewrites, through a phony rule, only when the effective text differs from the one
+    // stored: its mtime changes exactly when the user's flags changed.
+    struct UserStampDef { std::string var; std::string file; std::string text; };
+    std::vector<UserStampDef> user_stamps;
+    {
+        std::string cfg_tag;
+        for (char ch : config_key) cfg_tag += std::isalnum(static_cast<unsigned char>(ch)) ? ch : '-';
+        auto add = [&](const char* lang, const std::string& var, const std::string& text) {
+            user_stamps.push_back({var, std::string("sighmake-") + lang + "." + cfg_tag + ".user", text});
+        };
+        if (stamp_cxx || stamp_objcxx || (has_pch && !pch_header_path.empty()))
+            add("cxx", "SIGHMAKE_CXX_USTAMP", "$(CXX) $(CPPFLAGS) $(CXXFLAGS)");
+        if (stamp_c) add("c", "SIGHMAKE_C_USTAMP", "$(CC) $(CPPFLAGS) $(CFLAGS)");
+        if (stamp_link) {
+            if (config.config_type == "StaticLibrary") add("link", "SIGHMAKE_LINK_USTAMP", "$(AR)");
+            else add("link", "SIGHMAKE_LINK_USTAMP", std::string(links_with_cxx ? "$(CXX)" : "$(CC)") + " $(LDFLAGS) $(LDLIBS)");
+        }
+    }
+    auto user_stamp_var_for = [&](const char* var) -> std::string {
+        for (const auto& st : user_stamps) if (st.var == var) return std::string(" $(") + var + ")";
+        return "";
+    };
+    auto stamp_var_for = [&](const std::string& e) -> std::string {
+        std::string result;
         for (const auto& st : stamps) {
             std::string v = st.var;
-            if (file_types::is_cpp_source(e) && v == "SIGHMAKE_CXX_STAMP") return "$(SIGHMAKE_CXX_STAMP)";
-            if (file_types::is_c_source(e) && v == "SIGHMAKE_C_STAMP") return "$(SIGHMAKE_C_STAMP)";
-            if (file_types::is_objcxx_source(e) && v == "SIGHMAKE_OBJCXX_STAMP") return "$(SIGHMAKE_OBJCXX_STAMP)";
-            if ((e == ".asm" || e == ".nasm") && v == "SIGHMAKE_NASM_STAMP") return "$(SIGHMAKE_NASM_STAMP)";
+            if (file_types::is_cpp_source(e) && v == "SIGHMAKE_CXX_STAMP") result = "$(SIGHMAKE_CXX_STAMP)";
+            if (file_types::is_c_source(e) && v == "SIGHMAKE_C_STAMP") result = "$(SIGHMAKE_C_STAMP)";
+            if (file_types::is_objcxx_source(e) && v == "SIGHMAKE_OBJCXX_STAMP") result = "$(SIGHMAKE_OBJCXX_STAMP)";
+            if ((e == ".asm" || e == ".nasm") && v == "SIGHMAKE_NASM_STAMP") result = "$(SIGHMAKE_NASM_STAMP)";
         }
-        return "";
+        if (file_types::is_cpp_source(e) || file_types::is_objcxx_source(e)) result += user_stamp_var_for("SIGHMAKE_CXX_USTAMP");
+        if (file_types::is_c_source(e)) result += user_stamp_var_for("SIGHMAKE_C_USTAMP");
+        if (!result.empty() && result.front() == ' ') result.erase(0, 1);
+        return result;
     };
     const bool link_stamped = std::any_of(stamps.begin(), stamps.end(),
         [](const StampDef& st) { return std::string(st.var) == "SIGHMAKE_LINK_STAMP"; });
@@ -2357,6 +2428,18 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "# Command-line stamps (written by sighmake at generation time when flags change)\n";
         for (const auto& st : stamps) {
             out << st.var << " = $(OBJ_DIR)" << st.file << "\n";
+        }
+        out << "\n";
+    }
+
+    if (!user_stamps.empty()) {
+        out << "# Stamps for the user's flags (rewritten by make when CPPFLAGS/CXXFLAGS/CFLAGS/LDFLAGS/LDLIBS or the toolchain change)\n";
+        for (const auto& st : user_stamps) {
+            out << st.var << " = $(OBJ_DIR)" << st.file << "\n";
+            out << st.var << "_TEXT := " << st.text << "\n";
+            out << "ifneq ($(strip $(shell cat $(" << st.var << ") 2>/dev/null)),$(strip $(" << st.var << "_TEXT)))\n";
+            out << ".PHONY: $(" << st.var << ")\n";
+            out << "endif\n";
         }
         out << "\n";
     }
@@ -2406,13 +2489,21 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             out << "$(TARGET): $(SIGHMAKE_LINK_STAMP)\n\n";
         }
     }
+    for (const auto& st : user_stamps) {
+        out << "$(" << st.var << "):\n";
+        out << "\t@" << mkdir_target_dir << " && printf '%s\\n' '$(subst ','\\'',$(" << st.var << "_TEXT))' > " << at_arg << "\n\n";
+    }
+    if (!user_stamp_var_for("SIGHMAKE_LINK_USTAMP").empty()) {
+        out << "$(TARGET):" << user_stamp_var_for("SIGHMAKE_LINK_USTAMP") << "\n\n";
+    }
 
     // PCH compilation rule
     if (has_pch && !pch_header_path.empty()) {
         out << "# Precompiled header compilation\n";
-        out << "$(PCH_OUTPUT): $(PCH_HEADER)" << (cxx_stamped ? " $(SIGHMAKE_CXX_STAMP)" : "") << "\n";
+        out << "$(PCH_OUTPUT): $(PCH_HEADER)" << (cxx_stamped ? " $(SIGHMAKE_CXX_STAMP)" : "")
+            << user_stamp_var_for("SIGHMAKE_CXX_USTAMP") << "\n";
         out << "\t@" << mkdir_target_dir << "\n";
-        out << "\t$(CXX) $(CXXFLAGS) -x c++-header -MMD -MP -MF " << (spaced ? "\"$@.d\"" : "$@.d")
+        out << "\t$(CXX) $(SIGHMAKE_CXXFLAGS) $(CPPFLAGS) $(CXXFLAGS) -x c++-header -MMD -MP -MF " << (spaced ? "\"$@.d\"" : "$@.d")
             << " -o " << at_arg << " \"$<\"\n\n";
     }
 
@@ -2447,15 +2538,15 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         std::string compiler = links_with_cxx ? "$(CXX)" : "$(CC)";
 #ifdef __APPLE__
         // ld64 resolves static archives regardless of their order on the command line.
-        const char* ldlibs = "$(LDLIBS)";
+        const char* ldlibs = "$(SIGHMAKE_LDLIBS) $(LDLIBS)";
 #else
         // GNU ld and lld scan each static archive once, in order; a group rescans them until no
         // new symbols resolve, so dependency order between archives does not matter.
-        const char* ldlibs = "-Wl,--start-group $(LDLIBS) -Wl,--end-group";
+        const char* ldlibs = "-Wl,--start-group $(SIGHMAKE_LDLIBS) -Wl,--end-group $(LDLIBS)";
 #endif
         if (android) {
             // The Android toolchain is lld/GNU style whatever the host is: always group archives.
-            ldlibs = "-Wl,--start-group $(LDLIBS) -Wl,--end-group";
+            ldlibs = "-Wl,--start-group $(SIGHMAKE_LDLIBS) -Wl,--end-group $(LDLIBS)";
             // Objects and libraries go through a response file (GNU make writes it while it expands
             // the recipe, so the output directory is created in the same step): link lines of
             // large projects exceed the Windows command-line limit. Shared libraries get a
@@ -2464,15 +2555,15 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             out << "\t$(shell mkdir -p $(dir $@))$(file >$@.rsp,$(OBJS) " << ldlibs << ")\n";
             if (config.config_type == "DynamicLibrary") {
                 out << "\t" << compiler << " " << shared_link_flags
-                    << " -Wl,-soname,$(notdir $@) $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp\n";
+                    << " -Wl,-soname,$(notdir $@) $(SIGHMAKE_LDFLAGS) $(ANDROID_LINK_FLAGS) $(LDFLAGS) -o $@ @$@.rsp\n";
             } else {
-                out << "\t" << compiler << " $(LDFLAGS) $(ANDROID_LINK_FLAGS) -o $@ @$@.rsp\n";
+                out << "\t" << compiler << " $(SIGHMAKE_LDFLAGS) $(ANDROID_LINK_FLAGS) $(LDFLAGS) -o $@ @$@.rsp\n";
             }
             out << "\t@rm -f $@.rsp\n";
         } else if (config.config_type == "DynamicLibrary") {
-            out << "\t" << compiler << " " << shared_link_flags << " $(LDFLAGS) -o " << at_arg << " $(OBJS) " << ldlibs << "\n";
+            out << "\t" << compiler << " " << shared_link_flags << " $(SIGHMAKE_LDFLAGS) $(LDFLAGS) -o " << at_arg << " $(OBJS) " << ldlibs << "\n";
         } else {
-            out << "\t" << compiler << " $(LDFLAGS) -o " << at_arg << " $(OBJS) " << ldlibs << "\n";
+            out << "\t" << compiler << " $(SIGHMAKE_LDFLAGS) $(LDFLAGS) -o " << at_arg << " $(OBJS) " << ldlibs << "\n";
         }
     } else if (config.config_type == "StaticLibrary") {
         // Create static library (Android uses the NDK's llvm-ar via $(AR))
@@ -2487,28 +2578,43 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             out << "\t$(AR) rcs $@ @$@.rsp\n";
             out << "\t@rm -f $@.rsp\n";
         } else {
-            out << "\tar rcs " << at_arg << " $(OBJS)\n";
+            out << "\t$(AR) rcs " << at_arg << " $(OBJS)\n";
         }
     }
 
-    // Strip symbols from executables and shared libraries (`strip`, default Release only).
-    // On Linux, debug symbols are embedded in the binary unlike Windows .pdb files
+    // Symbols of executables and shared libraries: stripped after linking (`strip`, default Release
+    // only), or split into a separate file (debug_symbols = separate). Embedded symbols stay.
+    // Linux: <binary>.debug linked with a .gnu_debuglink section; macOS: <binary>.dSYM.
     if (config.config_type == "Application" || config.config_type == "DynamicLibrary" || config.config_type == "Driver") {
-        if (makefile_strips_outputs(config, parse_config_key(config_key).first)) {
+        const bool dylib = config.config_type == "DynamicLibrary";
+        if (symbols == MakefileSymbols::None) {
             if (android) {
                 // Host strip can't handle Android ELF binaries; use the NDK's llvm-strip
                 out << "\t$(STRIP) --strip-unneeded " << at_arg << "\n";
             } else {
 #ifdef __APPLE__
-                if (config.config_type == "DynamicLibrary") {
-                    out << "\tstrip -x " << at_arg << "\n";
-                } else {
-                    out << "\tstrip " << at_arg << "\n";
-                }
+                out << "\t$(STRIP) " << (dylib ? "-x " : "") << at_arg << "\n";
 #else
-                out << "\tstrip " << at_arg << "\n";
+                out << "\t$(STRIP) " << at_arg << "\n";
 #endif
             }
+        } else if (symbols == MakefileSymbols::Separate) {
+            const std::string debug_arg = spaced ? "\"$@.debug\"" : "$@.debug";
+            auto split_with_objcopy = [&]() {
+                out << "\t$(OBJCOPY) --only-keep-debug " << at_arg << " " << debug_arg << "\n";
+                out << "\t$(STRIP) --strip-unneeded " << at_arg << "\n";
+                out << "\t$(OBJCOPY) --add-gnu-debuglink=" << debug_arg << " " << at_arg << "\n";
+            };
+#ifdef __APPLE__
+            if (android) {
+                split_with_objcopy();
+            } else {
+                out << "\t$(DSYMUTIL) " << at_arg << " -o " << (spaced ? "\"$@.dSYM\"" : "$@.dSYM") << "\n";
+                out << "\t$(STRIP) " << (dylib ? "-x " : "") << at_arg << "\n";
+            }
+#else
+            split_with_objcopy();
+#endif
         }
     }
 
@@ -2562,16 +2668,20 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
         std::string compiler;
         std::string flags;
+        std::string user_flags;  // The user's (environment/command line) flags go last
         bool is_nasm = false;
         if (file_types::is_cpp_source(ext)) {
             compiler = "$(CXX)";
-            flags = "$(CXXFLAGS)";
+            flags = "$(SIGHMAKE_CXXFLAGS)";
+            user_flags = " $(CPPFLAGS) $(CXXFLAGS)";
         } else if (file_types::is_c_source(ext)) {
             compiler = "$(CC)";
-            flags = "$(CFLAGS)";
+            flags = "$(SIGHMAKE_CFLAGS)";
+            user_flags = " $(CPPFLAGS) $(CFLAGS)";
         } else if (file_types::is_objcxx_source(ext)) {
             compiler = "$(CXX)";
-            flags = "$(OBJCXXFLAGS)";
+            flags = "$(SIGHMAKE_OBJCXXFLAGS)";
+            user_flags = " $(CPPFLAGS) $(CXXFLAGS)";
         } else if (ext == ".asm" || ext == ".nasm") {
             compiler = "$(NASM)";
             flags = "$(NASMFLAGS)";
@@ -2600,7 +2710,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                 out << " -include \"" << pch_include_base << "\"";
             }
 
-            out << " -MMD -MP -c -o " << at_arg << " " << recipe_source_arg(src) << "\n\n";
+            out << user_flags << " -MMD -MP -c -o " << at_arg << " " << recipe_source_arg(src) << "\n\n";
         }
     }
 
@@ -2610,6 +2720,9 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "\trm -rf $(OBJ_DIR) $(TARGET) $(PCH_OUTPUT)";
     } else {
         out << "\trm -rf $(OBJ_DIR) $(TARGET)";
+    }
+    if (symbols == MakefileSymbols::Separate && links_binary) {
+        out << (has_space(out_dir) ? " \"$(TARGET).debug\" \"$(TARGET).dSYM\"" : " $(TARGET).debug $(TARGET).dSYM");
     }
     if (emits_target_receipt) out << (has_space(out_dir) ? " \"$(SIGHMAKE_TARGET_RECEIPT)\"" : " $(SIGHMAKE_TARGET_RECEIPT)");
     out << "\n\n";
@@ -2819,9 +2932,15 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
     }
     out << "# Clean all:               make clean\n";
     out << "# Install:                 sudo make install\n";
-    out << "# Install to custom dir:   make install PREFIX=/opt/myapp\n\n";
+    out << "# Install to custom dir:   make install PREFIX=/opt/myapp\n";
+    out << "# Staged install:          make install DESTDIR=/tmp/stage\n";
+    out << "# Install stripped:        make install-strip\n\n";
 
-    out << "PREFIX ?= /usr/local\n\n";
+    out << "PREFIX ?= $(or $(prefix),/usr/local)\n";
+    out << "BINDIR ?= $(or $(bindir),$(PREFIX)/bin)\n";
+    out << "LIBDIR ?= $(or $(libdir),$(PREFIX)/lib)\n";
+    out << "INSTALL ?= install\n";
+    out << "STRIP ?= strip\n\n";
 
     // Probe for a working Python once and hand it to every per-project makefile (they only probe
     // themselves when PYTHON is not already set), instead of once per project.
@@ -2840,7 +2959,7 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
     }
 
     // .PHONY targets
-    out << ".PHONY: all clean install uninstall";
+    out << ".PHONY: all clean install install-strip uninstall";
     for (const auto& cfg : configs) {
         out << " " << cfg;
     }
@@ -3011,27 +3130,42 @@ bool MakefileGenerator::generate_master_makefile(const Solution& solution, const
         if (!exe_targets.empty() || !lib_targets.empty()) {
             out << "install: " << install_config << "\n";
             if (!exe_targets.empty()) {
-                out << "\tinstall -d \"$(DESTDIR)$(PREFIX)/bin\"\n";
+                out << "\t$(INSTALL) -d \"$(DESTDIR)$(BINDIR)\"\n";
                 for (const auto& t : exe_targets) {
-                    out << "\tinstall -m 755 " << shell_quote_if_needed(t.binary_path)
-                        << " \"$(DESTDIR)$(PREFIX)/bin/" << shell_escape_in_quotes(t.name) << "\"\n";
+                    out << "\t$(INSTALL) -m 755 " << shell_quote_if_needed(t.binary_path)
+                        << " \"$(DESTDIR)$(BINDIR)/" << shell_escape_in_quotes(t.name) << "\"\n";
                 }
             }
             if (!lib_targets.empty()) {
-                out << "\tinstall -d \"$(DESTDIR)$(PREFIX)/lib\"\n";
+                out << "\t$(INSTALL) -d \"$(DESTDIR)$(LIBDIR)\"\n";
                 for (const auto& t : lib_targets) {
-                    out << "\tinstall -m 755 " << shell_quote_if_needed(t.binary_path)
-                        << " \"$(DESTDIR)$(PREFIX)/lib/" << shell_escape_in_quotes(t.name) << "\"\n";
+                    out << "\t$(INSTALL) -m 755 " << shell_quote_if_needed(t.binary_path)
+                        << " \"$(DESTDIR)$(LIBDIR)/" << shell_escape_in_quotes(t.name) << "\"\n";
                 }
+            }
+            out << "\n";
+
+            // GNU install-strip: the same installation, then the installed copies are stripped
+            // (meaningful for configurations that are not stripped at link time).
+            out << "install-strip: install\n";
+            for (const auto& t : exe_targets) {
+                out << "\t$(STRIP) \"$(DESTDIR)$(BINDIR)/" << shell_escape_in_quotes(t.name) << "\"\n";
+            }
+            for (const auto& t : lib_targets) {
+#ifdef __APPLE__
+                out << "\t$(STRIP) -x \"$(DESTDIR)$(LIBDIR)/" << shell_escape_in_quotes(t.name) << "\"\n";
+#else
+                out << "\t$(STRIP) --strip-unneeded \"$(DESTDIR)$(LIBDIR)/" << shell_escape_in_quotes(t.name) << "\"\n";
+#endif
             }
             out << "\n";
 
             out << "uninstall:\n";
             for (const auto& t : exe_targets) {
-                out << "\trm -f \"$(DESTDIR)$(PREFIX)/bin/" << shell_escape_in_quotes(t.name) << "\"\n";
+                out << "\trm -f \"$(DESTDIR)$(BINDIR)/" << shell_escape_in_quotes(t.name) << "\"\n";
             }
             for (const auto& t : lib_targets) {
-                out << "\trm -f \"$(DESTDIR)$(PREFIX)/lib/" << shell_escape_in_quotes(t.name) << "\"\n";
+                out << "\trm -f \"$(DESTDIR)$(LIBDIR)/" << shell_escape_in_quotes(t.name) << "\"\n";
             }
             out << "\n";
         }
