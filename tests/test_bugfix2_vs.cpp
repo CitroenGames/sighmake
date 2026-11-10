@@ -101,3 +101,50 @@ TEST_CASE("vcxproj reader: ResourceCompile %(PreprocessorDefinitions) is not rep
           std::vector<std::string>{"RC_ONLY"});
 }
 
+TEST_CASE("VPC: $Folder sets the filter of the files it contains", "[bugfix2_vs]") {
+    VpcParser parser;
+    auto sol = parser.parse_string(R"(
+$Project "App"
+{
+    $Folder "Source Files"
+    {
+        $File "main.cpp"
+        $Folder "Sub"
+        {
+            $File "deep.cpp"
+        }
+    }
+    $File "root.cpp"
+}
+)");
+    REQUIRE(sol.projects.size() == 1);
+    std::map<std::string, std::string> filters;
+    for (const auto& s : sol.projects[0].sources) filters[fs::path(s.path).filename().string()] = s.filter;
+    CHECK(filters["main.cpp"] == "Source Files");
+    CHECK(filters["deep.cpp"] == "Source Files/Sub");
+    CHECK(filters["root.cpp"] == "");
+}
+
+TEST_CASE("vcproj reader: MIDL DefaultCharType Ascii maps to a valid value", "[bugfix2_vs]") {
+    // VCProjectEngine midlCharOption: 0 = unsigned, 1 = signed, 2 = ascii7.
+    Bugfix2VsTempDir dir("vcproj_midl_char");
+    bugfix2_vs_write_file(dir.path / "App.vcproj", R"(<?xml version="1.0" encoding="Windows-1252"?>
+<VisualStudioProject ProjectType="Visual C++" Version="9.00" Name="App" ProjectGUID="{11111111-2222-3333-4444-555555555555}">
+  <Configurations>
+    <Configuration Name="Debug|Win32" ConfigurationType="1">
+      <Tool Name="VCMIDLTool" DefaultCharType="2"/>
+    </Configuration>
+    <Configuration Name="Release|Win32" ConfigurationType="1">
+      <Tool Name="VCMIDLTool" DefaultCharType="1"/>
+    </Configuration>
+  </Configurations>
+  <Files/>
+</VisualStudioProject>
+)");
+    VcprojReader reader;
+    Project project = reader.read_vcproj((dir.path / "App.vcproj").string());
+    REQUIRE(project.configurations.count("Debug|Win32"));
+    CHECK(project.configurations.at("Debug|Win32").midl.default_char_type == "Ascii");
+    CHECK(project.configurations.at("Release|Win32").midl.default_char_type == "Signed");
+}
+
