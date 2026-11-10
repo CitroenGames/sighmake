@@ -292,6 +292,17 @@ std::string sanitize_object_stem(const std::string& source_identity) {
     return result + ".o";
 }
 
+// A path written as a make target or prerequisite: spaces are escaped so make keeps it one word.
+// Recipes refer to such files through quoted automatic variables ("$<").
+std::string make_escape_spaces(const std::string& path) {
+    std::string result;
+    for (char c : path) {
+        if (c == ' ') result += '\\';
+        result += c;
+    }
+    return result;
+}
+
 bool has_extension_case_insensitive(const std::string& path, const std::string& ext) {
     if (path.size() < ext.size()) {
         return false;
@@ -2101,7 +2112,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
 
         // Write PCH variables
         out << "# Precompiled header\n";
-        out << "PCH_HEADER = " << pch_header_path << "\n";
+        out << "PCH_HEADER = " << make_escape_spaces(pch_header_path) << "\n";
         out << "PCH_OUTPUT = " << pch_output_path << "\n\n";
     }
 
@@ -2313,7 +2324,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "# Precompiled header compilation\n";
         out << "$(PCH_OUTPUT): $(PCH_HEADER)" << (cxx_stamped ? " $(SIGHMAKE_CXX_STAMP)" : "") << "\n";
         out << "\t@mkdir -p $(dir $@)\n";
-        out << "\t$(CXX) $(CXXFLAGS) -x c++-header -o $@ $<\n\n";
+        out << "\t$(CXX) $(CXXFLAGS) -x c++-header -o $@ \"$<\"\n\n";
     }
 
     // Link rule
@@ -2481,7 +2492,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         }
 
         // Write dependency line - add PCH dependency if file uses it
-        out << obj << ": " << src;
+        out << obj << ": " << make_escape_spaces(src);
         if (!is_nasm && uses_pch && has_pch) {
             out << " $(PCH_OUTPUT)";
         }
@@ -2491,7 +2502,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         out << "\t@mkdir -p $(dir $@)\n";
 
         if (is_nasm) {
-            out << "\t" << compiler << " " << flags << " -o $@ $<\n\n";
+            out << "\t" << compiler << " " << flags << " -o $@ \"$<\"\n\n";
         } else {
             out << "\t" << compiler << " " << flags << source_extra_flags[i];
 
@@ -2500,7 +2511,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                 out << " -include \"" << pch_include_base << "\"";
             }
 
-            out << " -MMD -MP -c -o $@ $<\n\n";
+            out << " -MMD -MP -c -o $@ \"$<\"\n\n";
         }
     }
 

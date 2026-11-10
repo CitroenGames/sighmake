@@ -233,3 +233,25 @@ sources = main.cpp
     CHECK(fs::exists(p.dir / "dest" / "usr" / "local" / "bin" / "App"));
 #endif
 }
+
+TEST_CASE("Makefile builds sources whose path contains spaces", "[bugfix_make]") {
+    BugfixMakeProject p("source_spaces", R"(
+[solution]
+name = Sp
+configurations = Debug
+platforms = Linux
+
+[project:App]
+type = exe
+outdir = bin
+intdir = obj/App
+sources = my src/main.cpp
+)", {{"my src/main.cpp", "int main() { return 0; }\n"}});
+    REQUIRE(p.generated);
+    const std::string mk = p.makefile("App.Debug");
+    CHECK(mk.find(": ../my\\ src/main.cpp") != std::string::npos);
+#ifndef _WIN32
+    CHECK(p.make("App.Debug") == 0);
+    CHECK(fs::exists(p.dir / "bin" / "App"));
+#endif
+}
