@@ -114,3 +114,28 @@ gen.in:outputs = gen.out
     CHECK(c.find("$<$<CONFIG:Release>:rel>") != std::string::npos);
 }
 
+TEST_CASE("bugfix2_cmake: debug/optimized/general keywords scope the following library",
+          "[bugfix2_cmake]") {
+    CMakeParser parser;
+    auto sol = parser.parse_string(R"(
+project(T)
+add_executable(App main.cpp)
+target_link_libraries(App PRIVATE debug dbgonly optimized optonly general both plain)
+)");
+    auto* p = find_project(sol, "App");
+    REQUIRE(p != nullptr);
+    const auto& dbg = p->configurations.at("Debug|x64").link.additional_dependencies;
+    const auto& rel = p->configurations.at("Release|x64").link.additional_dependencies;
+    CHECK_FALSE(contains(dbg, "debug.lib"));
+    CHECK_FALSE(contains(rel, "optimized.lib"));
+    CHECK_FALSE(contains(rel, "general.lib"));
+    CHECK(contains(dbg, "dbgonly.lib"));
+    CHECK_FALSE(contains(rel, "dbgonly.lib"));
+    CHECK(contains(rel, "optonly.lib"));
+    CHECK_FALSE(contains(dbg, "optonly.lib"));
+    CHECK(contains(dbg, "both.lib"));
+    CHECK(contains(rel, "both.lib"));
+    CHECK(contains(dbg, "plain.lib"));
+    CHECK(contains(rel, "plain.lib"));
+}
+
