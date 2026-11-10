@@ -19,6 +19,7 @@ private:
     enum class TokenType {
         Identifier,
         String,
+        Bracket,        // [[...]] argument: verbatim, no variable references
         OpenParen,
         CloseParen,
         VariableReference,

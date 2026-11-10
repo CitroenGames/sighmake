@@ -281,6 +281,27 @@ std::vector<CMakeParser::Token> CMakeParser::tokenize(const std::string& content
     size_t pos = 0;
     int line = 1;
 
+    // Bracket opener "[" "="* "[" at `at`: returns the number of '=' or -1
+    auto bracket_open = [&](size_t at) -> int {
+        if (at >= content.size() || content[at] != '[') return -1;
+        size_t k = at + 1;
+        while (k < content.size() && content[k] == '=') k++;
+        if (k < content.size() && content[k] == '[') return static_cast<int>(k - at - 1);
+        return -1;
+    };
+    // Reads a bracket block starting at pos (which holds the opener); returns its content
+    auto read_bracket = [&](int eq) {
+        pos += eq + 2;
+        if (pos < content.size() && content[pos] == '\n') { line++; pos++; }
+        std::string closer = "]" + std::string(eq, '=') + "]";
+        size_t end = content.find(closer, pos);
+        if (end == std::string::npos) end = content.size();
+        std::string value = content.substr(pos, end - pos);
+        line += static_cast<int>(std::count(value.begin(), value.end(), '\n'));
+        pos = std::min(content.size(), end + closer.size());
+        return value;
+    };
+
     while (pos < content.size()) {
         char c = content[pos];
 
@@ -291,10 +312,24 @@ std::vector<CMakeParser::Token> CMakeParser::tokenize(const std::string& content
         }
 
         if (c == '#') {
+            int eq = bracket_open(pos + 1);
+            if (eq >= 0) {
+                // Bracket comment #[[ ... ]]
+                pos++;
+                read_bracket(eq);
+                continue;
+            }
             // Comment
             while (pos < content.size() && content[pos] != '\n') {
                 pos++;
             }
+            continue;
+        }
+
+        if (int eq = bracket_open(pos); eq >= 0) {
+            // Bracket argument [[ ... ]]: verbatim, no escapes or variable references
+            std::string value = read_bracket(eq);
+            tokens.push_back({TokenType::Bracket, value, line});
             continue;
         }
 
@@ -309,8 +344,25 @@ std::vector<CMakeParser::Token> CMakeParser::tokenize(const std::string& content
             std::string value;
             pos++; // skip opening quote
             while (pos < content.size()) {
-                if (content[pos] == '"' && (pos == 0 || content[pos-1] != '\\')) {
+                if (content[pos] == '"') {
                     break;
+                }
+                if (content[pos] == '\\' && pos + 1 < content.size()) {
+                    char next = content[pos + 1];
+                    if (next == '\n') {
+                        // Line continuation
+                        line++;
+                        pos += 2;
+                        continue;
+                    }
+                    if (next == 'n' || next == 't' || next == 'r' || next == '\\' || next == '"' ||
+                        next == '(' || next == ')' || next == '#' || next == ' ') {
+                        value += next == 'n' ? '\n' : next == 't' ? '\t' : next == 'r' ? '\r' : next;
+                        pos += 2;
+                        continue;
+                    }
+                    // \; and \$ stay as written
+                    value += content[pos++];
                 }
                 value += content[pos];
                 if (content[pos] == '\n') line++;
@@ -1772,6 +1824,8 @@ void CMakeParser::execute_tokens(const std::vector<Token>& tokens, size_t& i, Pa
                         // Resolve variables in arguments
                         std::string arg = resolve_variables(tokens[i].value, state);
                         args.push_back(arg);
+                    } else if (tokens[i].type == TokenType::Bracket) {
+                        args.push_back(tokens[i].value);
                     }
                     i++;
                 }
@@ -2012,6 +2066,8 @@ void CMakeParser::handle_if(const std::vector<std::string>& args, size_t& i, con
                          while (i < tokens.size() && tokens[i].type != TokenType::CloseParen) {
                             if (tokens[i].type == TokenType::String || tokens[i].type == TokenType::Identifier) {
                                 elseif_args.push_back(resolve_variables(tokens[i].value, state));
+                            } else if (tokens[i].type == TokenType::Bracket) {
+                                elseif_args.push_back(tokens[i].value);
                             }
                             i++;
                          }

@@ -117,3 +117,51 @@ target_compile_definitions(App PRIVATE $<$<CONFIG:debug>:LOWER> $<$<CONFIG:Foo,R
     CHECK(config_has_define(p, "Release|x64", "LISTED"));
     CHECK_FALSE(config_has_define(p, "Debug|x64", "LISTED"));
 }
+
+// ============================================================================
+// CMake reader: tokenizer
+// ============================================================================
+
+TEST_CASE("bugfix_cmake: bracket comments are skipped entirely", "[bugfix_cmake]") {
+    CMakeParser parser;
+    auto sol = parser.parse_string(R"(
+project(T)
+#[[ disabled:
+add_executable(Ghost ghost.cpp)
+]]
+#[==[ also disabled ]] still comment
+add_library(Ghost2 ghost2.cpp)
+]==]
+add_executable(App main.cpp)
+)");
+    CHECK(find_project(sol, "Ghost") == nullptr);
+    CHECK(find_project(sol, "Ghost2") == nullptr);
+    CHECK(find_project(sol, "App") != nullptr);
+}
+
+TEST_CASE("bugfix_cmake: bracket arguments are read verbatim as one argument", "[bugfix_cmake]") {
+    CMakeParser parser;
+    auto sol = parser.parse_string(R"(
+project(T)
+add_executable(App main.cpp)
+target_compile_definitions(App PRIVATE [[MSG=a (b) "c"]] [=[X=]]]=])
+)");
+    auto* p = find_project(sol, "App");
+    REQUIRE(p != nullptr);
+    CHECK(contains(p->project_level_preprocessor_definitions, "MSG=a (b) \"c\""));
+    CHECK(contains(p->project_level_preprocessor_definitions, "X=]]"));
+}
+
+TEST_CASE("bugfix_cmake: escape sequences in quoted arguments", "[bugfix_cmake]") {
+    CMakeParser parser;
+    auto sol = parser.parse_string(R"(
+project(T)
+set(DIR "C:\\sdk\\")
+add_executable(App main.cpp)
+target_compile_definitions(App PRIVATE "QUOTED=\"x\"" "D=${DIR}")
+)");
+    auto* p = find_project(sol, "App");
+    REQUIRE(p != nullptr);
+    CHECK(contains(p->project_level_preprocessor_definitions, "QUOTED=\"x\""));
+    CHECK(contains(p->project_level_preprocessor_definitions, "D=C:\\sdk\\"));
+}
