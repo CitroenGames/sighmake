@@ -2048,3 +2048,38 @@ TEST_CASE("MakefileGenerator rebuilds objects and relinks when flags change", "[
     CHECK(fs::exists(app));
 }
 #endif
+
+TEST_CASE("Makefile target receipt metadata carries optional dependency Profiles", "[makefile][receipt]") {
+    std::error_code ec;
+    fs::path temp_dir = fs::temp_directory_path() / "sighmake_receipt_profiles_test";
+    fs::remove_all(temp_dir, ec);
+    fs::create_directories(temp_dir, ec);
+    std::ofstream(temp_dir / "main.cpp") << "int main() { return 0; }";
+
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = Linux
+
+[project:App]
+type = exe
+sources = main.cpp
+runtime_dependencies = Plain|thirdparty/plain.so|plain.so|true
+runtime_dependencies = Loader|thirdparty/loader.so|loader.so||DedicatedServer
+)", temp_dir.string());
+
+    MakefileGenerator gen;
+    REQUIRE(gen.generate(sol, temp_dir.string()));
+
+    const fs::path build_dir = temp_dir / "build";
+    const std::string metadata = read_file(build_dir / "App.runtime-dependencies.txt");
+    CHECK(metadata.find("|plain.so|1\n") != std::string::npos);
+    CHECK(metadata.find("|loader.so|1|DedicatedServer\n") != std::string::npos);
+    const std::string script = read_file(build_dir / "write-sighmake-target-receipt.py");
+    CHECK(script.find("if len(parts) not in (4, 5):") != std::string::npos);
+    CHECK(script.find("entry[\"Profiles\"] = profiles") != std::string::npos);
+
+    fs::remove_all(temp_dir, ec);
+}

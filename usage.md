@@ -1061,7 +1061,13 @@ runtime_dependencies = SDL3|lib/x64/SDL3.dll|SDL3.dll|true
 runtime_dependencies = OptionalCodec|bin/codec.dll|plugins/codec.dll|false
 ```
 
-Each record is `Name|Source|StagePath|Required`. `Source` is resolved relative
+Each record is `Name|Source|StagePath[|Required[|Profiles]]`. `Profiles` is an optional `+`-separated list of
+package profile names (1-32 letters, digits, `_` or `-` each, at most 8, for example `DedicatedServer` or
+`Client+DedicatedServer`; a comma would split the value into separate records); the target receipt then carries `"Profiles": [...]` for that dependency and a packaging
+tool can stage it only for those profiles. Leave `Required` empty to keep its default
+(`Name|Source|StagePath||Client`). A dependency without `Profiles` applies to every profile and its receipt record is
+unchanged. An older sighmake rejects a 5-field entry with a warning and drops it, so a project that uses `Profiles`
+should require a sighmake that supports it. `Source` is resolved relative
 to the buildscript that declares it. Runtime dependencies propagate through the
 complete physical dependency closure, including private static-library edges,
 because link visibility does not change a final process's runtime requirements.

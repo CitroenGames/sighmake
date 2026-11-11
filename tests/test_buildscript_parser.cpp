@@ -3378,3 +3378,48 @@ TEST_CASE("Invalid SIGHMAKE_TARGET_OS falls back to the host", "[target_os]") {
     EnvScope env("SIGHMAKE_TARGET_OS", "plan9");
     CHECK(target_os() == host_os());
 }
+
+TEST_CASE("runtime_dependencies accepts an optional Profiles field", "[buildscript_parser][receipt]") {
+    const fs::path fixture_root = fs::absolute(fs::temp_directory_path() / "ReceiptProfilesFixture");
+    BuildscriptParser parser;
+    auto sol = parser.parse_string(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64
+
+[project:App]
+type = exe
+runtime_dependencies = Plain|lib/plain.dll|plain.dll|true
+runtime_dependencies = Server|lib/loader.dll|loader.dll||DedicatedServer
+runtime_dependencies = Both|lib/both.dll|both.dll|false| Client + DedicatedServer +Client
+runtime_dependencies = BadName|lib/bad.dll|bad.dll|true|has space
+runtime_dependencies = TooLong|lib/long.dll|long.dll|true|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+runtime_dependencies = EmptyItem|lib/empty.dll|empty.dll|true|Client++Server
+runtime_dependencies = SixFields|lib/six.dll|six.dll|true|Client|extra
+)", fixture_root.string());
+    auto* app = find_project(sol, "App");
+    REQUIRE(app != nullptr);
+    // Invalid Profiles lists and a sixth field drop the entry (with a warning), like any malformed runtime_dependencies record.
+    REQUIRE(app->runtime_dependencies.size() == 3);
+    const auto find_dep = [&](const std::string& name) -> const RuntimeDependency* {
+        for (const auto& d : app->runtime_dependencies) if (d.name == name) return &d;
+        return nullptr;
+    };
+    const RuntimeDependency* plain = find_dep("Plain");
+    const RuntimeDependency* server = find_dep("Server");
+    const RuntimeDependency* both = find_dep("Both");
+    REQUIRE(plain != nullptr);
+    REQUIRE(server != nullptr);
+    REQUIRE(both != nullptr);
+    CHECK(plain->profiles.empty());
+    CHECK(plain->required);
+    CHECK(server->required);  // an empty 4th field keeps the default
+    CHECK(server->profiles == std::vector<std::string>{"DedicatedServer"});
+    CHECK_FALSE(both->required);
+    CHECK(both->profiles == std::vector<std::string>{"Client", "DedicatedServer"});  // trimmed, duplicate removed
+    CHECK(find_dep("BadName") == nullptr);
+    CHECK(find_dep("TooLong") == nullptr);
+    CHECK(find_dep("EmptyItem") == nullptr);
+    CHECK(find_dep("SixFields") == nullptr);
+}

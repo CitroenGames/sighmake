@@ -188,6 +188,10 @@ struct RuntimeDependency {
     std::string source;
     std::string stage_path;
     bool required = true;
+    // Optional 5th field of runtime_dependencies: the package profiles this file is staged for (for example
+    // "Client", "DedicatedServer"). Empty = every profile. sighmake only records the names in the target
+    // receipt ("Profiles"); the packaging tool decides what a profile means.
+    std::vector<std::string> profiles;
 };
 
 // Resource compiler settings

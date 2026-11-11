@@ -446,9 +446,10 @@ def main():
                 if not line:
                     continue
                 parts = line.split("|")
-                if len(parts) != 4:
+                if len(parts) not in (4, 5):
                     sys.exit(f"invalid target receipt metadata: {line}")
-                name, source, stage_path, req_str = parts
+                name, source, stage_path, req_str = parts[:4]
+                profiles = parts[4].split(",") if len(parts) == 5 and parts[4].strip() else None
                 required = (req_str == "1")
                 if not os.path.isfile(source):
                     if required:
@@ -461,7 +462,7 @@ def main():
                     })
                     continue
                 size, sha256, unix_mode = file_record(source)
-                runtime.append({
+                entry = {
                     "Name": name,
                     "Source": source,
                     "StagePath": stage_path,
@@ -469,7 +470,10 @@ def main():
                     "Size": size,
                     "SHA256": sha256,
                     "UnixMode": unix_mode
-                })
+                }
+                if profiles:
+                    entry["Profiles"] = profiles
+                runtime.append(entry)
 
     runtime.sort(key=lambda x: (x["StagePath"].lower(), x["Name"].lower(), x["Source"].lower()))
     skipped.sort(key=lambda x: (x["StagePath"].lower(), x["Name"].lower(), x["Source"].lower()))
@@ -623,7 +627,15 @@ try {
             return false;
         }
         metadata << dependency.name << '|' << dependency.source << '|' <<
-            dependency.stage_path << '|' << (dependency.required ? '1' : '0') << '\n';
+            dependency.stage_path << '|' << (dependency.required ? '1' : '0');
+        // The 5th field exists only for a dependency that names profiles, so every other record (and receipt) stays as before.
+        if (!dependency.profiles.empty()) {
+            metadata << '|';
+            for (size_t i = 0; i < dependency.profiles.size(); ++i) {
+                metadata << (i == 0 ? "" : ",") << dependency.profiles[i];
+            }
+        }
+        metadata << '\n';
     }
     return static_cast<bool>(metadata);
 }

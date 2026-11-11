@@ -209,7 +209,7 @@ if (Test-Path -LiteralPath $Metadata -PathType Leaf) {
     foreach ($line in Get-Content -LiteralPath $Metadata) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         $parts = $line.Split('|')
-        if ($parts.Count -ne 4) { throw "invalid target receipt metadata: $line" }
+        if ($parts.Count -ne 4 -and $parts.Count -ne 5) { throw "invalid target receipt metadata: $line" }
         $required = $parts[3] -eq '1'
         if (-not (Test-Path -LiteralPath $parts[1] -PathType Leaf)) {
             if ($required) { throw "required runtime dependency is missing: $($parts[1])" }
@@ -217,7 +217,7 @@ if (Test-Path -LiteralPath $Metadata -PathType Leaf) {
             continue
         }
         $record = New-FileRecord $parts[1]
-        $runtime += [ordered]@{
+        $entry = [ordered]@{
             Name = $parts[0]
             Source = $parts[1]
             StagePath = $parts[2]
@@ -225,6 +225,10 @@ if (Test-Path -LiteralPath $Metadata -PathType Leaf) {
             Size = $record.Size
             SHA256 = $record.SHA256
         }
+        if ($parts.Count -eq 5 -and -not [string]::IsNullOrWhiteSpace($parts[4])) {
+            $entry['Profiles'] = @($parts[4].Split(','))
+        }
+        $runtime += $entry
     }
 }
 
@@ -292,7 +296,15 @@ try {
             return false;
         }
         metadata << dependency.name << '|' << dependency.source << '|' <<
-            dependency.stage_path << '|' << (dependency.required ? '1' : '0') << '\n';
+            dependency.stage_path << '|' << (dependency.required ? '1' : '0');
+        // The 5th field exists only for a dependency that names profiles, so every other record (and receipt) stays as before.
+        if (!dependency.profiles.empty()) {
+            metadata << '|';
+            for (size_t i = 0; i < dependency.profiles.size(); ++i) {
+                metadata << (i == 0 ? "" : ",") << dependency.profiles[i];
+            }
+        }
+        metadata << '\n';
     }
     return static_cast<bool>(metadata);
 }
