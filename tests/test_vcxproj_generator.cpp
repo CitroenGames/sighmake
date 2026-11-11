@@ -2531,3 +2531,28 @@ if(Windows)
     }
     CHECK(runtime_refs == 1);
 }
+
+TEST_CASE("Target receipt metadata carries optional dependency Profiles", "[vcxproj][receipt]") {
+    auto gen = generate_from_buildscript(R"(
+[solution]
+name = Test
+configurations = Release
+platforms = x64
+
+[project:App]
+type = exe
+runtime_dependencies = Plain|thirdparty/plain.dll|plain.dll|true
+runtime_dependencies = Loader|thirdparty/loader.dll|loader.dll||DedicatedServer
+)");
+
+    REQUIRE(fs::exists(gen.vcxproj_path));
+    const fs::path generated = gen.vcxproj_path.parent_path();
+    const std::string metadata = read_file(generated / "App.runtime-dependencies.txt");
+    // A dependency without Profiles keeps the 4-field record (existing receipts stay byte-identical); one with Profiles gets a 5th field.
+    CHECK(metadata.find("|plain.dll|1\n") != std::string::npos);
+    CHECK(metadata.find("|loader.dll|1|DedicatedServer\n") != std::string::npos);
+    const std::string script = read_file(generated / "Write-SighmakeTargetReceipt.ps1");
+    CHECK(script.find("$parts.Count -ne 4 -and $parts.Count -ne 5") != std::string::npos);
+    CHECK(script.find("$entry['Profiles']") != std::string::npos);
+    CHECK(script.find("$parts[4].Split(',')") != std::string::npos);
+}

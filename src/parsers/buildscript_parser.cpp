@@ -129,9 +129,9 @@ static std::optional<RuntimeDependency> parse_runtime_dependency(
     while (std::getline(stream, field, '|')) {
         fields.push_back(field);
     }
-    if (fields.size() < 3 || fields.size() > 4) {
+    if (fields.size() < 3 || fields.size() > 5) {
         std::cerr << "Warning: runtime_dependencies entry requires "
-                     "Name|Source|StagePath[|Required]: " << encoded << "\n";
+                     "Name|Source|StagePath[|Required[|Profiles]]: " << encoded << "\n";
         return std::nullopt;
     }
     RuntimeDependency result;
@@ -141,10 +141,33 @@ static std::optional<RuntimeDependency> parse_runtime_dependency(
         ? fs::path(source).lexically_normal().string()
         : (fs::absolute(fs::path(base_path)) / source).lexically_normal().string();
     result.stage_path = trim(fields[2]);
-    if (fields.size() == 4) {
+    // An empty 4th field keeps the default (required), so a profile list can be given without restating it:
+    // Name|Source|Stage||DedicatedServer
+    if (fields.size() >= 4 && !trim(fields[3]).empty()) {
         const std::string required = to_lower(trim(fields[3]));
         result.required = required != "false" && required != "no" && required != "0" &&
             required != "optional";
+    }
+    if (fields.size() == 5) {
+        // '+'-separated profile names (a comma would split the runtime_dependencies value into separate entries before this
+        // function sees it): 1-32 characters of letters, digits, '_' and '-', at most 8, no duplicates.
+        std::stringstream profile_stream(trim(fields[4]));
+        std::string profile;
+        while (std::getline(profile_stream, profile, '+')) {
+            profile = trim(profile);
+            const bool name_ok = !profile.empty() && profile.size() <= 32 &&
+                std::all_of(profile.begin(), profile.end(), [](unsigned char c) {
+                    return std::isalnum(c) || c == '_' || c == '-';
+                });
+            if (!name_ok || result.profiles.size() >= 8) {
+                std::cerr << "Warning: runtime_dependencies entry has an invalid Profiles list "
+                             "(1-32 letters, digits, '_' or '-' each, at most 8): " << encoded << "\n";
+                return std::nullopt;
+            }
+            if (std::find(result.profiles.begin(), result.profiles.end(), profile) == result.profiles.end()) {
+                result.profiles.push_back(profile);
+            }
+        }
     }
     if (result.name.empty() || source.empty() || result.stage_path.empty()) {
         std::cerr << "Warning: runtime_dependencies entry has an empty field: " << encoded << "\n";
