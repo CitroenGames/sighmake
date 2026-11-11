@@ -2532,7 +2532,7 @@ if(Windows)
     CHECK(runtime_refs == 1);
 }
 
-TEST_CASE("Target receipt metadata carries optional dependency Profiles", "[vcxproj][receipt]") {
+TEST_CASE("Target receipt metadata carries optional dependency Profiles", "[vcxproj_generator][receipt]") {
     auto gen = generate_from_buildscript(R"(
 [solution]
 name = Test
