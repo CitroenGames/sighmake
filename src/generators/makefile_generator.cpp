@@ -1916,6 +1916,12 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             out << "endif\n";
         }
     } else {
+#ifdef __APPLE__
+        // Solution-wide minimum macOS (solution key macos_deployment_target): clang reads MACOSX_DEPLOYMENT_TARGET for every
+        // compile and link when no -mmacosx-version-min is on the command line.
+        if (!solution.macos_deployment_target.empty())
+            out << "export MACOSX_DEPLOYMENT_TARGET := " << solution.macos_deployment_target << "\n";
+#endif
         if (links_with_cxx && !solution.cxx_compiler.empty()) {
             cxx_cmd = solution.cxx_compiler;
             tool_default("CXX", solution.cxx_compiler);
@@ -2344,6 +2350,13 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         (has_pch && !pch_include_base.empty()) ? (" -include \"" + pch_include_base + "\"") : "";
     struct StampDef { const char* var; std::string file; std::string text; };
     std::vector<StampDef> stamps;
+    // The exported deployment target changes the generated code without changing a command line: record it in every stamp
+    // so changing it rebuilds the objects and relinks.
+    std::string deployment_stamp;
+#ifdef __APPLE__
+    if (!android && !solution.macos_deployment_target.empty())
+        deployment_stamp = " [macos_deployment_target=" + solution.macos_deployment_target + "]";
+#endif
     {
         // Stamp names carry the configuration so configurations sharing one intermediate
         // directory do not rewrite each other's stamps on every generation.
@@ -2351,9 +2364,9 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         for (char ch : config_key) cfg_tag += std::isalnum(static_cast<unsigned char>(ch)) ? ch : '-';
         auto stamp_file = [&](const char* lang) { return std::string("sighmake-") + lang + "." + cfg_tag + ".flags"; };
         std::string objcxx_extra = config.cl_compile.objcxx_flags.empty() ? "" : " " + config.cl_compile.objcxx_flags;
-        if (stamp_cxx) stamps.push_back({"SIGHMAKE_CXX_STAMP", stamp_file("cxx"), cxx_cmd + " " + cxxflags + pch_stamp_suffix + per_file_cxx});
-        if (stamp_c) stamps.push_back({"SIGHMAKE_C_STAMP", stamp_file("c"), cc_cmd + " " + cflags + pch_stamp_suffix + per_file_c});
-        if (stamp_objcxx) stamps.push_back({"SIGHMAKE_OBJCXX_STAMP", stamp_file("objcxx"), cxx_cmd + " " + cxxflags + objcxx_extra + per_file_objcxx});
+        if (stamp_cxx) stamps.push_back({"SIGHMAKE_CXX_STAMP", stamp_file("cxx"), cxx_cmd + " " + cxxflags + pch_stamp_suffix + per_file_cxx + deployment_stamp});
+        if (stamp_c) stamps.push_back({"SIGHMAKE_C_STAMP", stamp_file("c"), cc_cmd + " " + cflags + pch_stamp_suffix + per_file_c + deployment_stamp});
+        if (stamp_objcxx) stamps.push_back({"SIGHMAKE_OBJCXX_STAMP", stamp_file("objcxx"), cxx_cmd + " " + cxxflags + objcxx_extra + per_file_objcxx + deployment_stamp});
         if (stamp_nasm) stamps.push_back({"SIGHMAKE_NASM_STAMP", stamp_file("nasm"), nasm_cmd + " " + nasmflags_text});
         if (stamp_link) {
             std::string link_text;
@@ -2365,6 +2378,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
                     (android ? " $(ANDROID_LINK_FLAGS)" : "") + " " + ldlibs;
             }
             if (symbols == MakefileSymbols::Separate && config.config_type != "StaticLibrary") link_text += " [debug_symbols=separate]";
+            link_text += deployment_stamp;
             stamps.push_back({"SIGHMAKE_LINK_STAMP", stamp_file("link"), link_text});
         }
 

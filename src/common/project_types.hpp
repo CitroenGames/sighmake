@@ -513,6 +513,10 @@ struct Solution {
     // Host compiler drivers for Makefile output (solution keys `cxx` / `cc`, or --cxx / --cc). Empty = platform default.
     std::string cxx_compiler;
     std::string c_compiler;
+    // Makefile output on Apple hosts (solution key `macos_deployment_target`, e.g. "14.0"): every non-Android configuration
+    // exports MACOSX_DEPLOYMENT_TARGET with this value, so clang compiles and links every Mach-O for that minimum macOS.
+    // An explicit -mmacosx-version-min in a project's flags still wins. Empty = clang's default (the build host's SDK).
+    std::string macos_deployment_target;
 
     // Buildscript variables (-D and find_package) in effect when the solution was parsed. Generators use them to
     // expand ${NAME} / ${NAME:-default} in files they copy, such as a custom android_manifest.

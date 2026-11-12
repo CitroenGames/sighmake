@@ -2113,6 +2113,7 @@ the primary names shown here in hand-written buildscripts.
 | `configurations` | Comma-separated configuration names. |
 | `platforms` | Comma-separated platform names. |
 | `cxx`, `cc` | C++ / C compiler drivers written into Makefiles (`cxx = clang++`, `cc = clang`); `--cxx` / `--cc` override them. |
+| `macos_deployment_target` | Minimum macOS for every Mach-O built from generated Makefiles on a macOS host (`macos_deployment_target = 14.0`): each non-Android configuration exports `MACOSX_DEPLOYMENT_TARGET`, which clang uses for every compile and link (C, C++, Objective-C++), so `otool -l` shows that `minos`. An explicit `-mmacosx-version-min` in a project's flags still wins. The value is recorded in the command-line stamps, so changing it rebuilds. Unset: clang's default, which is the build host's SDK version. Ignored by the Visual Studio generator and on non-Apple hosts. |
 | `defines` | Definitions applied to every project/configuration. Exact/platform selectors are accepted. |
 | `include` | Settings fragment path. |
 

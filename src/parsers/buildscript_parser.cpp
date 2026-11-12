@@ -2152,6 +2152,8 @@ void BuildscriptParser::parse_solution_setting(const std::string& key, const std
         state.solution->cxx_compiler = value;
     } else if (key == "cc" || key == "c_compiler") {
         state.solution->c_compiler = value;
+    } else if (key == "macos_deployment_target") {
+        state.solution->macos_deployment_target = value;
     } else if (key == "include") {
         process_include(value, state);
     }
