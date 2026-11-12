@@ -74,12 +74,20 @@ jobs:
             version="${GITHUB_REF_NAME#v}"
           fi
           mkdir -p dist
+          # macOS: build for a fixed minimum instead of the runner's own macOS version (clang's default), so the binary also
+          # starts on older supported systems. Checked below with otool.
+          if [ "$RUNNER_OS" = macOS ]; then export MACOSX_DEPLOYMENT_TARGET=14.0; fi
           c++ -std=c++17 -O2 -Wall -Isrc -include src/pch.h \
             -DSIGHMAKE_VERSION="\"${version}\"" \
             -DSIGHMAKE_RELEASE_REPO="\"CitroenGames/sighmake\"" \
             $(find src -name '*.cpp' | sort) \
             -o dist/sighmake
           chmod +x dist/sighmake
+          if [ "$RUNNER_OS" = macOS ]; then
+            minos="$(otool -l dist/sighmake | awk '/cmd LC_BUILD_VERSION/{f=1} f&&/ minos /{print $2; exit}')"
+            echo "sighmake minos: $minos"
+            [ "$minos" = "$MACOSX_DEPLOYMENT_TARGET" ] || { echo "::error::sighmake minos is $minos, expected $MACOSX_DEPLOYMENT_TARGET"; exit 1; }
+          fi
 
       - name: Build tests
         if: runner.os == 'Windows'
