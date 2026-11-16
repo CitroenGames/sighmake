@@ -476,7 +476,8 @@ bool VcxprojGenerator::generate_csproj(const Project& project, const Solution& s
         group.append_attribute("Condition") = ("'$(Configuration)|$(Platform)'=='" + key + "'").c_str();
         group.append_child("OutputType").text() = cfg.config_type == "Application"
             ? (cfg.link.sub_system == "Windows" ? "WinExe" : "Exe") : "Library";
-        group.append_child("PlatformTarget").text() = platform == "Win32" ? "x86"
+        group.append_child("PlatformTarget").text() = !project.platform_target.empty() ? project.platform_target.c_str()
+            : platform == "Win32" ? "x86"
             : (platform == "Any CPU" || platform == "AnyCPU" || is_unix_platform(platform) ? "AnyCPU" : platform.c_str());
         group.append_child("Optimize").text() = !cfg.use_debug_libraries;
         group.append_child("DebugType").text() = "portable";

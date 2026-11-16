@@ -391,6 +391,11 @@ struct Project {
     std::string language;                               // "C", "C++", "C#", or "" (auto-detect)
     std::string target_framework;                       // SDK target framework, e.g. net10.0
     std::string csharp_version;
+    // C# <PlatformTarget> for every configuration (AnyCPU, x86, x64, ARM64, ARM or Itanium). Empty derives it from each
+    // configuration's platform (x64 -> x64, Unix platforms -> AnyCPU). Set AnyCPU for assemblies that must load in a
+    // native process on any CPU, e.g. an arm64-only host that a plain `dotnet build -p:Platform=x64` would otherwise
+    // turn into an x86-64 binary.
+    std::string platform_target;
     std::string nullable;
     std::string implicit_usings;
     bool allow_unsafe = false;

@@ -2407,6 +2407,7 @@ void BuildscriptWriter::write_project_content(std::ostream& out, const Project& 
         out << "language = C#\n";
         out << "target_framework = " << project.target_framework << "\n";
         if (!project.csharp_version.empty()) out << "csharp_version = " << project.csharp_version << "\n";
+        if (!project.platform_target.empty()) out << "platform_target = " << project.platform_target << "\n";
         if (!project.nullable.empty()) out << "nullable = " << project.nullable << "\n";
         if (!project.implicit_usings.empty()) out << "implicit_usings = " << project.implicit_usings << "\n";
         out << "allow_unsafe = " << (project.allow_unsafe ? "true" : "false") << "\n";

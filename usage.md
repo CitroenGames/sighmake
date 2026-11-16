@@ -2254,6 +2254,7 @@ selectors.
 | --- | --- |
 | `target_framework` | Required TFM, e.g. `net10.0` or `net10.0-windows`. |
 | `csharp_version` | `LangVersion`, e.g. `14.0` or `latest`. |
+| `platform_target` | `PlatformTarget` for every configuration: `AnyCPU`, `x86`, `x64`, `ARM64`, `ARM` or `Itanium`. Unset, it follows each configuration's platform (`x64` gives `x64`, Linux and macOS give `AnyCPU`). Set `AnyCPU` so a plain `dotnet build -p:Platform=x64` still produces an assembly an arm64 process can load. |
 | `nullable`, `implicit_usings` | `Nullable` / `ImplicitUsings` values such as `enable`. |
 | `allow_unsafe` | `AllowUnsafeBlocks`. |
 | `generate_runtime_configuration_files` | `GenerateRuntimeConfigurationFiles`. |

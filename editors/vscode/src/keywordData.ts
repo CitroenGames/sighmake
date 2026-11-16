@@ -1226,6 +1226,14 @@ export const KEYWORDS: KeywordInfo[] = [
         supportsConfigQualifier: false,
     },
     {
+        name: 'platform_target',
+        aliases: [],
+        valueType: 'string',
+        context: ['project'],
+        documentation: 'C# `PlatformTarget` for every configuration: `AnyCPU`, `x86`, `x64`, `ARM64`, `ARM` or `Itanium`. Unset, it follows each configuration\'s platform. Use `AnyCPU` for assemblies an arm64 process must load.',
+        supportsConfigQualifier: false,
+    },
+    {
         name: 'nullable',
         aliases: [],
         valueType: 'string',

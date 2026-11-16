@@ -2874,6 +2874,21 @@ bool BuildscriptParser::parse_project_compiler_setting(const std::string& key, c
         proj.target_framework = value;
     } else if (key == "csharp_version") {
         proj.csharp_version = value;
+    } else if (key == "platform_target") {
+        // C# PlatformTarget override. Accept the MSBuild spellings in any case; an unknown value is ignored.
+        const std::string v = to_lower(trim(value));
+        if (v == "anycpu" || v == "any cpu") proj.platform_target = "AnyCPU";
+        else if (v == "x86") proj.platform_target = "x86";
+        else if (v == "x64") proj.platform_target = "x64";
+        else if (v == "arm64") proj.platform_target = "ARM64";
+        else if (v == "arm") proj.platform_target = "ARM";
+        else if (v == "itanium") proj.platform_target = "Itanium";
+        else if (v.empty()) proj.platform_target.clear();
+        else {
+            std::cerr << "Warning: Invalid platform_target '" << value << "' at line " << state.line_number
+                      << ". Use AnyCPU, x86, x64, ARM64, ARM or Itanium; using the platform's default.\n";
+            proj.platform_target.clear();
+        }
     } else if (key == "nullable") {
         proj.nullable = value;
     } else if (key == "implicit_usings") {

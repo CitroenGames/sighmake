@@ -2556,3 +2556,67 @@ runtime_dependencies = Loader|thirdparty/loader.dll|loader.dll||DedicatedServer
     CHECK(script.find("$entry['Profiles']") != std::string::npos);
     CHECK(script.find("$parts[4].Split(',')") != std::string::npos);
 }
+
+TEST_CASE("C# platform_target overrides the derived PlatformTarget", "[csharp]") {
+    GeneratedProject gen;
+    gen.temp_dir = fs::temp_directory_path() / ("sighmake_csharp_target_" + generate_uuid());
+    fs::create_directories(gen.temp_dir / "build");
+    BuildscriptParser parser;
+    auto solution = parser.parse_string(R"(
+[solution]
+name = Targets
+configurations = Debug, Release
+platforms = x64
+[project:Derived]
+language = C#
+type = dll
+target_framework = net10.0
+sources = Derived.cs
+[project:Neutral]
+language = C#
+type = dll
+target_framework = net10.0
+platform_target = anycpu
+sources = Neutral.cs
+[project:Arm]
+language = C#
+type = dll
+target_framework = net10.0
+platform_target = ARM64
+sources = Arm.cs
+[project:Bogus]
+language = C#
+type = dll
+target_framework = net10.0
+platform_target = sparc
+sources = Bogus.cs
+)", gen.temp_dir.string());
+    REQUIRE(solution.projects.size() == 4);
+    CHECK(solution.projects[0].platform_target.empty());
+    CHECK(solution.projects[1].platform_target == "AnyCPU");
+    CHECK(solution.projects[2].platform_target == "ARM64");
+    CHECK(solution.projects[3].platform_target.empty());
+
+    VcxprojGenerator generator;
+    auto target_of = [&](size_t index) {
+        auto path = gen.temp_dir / "build" / (solution.projects[index].name + ".csproj");
+        REQUIRE(generator.generate_csproj(solution.projects[index], solution, path.string()));
+        pugi::xml_document doc;
+        REQUIRE(doc.load_file(path.string().c_str()));
+        auto nodes = doc.select_nodes("/Project/PropertyGroup/PlatformTarget");
+        REQUIRE(nodes.size() == 2);  // Debug|x64 and Release|x64
+        std::string first = nodes[0].node().child_value();
+        CHECK(first == std::string(nodes[1].node().child_value()));
+        return first;
+    };
+    CHECK(target_of(0) == "x64");     // unchanged default: the platform name
+    CHECK(target_of(1) == "AnyCPU");  // override, case-insensitive
+    CHECK(target_of(2) == "ARM64");
+    CHECK(target_of(3) == "x64");     // invalid value is ignored
+
+    BuildscriptWriter writer;
+    REQUIRE(writer.write_buildscript(solution.projects[1], (gen.temp_dir / "Neutral.buildscript").string()));
+    auto roundtrip = parser.parse((gen.temp_dir / "Neutral.buildscript").string());
+    REQUIRE(roundtrip.projects.size() == 1);
+    CHECK(roundtrip.projects[0].platform_target == "AnyCPU");
+}
