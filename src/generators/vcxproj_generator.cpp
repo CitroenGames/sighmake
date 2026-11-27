@@ -85,6 +85,24 @@ static std::string make_relative_path(const std::string& file_path, const std::s
         // Get the directory containing the base file
         base = base.parent_path();
 
+        // Spell both sides the same way before the lexical comparison. The parser stores item
+        // paths through fs::canonical() (long names on Windows, symlinks resolved on POSIX), but
+        // the build root is spelled as the user typed it: from an 8.3 working directory such as
+        // C:\Users\RUNNER~1\... the common prefix stopped at the short component and items came
+        // out as ..\..\..\runneradmin\... (valid, but tied to that exact folder). The same applies
+        // to macOS /var vs /private/var and other symlinked roots. weakly_canonical() resolves the
+        // existing prefix and keeps the not-yet-created tail lexical.
+        {
+            std::error_code file_ec;
+            std::error_code base_ec;
+            fs::path canonical_file = fs::weakly_canonical(file, file_ec);
+            fs::path canonical_base = fs::weakly_canonical(base, base_ec);
+            if (!file_ec && !base_ec && !canonical_file.empty() && !canonical_base.empty()) {
+                file = canonical_file.lexically_normal();
+                base = canonical_base.lexically_normal();
+            }
+        }
+
         // Check for different drives (Windows-specific)
         // If paths are on different drives, we cannot create a relative path
         // Return the absolute path instead
