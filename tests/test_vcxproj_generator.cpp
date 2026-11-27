@@ -2666,7 +2666,8 @@ void check_project_items_resolve(const fs::path& project_path, size_t expected_i
 }  // namespace
 
 TEST_CASE("VcxprojGenerator -B with .. rebases literal and glob items alike (issue #9)", "[vcxproj_generator]") {
-    // canonical(): CI temp dirs can be 8.3 short names (RUNNER~1), which the parser expands but -B does not.
+    // canonical(): CI temp dirs can be 8.3 short names (RUNNER~1). Start from the long spelling so the
+    // "8.3 short-name cwd" case below is the only one that exercises the short spelling, on any host.
     const fs::path root = fs::canonical(fs::temp_directory_path()) / "sighmake_test_vcxproj_B_dotdot";
     std::error_code ec;
     fs::remove_all(root, ec);
@@ -2709,13 +2710,30 @@ sources = Program.cs, cs/*.cs, ../../shared/*.cs
 
     // Absolute output dir (the build root keeps `..` lexically on every host) and the CLI's relative
     // spelling `cd <script dir> && sighmake ... -B ../../out/gen` (POSIX fs::absolute keeps the `..`).
-    for (const bool relative_cli_spelling : {false, true}) {
-        INFO("relative CLI spelling: " << relative_cli_spelling);
+    // On Windows also from the 8.3 spelling of the script dir (C:\Users\RUNNER~1\... on CI runners):
+    // the parser stores long canonical item paths, the build root keeps the short spelling.
+    std::vector<std::pair<std::string, fs::path>> spellings = {{"absolute", fs::path()},
+                                                               {"relative CLI", script_dir}};
+#ifdef _WIN32
+    {
+        std::wstring short_dir(32768, L'\0');
+        const DWORD length = GetShortPathNameW(script_dir.wstring().c_str(), short_dir.data(),
+                                               static_cast<DWORD>(short_dir.size()));
+        short_dir.resize(length > 0 && length < short_dir.size() ? length : 0);
+        if (!short_dir.empty() && fs::path(short_dir) != script_dir) {
+            spellings.push_back({"8.3 short-name cwd", fs::path(short_dir)});
+        } else {
+            WARN("8.3 short names are not available on this volume; short-name spelling not exercised");
+        }
+    }
+#endif
+    for (const auto& [spelling, working_dir] : spellings) {
+        INFO("spelling: " << spelling << " " << working_dir.string());
         fs::remove_all(root / "out", ec);
         BuildscriptParser parser;
         std::string output_dir = script_dir.string();
-        if (relative_cli_spelling) {
-            fs::current_path(script_dir);
+        if (!working_dir.empty()) {
+            fs::current_path(working_dir);
             output_dir = ".";
         }
         auto solution = parser.parse_string(buildscript, output_dir);
@@ -2737,6 +2755,11 @@ sources = Program.cs, cs/*.cs, ../../shared/*.cs
         CHECK(doc.select_node("//Compile[@Include='..\\..\\tools\\proj\\Program.cs']"));
         CHECK(doc.select_node("//Compile[@Include='..\\..\\tools\\proj\\cs\\Extra.cs']"));
         CHECK(doc.select_node("//Compile[@Include='..\\..\\shared\\Shared.cs']"));
+        pugi::xml_document native;
+        REQUIRE(native.load_file((gen / "Native_.vcxproj").string().c_str()));
+        CHECK(native.select_node("//ClCompile[@Include='..\\..\\tools\\proj\\lit.cpp']"));
+        CHECK(native.select_node("//ClCompile[@Include='..\\..\\tools\\proj\\sub\\glob.cpp']"));
+        CHECK(native.select_node("//ClInclude[@Include='..\\..\\tools\\proj\\lit.h']"));
     }
 
     fs::remove_all(root, ec);
