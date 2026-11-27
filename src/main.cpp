@@ -15,6 +15,7 @@
 #include "common/updater.hpp"
 #include "common/string_utils.hpp"
 #include "common/target_os.hpp"
+#include "common/android_evaluation.hpp"
 #include "common/defaults.hpp"
 
 namespace fs = std::filesystem;
@@ -559,6 +560,28 @@ int main(int argc, char* argv[]) {
         }
 
         std::cout << "Using generator: " << generator->name() << "\n";
+
+        // Android makefiles of a desktop-target generation come from an Android evaluation of the same
+        // buildscript, so that if(linux)/if(macos)/if(windows) blocks never reach them (see
+        // common/android_evaluation.hpp). A --target-os android generation already is one.
+        if (generator->name() == "makefile" && !(filename == "cmakelists.txt" || ext == ".cmake") &&
+            vcxproj::target_os() != vcxproj::TargetOS::Android &&
+            vcxproj::solution_has_android_configurations(solution)) {
+            const std::optional<vcxproj::TargetOS> previous = vcxproj::target_os_override();
+            vcxproj::set_target_os(vcxproj::TargetOS::Android);
+            try {
+                std::cout << "Evaluating the Android configurations as --target-os android\n";
+                vcxproj::BuildscriptParser android_parser;
+                if (!cli_variables.empty()) android_parser.set_variables(cli_variables);
+                const vcxproj::Solution android_solution = android_parser.parse(buildscript_path);
+                vcxproj::merge_android_evaluation(solution, android_solution);
+            } catch (const std::exception& e) {
+                std::cerr << "Warning: the Android configurations could not be evaluated for Android (" << e.what()
+                          << "); no Android makefiles are written. Generate with --target-os android to get them.\n";
+                vcxproj::merge_android_evaluation(solution, vcxproj::Solution{});
+            }
+            vcxproj::set_target_os(previous);
+        }
 
         // -B / --build-dir only affects the vcxproj generator today. Warn if
         // the flag was explicit but points at a generator that doesn't use it,
