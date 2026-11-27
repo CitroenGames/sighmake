@@ -2666,7 +2666,8 @@ void check_project_items_resolve(const fs::path& project_path, size_t expected_i
 }  // namespace
 
 TEST_CASE("VcxprojGenerator -B with .. rebases literal and glob items alike (issue #9)", "[vcxproj_generator]") {
-    const fs::path root = fs::absolute(fs::temp_directory_path() / "sighmake_test_vcxproj_B_dotdot");
+    // canonical(): CI temp dirs can be 8.3 short names (RUNNER~1), which the parser expands but -B does not.
+    const fs::path root = fs::canonical(fs::temp_directory_path()) / "sighmake_test_vcxproj_B_dotdot";
     std::error_code ec;
     fs::remove_all(root, ec);
     const fs::path script_dir = root / "tools" / "proj";
