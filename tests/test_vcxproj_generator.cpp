@@ -2620,3 +2620,123 @@ sources = Bogus.cs
     REQUIRE(roundtrip.projects.size() == 1);
     CHECK(roundtrip.projects[0].platform_target == "AnyCPU");
 }
+
+// Issue #9: with a `-B` folder that holds `..` segments (neither build/ nor the script folder), every item
+// path must resolve, from the generated project's folder, to the file the buildscript names. Items under the
+// buildscript folder (literal or glob) used to come out short by the `..` levels, because the build root was
+// not normalized before lexically_relative(): `.../proj/../out/gen` and `.../proj/x.cpp` share `.../proj`.
+namespace {
+fs::path write_file_for_b_test(const fs::path& path, const std::string& text) {
+    fs::create_directories(path.parent_path());
+    std::ofstream(path, std::ios::binary) << text;
+    return path;
+}
+
+// Every Include / AdditionalIncludeDirectories entry, resolved from the project's folder, must exist.
+void check_project_items_resolve(const fs::path& project_path, size_t expected_items) {
+    INFO("project: " << project_path.string());
+    pugi::xml_document doc;
+    REQUIRE(doc.load_file(project_path.string().c_str()));
+    const fs::path dir = project_path.parent_path();
+    size_t items = 0;
+    for (const char* name : {"ClCompile", "ClInclude", "ResourceCompile", "None", "Compile", "Content",
+                             "EmbeddedResource"}) {
+        for (auto node : doc.select_nodes((std::string("//ItemGroup/") + name + "[@Include]").c_str())) {
+            std::string include = node.node().attribute("Include").as_string();
+            std::replace(include.begin(), include.end(), '\\', '/');
+            INFO(name << " Include=" << include);
+            CHECK(fs::path(include).is_relative());
+            CHECK(fs::exists(dir / include));
+            ++items;
+        }
+    }
+    CHECK(items == expected_items);
+    for (auto node : doc.select_nodes("//AdditionalIncludeDirectories")) {
+        std::string value = node.node().text().as_string();
+        std::replace(value.begin(), value.end(), '\\', '/');
+        std::stringstream parts(value);
+        std::string part;
+        while (std::getline(parts, part, ';')) {
+            if (part.empty() || part.find("%(") != std::string::npos || part.find("$(") != std::string::npos) continue;
+            INFO("include dir " << part);
+            CHECK(fs::is_directory(fs::path(part).is_absolute() ? fs::path(part) : dir / part));
+        }
+    }
+}
+}  // namespace
+
+TEST_CASE("VcxprojGenerator -B with .. rebases literal and glob items alike (issue #9)", "[vcxproj_generator]") {
+    const fs::path root = fs::absolute(fs::temp_directory_path() / "sighmake_test_vcxproj_B_dotdot");
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    const fs::path script_dir = root / "tools" / "proj";
+    write_file_for_b_test(script_dir / "lit.cpp", "int lit() { return 1; }\n");
+    write_file_for_b_test(script_dir / "sub" / "glob.cpp", "int glob() { return 2; }\n");
+    write_file_for_b_test(script_dir / "lit.h", "#pragma once\n");
+    write_file_for_b_test(script_dir / "app.rc", "\n");
+    write_file_for_b_test(script_dir / "notes.txt", "notes\n");
+    fs::create_directories(script_dir / "inc");
+    write_file_for_b_test(script_dir / "Program.cs", "class P { static void Main() {} }\n");
+    write_file_for_b_test(script_dir / "cs" / "Extra.cs", "class E {}\n");
+    write_file_for_b_test(root / "shared" / "Shared.cs", "class S {}\n");
+    write_file_for_b_test(root / "shared" / "shared.cpp", "int shared_fn() { return 3; }\n");
+
+    const std::string buildscript = R"(
+[solution]
+name = BTest
+configurations = Debug, Release
+platforms = x64
+
+[project:Native]
+type = lib
+sources = lit.cpp, sub/*.cpp, ../../shared/*.cpp, app.rc, notes.txt
+headers = lit.h
+includes = inc, sub, ../../shared
+
+[project:Managed]
+language = C#
+type = exe
+target_framework = net8.0
+sources = Program.cs, cs/*.cs, ../../shared/*.cs
+)";
+
+    const fs::path original_cwd = fs::current_path();
+    struct RestoreCwd {
+        fs::path path;
+        ~RestoreCwd() { std::error_code e; fs::current_path(path, e); }
+    } restore{original_cwd};
+
+    // Absolute output dir (the build root keeps `..` lexically on every host) and the CLI's relative
+    // spelling `cd <script dir> && sighmake ... -B ../../out/gen` (POSIX fs::absolute keeps the `..`).
+    for (const bool relative_cli_spelling : {false, true}) {
+        INFO("relative CLI spelling: " << relative_cli_spelling);
+        fs::remove_all(root / "out", ec);
+        BuildscriptParser parser;
+        std::string output_dir = script_dir.string();
+        if (relative_cli_spelling) {
+            fs::current_path(script_dir);
+            output_dir = ".";
+        }
+        auto solution = parser.parse_string(buildscript, output_dir);
+        VcxprojGenerator generator;
+        generator.set_build_dir("../../out/gen");
+        REQUIRE(generator.generate(solution, output_dir));
+        fs::current_path(original_cwd);
+
+        const fs::path gen = root / "out" / "gen";
+        REQUIRE(fs::exists(gen / "Native_.vcxproj"));
+        REQUIRE(fs::exists(gen / "Managed_.csproj"));
+        CHECK_FALSE(fs::exists(script_dir / "build"));
+        // Native: lit.cpp, sub/glob.cpp, shared.cpp, app.rc, notes.txt, lit.h. Managed: three .cs files.
+        check_project_items_resolve(gen / "Native_.vcxproj", 6);
+        check_project_items_resolve(gen / "Managed_.csproj", 3);
+
+        pugi::xml_document doc;
+        REQUIRE(doc.load_file((gen / "Managed_.csproj").string().c_str()));
+        CHECK(doc.select_node("//Compile[@Include='..\\..\\tools\\proj\\Program.cs']"));
+        CHECK(doc.select_node("//Compile[@Include='..\\..\\tools\\proj\\cs\\Extra.cs']"));
+        CHECK(doc.select_node("//Compile[@Include='..\\..\\shared\\Shared.cs']"));
+    }
+
+    fs::remove_all(root, ec);
+}

@@ -68,13 +68,19 @@ static std::string make_relative_path(const std::string& file_path, const std::s
         fs::path file(file_path);
         fs::path base(base_path);
 
-        // Make both paths absolute
+        // Make both paths absolute and normalized. On Windows fs::absolute() normalizes
+        // (GetFullPathNameW), but on POSIX it only prepends the working directory, so a
+        // `-B ../../out` build dir keeps its `.` and `..` segments. lexically_relative()
+        // does not resolve those: every file whose common prefix with the build dir reached
+        // past them (anything under the buildscript folder) came out short by those levels.
         if (!file.is_absolute()) {
             file = fs::absolute(file);
         }
         if (!base.is_absolute()) {
             base = fs::absolute(base);
         }
+        file = file.lexically_normal();
+        base = base.lexically_normal();
 
         // Get the directory containing the base file
         base = base.parent_path();
