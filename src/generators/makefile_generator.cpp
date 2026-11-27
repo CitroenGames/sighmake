@@ -830,6 +830,75 @@ std::tuple<std::string, std::string> MakefileGenerator::get_file_pch_mode(
 }
 
 // Get all compiler flags for a configuration
+// Target-architecture flags of one configuration: canonical architecture -> (compile flags, link flags).
+// Ordered by architecture name so the output is deterministic.
+using ArchFlagSet = std::map<std::string, std::pair<std::string, std::string>>;
+
+// `simd` (x86 and x86_64 only, see gnu_simd_flags) and the if(<arch>) blocks of a configuration.
+static ArchFlagSet collect_arch_flags(const Project& project, const Configuration& config, const std::string& config_key) {
+    ArchFlagSet result;
+    auto append = [](std::string& target, const std::string& text) {
+        if (text.empty()) return;
+        if (!target.empty()) target += " ";
+        target += text;
+    };
+    const std::string& simd = config.cl_compile.enhanced_instruction_set;
+    if (!simd.empty()) {
+        bool known = true;
+        for (const char* arch : {"x86", "x86_64"}) {
+            append(result[arch].first, gnu_simd_flags(simd, arch, &known));
+        }
+        if (!known) {
+            static std::set<std::string> warned;
+            if (warned.insert(project.name + "|" + simd).second) {
+                std::cerr << "Warning: simd = " << simd << " (project " << project.name << ", " << config_key
+                          << ") has no GCC/Clang equivalent; the Makefile output ignores it\n";
+            }
+        }
+    }
+    for (const auto& [arch, entry] : config.arch_settings) {
+        auto& flags = result[arch];
+        append(flags.first, entry.cflags);
+        for (const auto& def : entry.defines) append(flags.first, "-D" + def);
+        append(flags.second, entry.ldflags);
+    }
+    for (auto it = result.begin(); it != result.end();) {
+        if (it->second.first.empty() && it->second.second.empty()) it = result.erase(it);
+        else ++it;
+    }
+    return result;
+}
+
+// Writes SIGHMAKE_TARGET_ARCH (x86_64, x86, arm64, arm, or the compiler's own name for anything
+// else) and SIGHMAKE_ARCH_FLAGS / SIGHMAKE_ARCH_LDFLAGS for it. Android takes the architecture from
+// ANDROID_ABI; other targets ask the compiler (`-dumpmachine`, which GCC and Clang both support), so
+// a cross compiler set with CXX=... gets its own target's flags. SIGHMAKE_TARGET_ARCH=... on the make
+// command line overrides the detection.
+static void write_target_arch_flags(std::ostream& out, const ArchFlagSet& flags, bool android,
+                                    const std::string& probe_compiler) {
+    out << "# Target architecture (simd and if(<architecture>) blocks); override with SIGHMAKE_TARGET_ARCH=...\n";
+    if (android) {
+        out << "SIGHMAKE_TARGET_ARCH := $(if $(filter arm64-v8a,$(ANDROID_ABI)),arm64,$(if $(filter armeabi-v7a,$(ANDROID_ABI)),arm,"
+               "$(if $(filter x86_64,$(ANDROID_ABI)),x86_64,$(if $(filter x86,$(ANDROID_ABI)),x86,$(ANDROID_ABI)))))\n";
+    } else {
+        out << "ifeq ($(origin SIGHMAKE_TARGET_ARCH),undefined)\n";
+        out << "  SIGHMAKE_TARGET_MACHINE := $(firstword $(subst -, ,$(shell " << probe_compiler << " -dumpmachine 2>/dev/null)))\n";
+        out << "  SIGHMAKE_TARGET_ARCH := $(if $(filter x86_64 amd64,$(SIGHMAKE_TARGET_MACHINE)),x86_64,"
+               "$(if $(filter i386 i486 i586 i686,$(SIGHMAKE_TARGET_MACHINE)),x86,"
+               "$(if $(filter aarch64 arm64,$(SIGHMAKE_TARGET_MACHINE)),arm64,"
+               "$(if $(filter arm%,$(SIGHMAKE_TARGET_MACHINE)),arm,$(SIGHMAKE_TARGET_MACHINE)))))\n";
+        out << "endif\n";
+    }
+    out << "SIGHMAKE_ARCH_FLAGS :=\n";
+    out << "SIGHMAKE_ARCH_LDFLAGS :=\n";
+    for (const auto& [arch, entry] : flags) {
+        out << "ifeq ($(SIGHMAKE_TARGET_ARCH)," << arch << ")\n";
+        if (!entry.first.empty()) out << "  SIGHMAKE_ARCH_FLAGS += " << entry.first << "\n";
+        if (!entry.second.empty()) out << "  SIGHMAKE_ARCH_LDFLAGS += " << entry.second << "\n";
+        out << "endif\n";
+    }
+}
+
 std::string MakefileGenerator::get_compiler_flags(const Configuration& config, const Project& project,
                                                    const std::filesystem::path& makefile_dir, bool c_flags,
                                                    const std::string& config_name,
@@ -1999,6 +2068,24 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
     std::string ldflags = get_linker_flags(config, makefile_dir, android);
     std::string ldlibs = get_linker_libs(config, makefile_dir);
 
+    // Flags that depend on the target architecture: `simd` (x86 targets only) and the cflags,
+    // ldflags and defines of if(x86_64)/if(arm64)/... blocks. The architecture is decided when make
+    // runs, so a makefile serves every compiler target (and every ANDROID_ABI); see
+    // write_target_arch_flags. Empty for projects without either, whose makefiles stay unchanged.
+    const ArchFlagSet arch_flags = collect_arch_flags(project, config, config_key);
+    const bool has_arch_flags = !arch_flags.empty();
+    std::string arch_stamp;  // Recorded in the command-line stamps, so a change rebuilds
+    for (const auto& [arch, entry] : arch_flags) {
+        arch_stamp += " [" + arch + ": " + entry.first + (entry.second.empty() ? "" : " | ld: " + entry.second) + "]";
+    }
+    bool has_arch_ldflags = false;
+    for (const auto& [arch, entry] : arch_flags) has_arch_ldflags = has_arch_ldflags || !entry.second.empty();
+    if (has_arch_flags) {
+        cxxflags += " $(SIGHMAKE_ARCH_FLAGS)";
+        cflags += " $(SIGHMAKE_ARCH_FLAGS)";
+    }
+    if (has_arch_ldflags) ldflags += (ldflags.empty() ? "" : " ") + std::string("$(SIGHMAKE_ARCH_LDFLAGS)");
+
     struct ArchiveEntry {
         std::string project_name;
         std::string path;
@@ -2167,6 +2254,11 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             << " -x c - -shared -nostdlib -Wl,-Bsymbolic-functions -o /dev/null 2>/dev/null"
             << " && echo -Wl,-Bsymbolic-functions)\n";
         out << "endif\n";
+    }
+    if (has_arch_flags && (has_cpp_files || has_objcxx_files || has_c_files || links_binary)) {
+        // $(CXX)/$(CC), not the default driver: a CXX=... override names the compiler whose target counts.
+        const std::string probe = (has_cpp_files || has_objcxx_files || (links_binary && links_with_cxx)) ? "$(CXX)" : "$(CC)";
+        write_target_arch_flags(out, arch_flags, android, probe);
     }
     if (has_cpp_files || has_objcxx_files) {
         out << "SIGHMAKE_CXXFLAGS = " << cxxflags << "\n";
@@ -2364,9 +2456,9 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
         for (char ch : config_key) cfg_tag += std::isalnum(static_cast<unsigned char>(ch)) ? ch : '-';
         auto stamp_file = [&](const char* lang) { return std::string("sighmake-") + lang + "." + cfg_tag + ".flags"; };
         std::string objcxx_extra = config.cl_compile.objcxx_flags.empty() ? "" : " " + config.cl_compile.objcxx_flags;
-        if (stamp_cxx) stamps.push_back({"SIGHMAKE_CXX_STAMP", stamp_file("cxx"), cxx_cmd + " " + cxxflags + pch_stamp_suffix + per_file_cxx + deployment_stamp});
-        if (stamp_c) stamps.push_back({"SIGHMAKE_C_STAMP", stamp_file("c"), cc_cmd + " " + cflags + pch_stamp_suffix + per_file_c + deployment_stamp});
-        if (stamp_objcxx) stamps.push_back({"SIGHMAKE_OBJCXX_STAMP", stamp_file("objcxx"), cxx_cmd + " " + cxxflags + objcxx_extra + per_file_objcxx + deployment_stamp});
+        if (stamp_cxx) stamps.push_back({"SIGHMAKE_CXX_STAMP", stamp_file("cxx"), cxx_cmd + " " + cxxflags + pch_stamp_suffix + per_file_cxx + deployment_stamp + arch_stamp});
+        if (stamp_c) stamps.push_back({"SIGHMAKE_C_STAMP", stamp_file("c"), cc_cmd + " " + cflags + pch_stamp_suffix + per_file_c + deployment_stamp + arch_stamp});
+        if (stamp_objcxx) stamps.push_back({"SIGHMAKE_OBJCXX_STAMP", stamp_file("objcxx"), cxx_cmd + " " + cxxflags + objcxx_extra + per_file_objcxx + deployment_stamp + arch_stamp});
         if (stamp_nasm) stamps.push_back({"SIGHMAKE_NASM_STAMP", stamp_file("nasm"), nasm_cmd + " " + nasmflags_text});
         if (stamp_link) {
             std::string link_text;
@@ -2379,6 +2471,7 @@ bool MakefileGenerator::generate_makefile_with_lookup(const Project& project, co
             }
             if (symbols == MakefileSymbols::Separate && config.config_type != "StaticLibrary") link_text += " [debug_symbols=separate]";
             link_text += deployment_stamp;
+            if (has_arch_ldflags) link_text += arch_stamp;
             stamps.push_back({"SIGHMAKE_LINK_STAMP", stamp_file("link"), link_text});
         }
 

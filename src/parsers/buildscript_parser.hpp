@@ -69,6 +69,7 @@ private:
         bool pending_if_condition = false;  // True if we saw if() without { on same line
         bool pending_if_result = false;     // Result of evaluate_condition() for pending if
         std::string pending_if_platform_filter;  // Platform filter for pending if (e.g., "Win32", "x64")
+        std::string pending_if_arch_scope;       // Target-architecture scope for pending if (e.g., "x86_64")
 
         enum class SectionContext {
             None,
@@ -154,6 +155,7 @@ private:
             bool condition_met;
             int ignored_brace_depth = 0;
             std::string platform_filter;  // "Win32", "x64", or "" (OS-level condition)
+            std::string arch_scope;       // "x86_64", "arm64", ... for a target-architecture block of a non-Windows target
         };
         std::vector<ScopeState> conditional_stack;
 
@@ -169,6 +171,16 @@ private:
             for (auto it = conditional_stack.rbegin(); it != conditional_stack.rend(); ++it) {
                 if (it->executing && !it->platform_filter.empty()) {
                     return it->platform_filter;
+                }
+            }
+            return "";
+        }
+
+        // The target architecture of the innermost executing architecture block ("" outside one).
+        std::string get_arch_scope() const {
+            for (auto it = conditional_stack.rbegin(); it != conditional_stack.rend(); ++it) {
+                if (it->executing && !it->arch_scope.empty()) {
+                    return it->arch_scope;
                 }
             }
             return "";
@@ -191,10 +203,15 @@ private:
     struct ConditionResult {
         bool should_execute;           // Whether the block should execute at all
         std::string platform_filter;   // Non-empty for platform conditions (e.g., "Win32", "x64")
+        std::string arch_scope = {};   // Non-empty for target-architecture conditions of non-Windows targets
+        bool architecture = false;     // An if(x86_64)/if(arm64)/... condition
     };
 
     // Evaluate if condition
     ConditionResult evaluate_condition(const std::string& condition);
+    // A key = value line inside a target-architecture block of a non-Windows target
+    void apply_arch_scoped_setting(const std::string& key, const std::string& value, const std::string& arch,
+                                   ParseState& state);
 
     // Parse section header [section] or [project:name]
     bool parse_section(const std::string& line, ParseState& state);

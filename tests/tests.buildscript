@@ -28,6 +28,7 @@ sources = {
     test_updater.cpp
     test_android_features.cpp
     test_output_manifest.cpp
+    test_target_arch.cpp
 }
 
 # Source files under test (exclude main.cpp to avoid duplicate main)

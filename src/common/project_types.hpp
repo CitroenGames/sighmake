@@ -291,7 +291,69 @@ struct Configuration {
     // Bool settings (see the parser's table) that a [config:...] section, selector or template
     // assigned explicitly, so an explicit false is not mistaken for "unset" when defaults merge.
     std::set<std::string> explicit_bools;
+
+    // Settings of target-architecture blocks (if(x86_64) { ... }, if(arm64) { ... }) for the
+    // Makefile outputs, keyed by canonical architecture (see canonical_target_arch). The target
+    // architecture of a Makefile is only known when make runs (the compiler's target, or ANDROID_ABI),
+    // so these are written under make conditionals. Visual Studio outputs route the same blocks to
+    // the matching platform cells instead.
+    struct ArchScopedSettings {
+        std::string cflags;                 // Appended to the C and C++ flags
+        std::string ldflags;                // Appended to the link flags
+        std::vector<std::string> defines;   // Appended as -D flags
+        bool empty() const { return cflags.empty() && ldflags.empty() && defines.empty(); }
+    };
+    std::map<std::string, ArchScopedSettings> arch_settings;
 };
+
+// Canonical target-architecture name of an architecture condition or alias (x86_64, x86, arm64,
+// arm), or "" when `name` is not an architecture. amd64 -> x86_64; i386..i686 -> x86;
+// aarch64 -> arm64; armv7 -> arm. Case-insensitive. (`x64` stays the Windows platform filter.)
+inline std::string canonical_target_arch(const std::string& name) {
+    std::string n;
+    for (char c : name) n += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (n == "x86_64" || n == "amd64") return "x86_64";
+    if (n == "x86" || n == "i386" || n == "i486" || n == "i586" || n == "i686") return "x86";
+    if (n == "arm64" || n == "aarch64") return "arm64";
+    if (n == "arm" || n == "armv7") return "arm";
+    return "";
+}
+
+// Visual Studio platform of a canonical architecture (x86_64 -> x64, x86 -> Win32, arm64 -> ARM64,
+// arm -> ARM).
+inline std::string visual_studio_platform_for_arch(const std::string& arch) {
+    if (arch == "x86_64") return "x64";
+    if (arch == "x86") return "Win32";
+    if (arch == "arm64") return "ARM64";
+    if (arch == "arm") return "ARM";
+    return "";
+}
+
+// GCC/Clang flags equivalent to an MSVC `simd` (EnableEnhancedInstructionSet) value, for an x86
+// target of the given canonical architecture ("x86_64" or "x86"); "" for other architectures and
+// for values without an equivalent. The sets follow what MSVC's /arch: lets the compiler use,
+// except FMA: MSVC does not contract a*b+c into FMA under /fp:precise (the default), while GCC
+// contracts by default (-ffp-contract=fast) once FMA is enabled, so -mfma would change floating
+// point results between the Windows and the GCC/Clang builds. Projects that want FMA add -mfma to
+// cflags. *known is set to false for a value sighmake does not recognise.
+inline std::string gnu_simd_flags(const std::string& value, const std::string& arch, bool* known = nullptr) {
+    if (known) *known = true;
+    const bool x86_64 = arch == "x86_64";
+    const bool x86 = arch == "x86";
+    const std::string avx2 = "-mavx2 -mbmi -mbmi2 -mlzcnt -mf16c -mpopcnt";
+    if (value.empty() || value == "NotSet") return "";
+    if (value == "AdvancedVectorExtensions") return (x86_64 || x86) ? "-mavx -mpopcnt" : "";
+    if (value == "AdvancedVectorExtensions2") return (x86_64 || x86) ? avx2 : "";
+    if (value == "AdvancedVectorExtensions512")
+        return (x86_64 || x86) ? avx2 + " -mavx512f -mavx512cd -mavx512bw -mavx512dq -mavx512vl" : "";
+    // SSE, SSE2 and IA32 select the 32-bit x86 code generation; x64 always has SSE2 (MSVC
+    // ignores /arch:SSE2 there and rejects /arch:SSE and /arch:IA32).
+    if (value == "StreamingSIMDExtensions") return x86 ? "-msse -mfpmath=sse" : "";
+    if (value == "StreamingSIMDExtensions2") return x86 ? "-msse2 -mfpmath=sse" : "";
+    if (value == "NoExtensions") return x86 ? "-mno-sse -mfpmath=387" : "";
+    if (known) *known = false;
+    return "";
+}
 
 // Dependency visibility for transitive propagation (CMake-style)
 enum class DependencyVisibility {
@@ -498,6 +560,11 @@ struct Solution {
     std::vector<std::string> platforms;                 // ["Win32", "x64"]
     std::vector<Project> projects;
     std::vector<SolutionFolder> folders;
+
+    // Some project had an Android configuration before the per-project `platforms` filters ran (it
+    // may have been filtered away by a desktop-only block). The Makefile generation of a desktop
+    // target then evaluates the buildscript for Android too (see common/android_evaluation.hpp).
+    bool android_configurations_declared = false;
 
     // Solution-level defines that apply to ALL projects in ALL configurations
     std::vector<std::string> solution_level_preprocessor_definitions;

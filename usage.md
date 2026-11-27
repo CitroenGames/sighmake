@@ -653,9 +653,47 @@ if(Android) {
 ```
 
 `!Win32` selects `x64` on Windows and `!x64` selects `Win32`. `!android` is true
-unless the target OS is `android`; it applies to every configuration, including
-Android ones, when generating for the host OS. Conditions may be nested, and the opening brace may appear on the
+unless the target OS is `android`. Conditions may be nested, and the opening brace may appear on the
 same line or the next line.
+
+The Android configurations of a Makefile generation always see the buildscript
+as Android sees it, whatever the target OS: `if(linux)`, `if(macos)`,
+`if(windows)` and `!android` blocks never reach the `<Project>.<Config>.Android`
+makefiles. A generation for a desktop target evaluates the buildscript a second
+time as `--target-os android` and takes the Android configurations, the
+Android-scoped sources and dependencies and the Android-only projects from that
+evaluation; the output is the same as that of a `--target-os android`
+generation. When the Android evaluation fails (for example, `find_package(Vulkan
+REQUIRED)` finds no NDK), sighmake warns and writes no Android makefiles;
+generate with `--target-os android` to see the error.
+
+#### Target-architecture conditions
+
+`x86_64` (alias `amd64`), `x86` (`i386` ... `i686`), `arm64` (`aarch64`) and `arm`
+(`armv7`) select a target architecture. For a Windows target they are platform
+filters like `if(x64)`: `x86_64` selects the `x64` cells, `x86` the `Win32`
+cells, `arm64` the `ARM64` cells and `arm` the `ARM` cells, and a block whose
+platform is not in the solution is skipped. For the other targets the
+architecture is decided when make runs, so the Makefile generator writes the
+block's `cflags`, `ldflags` and `defines` under a make conditional: desktop
+makefiles ask the compiler (`$(CXX) -dumpmachine`, so a `CXX=` cross compiler
+gets its own target's flags) and Android makefiles use `ANDROID_ABI`. Override
+the detection with `make SIGHMAKE_TARGET_ARCH=x86_64`. Other settings are not
+supported inside an architecture block for those targets (sighmake warns and
+ignores them), and negated architecture conditions are not supported.
+
+```ini
+[project:Kernels]
+type = lib
+sources = src/*.cpp
+if(x86_64) {
+    defines = KERNELS_X86_64
+    cflags = -mpclmul
+}
+if(arm64) {
+    defines = KERNELS_NEON
+}
+```
 
 File entries may also have generation-time conditions:
 
@@ -1354,10 +1392,36 @@ The Visual Studio converters preserve the setting: an imported `.vcxproj` with
 values map to `StreamingSIMDExtensions` and `StreamingSIMDExtensions2`. The VPC
 converter does not translate `/arch:` flags.
 
-### Make and CMake
+### Make
 
-The Make and CMake generators ignore `simd`; they do not translate the MSBuild
-enum into GCC or Clang flags. Pass the compiler flags through `cflags` instead.
+The Makefile generator translates `simd` into GCC/Clang flags for x86 targets
+only. The flags are written under the `x86_64` and `x86` branches of the
+target-architecture conditional (see [Target-architecture
+conditions](#target-architecture-conditions)), so an ARM build (Linux aarch64,
+Android `arm64-v8a` or `armeabi-v7a`) never receives them:
+
+| `simd` value | GCC/Clang flags (x86_64 and x86) |
+| --- | --- |
+| `AdvancedVectorExtensions` | `-mavx -mpopcnt` |
+| `AdvancedVectorExtensions2` | `-mavx2 -mbmi -mbmi2 -mlzcnt -mf16c -mpopcnt` |
+| `AdvancedVectorExtensions512` | the AVX2 set plus `-mavx512f -mavx512cd -mavx512bw -mavx512dq -mavx512vl` |
+| `StreamingSIMDExtensions`, `StreamingSIMDExtensions2`, `NoExtensions` | x86 (32-bit) only: `-msse -mfpmath=sse`, `-msse2 -mfpmath=sse`, `-mno-sse -mfpmath=387` |
+| `NotSet` | none |
+
+The sets follow the instructions MSVC's `/arch:` lets the compiler use, except
+FMA: `-mfma` is never added. MSVC does not contract `a*b+c` into a fused
+multiply-add under `/fp:precise` (its default), while GCC contracts by default
+once FMA is enabled, so `-mfma` would make the GCC/Clang build compute different
+floating-point results from the Visual Studio build. Add `-mfma` to `cflags`
+when you want it. A value without an equivalent is ignored with a warning.
+Makefile cells declared after the `simd` line (for example by a
+`[config:*|Android]` section) inherit it, so an Android `x86_64` build gets the
+flags as well.
+
+### CMake
+
+The CMake generator ignores `simd`; it does not translate the MSBuild enum into
+GCC or Clang flags. Pass the compiler flags through `cflags` instead.
 An unqualified `cflags` line appends to any flags already set; a selector such
 as `cflags[Linux]` replaces the flags for the selected cells (see
 [Accumulating and replacing settings](#accumulating-and-replacing-settings)):
@@ -1389,7 +1453,7 @@ Common GCC/Clang equivalents:
 `-march=native` produces binaries that may not run on other machines; use it
 only for local builds or benchmarks.
 
-Because `simd` is silently ignored outside Visual Studio and `cflags` values
+Because `simd` is ignored by the CMake generator and `cflags` values
 such as `-mavx2` are rejected by MSVC, keep the two on separate platforms, as
 above, or guard raw flags with a host condition:
 
@@ -2151,7 +2215,7 @@ the primary names shown here in hand-written buildscripts.
 | `rtti` | Boolean runtime type information. |
 | `support_just_my_code` | Optional Boolean for Visual Studio C/C++ Just My Code debugging. Unset preserves MSBuild defaults. |
 | `multiprocessor` | Boolean parallel compilation setting. |
-| `simd` | MSVC instruction set, e.g. `AdvancedVectorExtensions2`. Visual Studio only; see [SIMD and vectorization](#simd-and-vectorization). |
+| `simd` | MSVC instruction set, e.g. `AdvancedVectorExtensions2`. Visual Studio, and the Makefile generator for x86 targets (GCC/Clang equivalents, never `-mfma`); see [SIMD and vectorization](#simd-and-vectorization). |
 | `floating_point` | `Precise`, `Strict`, or `Fast`. |
 | `utf8` | Use UTF-8 source/execution character sets (`/utf-8`; `-finput-charset=UTF-8 -fexec-charset=UTF-8` in Makefiles). Also accepted in `[solution]`, where it is the default for every project and configuration that does not set `utf8` itself; `utf8 = false` in a project or `[config:...]` opts out. |
 | `cflags` | Raw additional compiler options. |
@@ -2361,8 +2425,9 @@ previously generated backend plus its cache.
 Many advanced keys represent MSBuild properties. Prefer the portable settings
 in the main tables, guard raw flags by host/configuration, and inspect the
 generated Makefile or CMakeLists for the exact feature you need. `simd` is one
-such key; [SIMD and vectorization](#simd-and-vectorization) shows the `cflags`
-equivalent for GCC and Clang.
+such key for CMake (the Makefile generator translates it);
+[SIMD and vectorization](#simd-and-vectorization) shows the `cflags` equivalent
+for GCC and Clang.
 
 ## C# projects
 
