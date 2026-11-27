@@ -981,6 +981,15 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
                 cfg.link.strip = defs.link.strip;
             if (cfg.link.debug_symbols.empty() && !defs.link.debug_symbols.empty())
                 cfg.link.debug_symbols = defs.link.debug_symbols;
+            // Architecture blocks of the project body also reach cells declared after them (e.g. by a
+            // [config:*|Android] section); never Visual Studio cells, which take if(x64)-style routing.
+            if (cfg.arch_settings.empty() && !defs.arch_settings.empty() &&
+                !is_windows_platform(parse_config_key(config_key).second))
+                cfg.arch_settings = defs.arch_settings;
+            // Likewise the project's `simd` (Visual Studio cells keep "cells that exist when the line is read").
+            if (cl.enhanced_instruction_set.empty() && !d.enhanced_instruction_set.empty() &&
+                !is_windows_platform(parse_config_key(config_key).second))
+                cl.enhanced_instruction_set = d.enhanced_instruction_set;
         }
     }
 
@@ -1183,6 +1192,12 @@ Solution BuildscriptParser::parse_string(const std::string& content, const std::
 
     // Phase 4: Apply per-project platform filters (the project-level `platforms` key). Done last
     // because earlier phases create a configuration for every cell of the solution matrix.
+    for (const auto& project : solution.projects) {
+        for (const auto& [key, cfg] : project.configurations) {
+            (void)cfg;
+            if (is_android_platform(parse_config_key(key).second)) solution.android_configurations_declared = true;
+        }
+    }
     for (auto& project : solution.projects) {
         // An APK only exists for Android.
         if (project.platform_filter.empty() && !project.configurations.empty() &&
@@ -1247,17 +1262,28 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
         if (start_paren != std::string::npos && end_paren != std::string::npos) {
             std::string condition = trimmed.substr(start_paren + 1, end_paren - start_paren - 1);
             auto result = evaluate_condition(condition);
+            // An architecture block of a Windows target selects that platform's cells; it is skipped
+            // when the solution has no such platform, so it never adds a platform to the projects.
+            if (result.architecture && !result.platform_filter.empty() && state.solution) {
+                const auto& platforms = state.solution->platforms;
+                const bool listed = std::any_of(platforms.begin(), platforms.end(), [&](const std::string& p) {
+                    return to_lower(normalize_platform(p)) == to_lower(result.platform_filter);
+                });
+                if (!listed) result.should_execute = false;
+            }
             bool cond_met = result.should_execute;
             bool parent_exec = state.is_executing();
 
             if (brace_pos != std::string::npos && brace_pos > end_paren) {
                 // Brace on same line: if(condition) {
-                state.conditional_stack.push_back({parent_exec && cond_met, cond_met, 0, result.platform_filter});
+                state.conditional_stack.push_back({parent_exec && cond_met, cond_met, 0, result.platform_filter,
+                                                   result.arch_scope});
             } else {
                 // No brace on this line: if(condition) - wait for { on next line
                 state.pending_if_condition = true;
                 state.pending_if_result = cond_met;
                 state.pending_if_platform_filter = result.platform_filter;
+                state.pending_if_arch_scope = result.arch_scope;
             }
             return;
         }
@@ -1266,9 +1292,11 @@ void BuildscriptParser::parse_line(const std::string& line, ParseState& state) {
     // Handle opening brace for pending if condition (brace on next line)
     if (trimmed == "{" && state.pending_if_condition) {
         bool parent_exec = state.is_executing();
-        state.conditional_stack.push_back({parent_exec && state.pending_if_result, state.pending_if_result, 0, state.pending_if_platform_filter});
+        state.conditional_stack.push_back({parent_exec && state.pending_if_result, state.pending_if_result, 0,
+                                           state.pending_if_platform_filter, state.pending_if_arch_scope});
         state.pending_if_condition = false;
         state.pending_if_platform_filter.clear();
+        state.pending_if_arch_scope.clear();
         return;
     }
 
@@ -1974,6 +2002,8 @@ void BuildscriptParser::parse_key_value(const std::string& key, const std::strin
     } else if (key == "include") {
         // Included in the current context, also inside [config:...] and [file:...] sections
         process_include(resolved_value, state);
+    } else if (const std::string arch = state.get_arch_scope(); !arch.empty()) {
+        apply_arch_scoped_setting(key, resolved_value, arch, state);
     } else if (state.in_file_properties && !state.file_properties_files.empty()) {
         // If we're in a file_properties() block, apply to all files in the group
         for (const auto& file_path : state.file_properties_files) {
@@ -3026,6 +3056,8 @@ bool BuildscriptParser::parse_project_compiler_setting(const std::string& key, c
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.enhanced_instruction_set = value;
         }
+        // Makefile cells declared later (e.g. by [config:*|Android]) take it too, see Phase 1.7.
+        proj.project_level_defaults.cl_compile.enhanced_instruction_set = value;
     } else if (key == "floating_point" || key == "fp_model" || key == "floating_point_model") {
         for (const auto& config_key : state.solution->get_config_keys()) {
             proj.configurations[config_key].cl_compile.floating_point_model = value;
@@ -4472,6 +4504,60 @@ bool BuildscriptParser::parse_android_apk_setting(const std::string& key, const 
     return true;
 }
 
+// A `key = value` line inside a target-architecture block of a non-Windows target (see
+// evaluate_condition). cflags, ldflags and defines are stored per architecture on the configuration
+// cells (and the project defaults, for cells declared later); the Makefile generator writes them
+// under a make conditional. Other keys have no per-architecture form in the Makefile outputs.
+void BuildscriptParser::apply_arch_scoped_setting(const std::string& key, const std::string& value,
+                                                  const std::string& arch, ParseState& state) {
+    enum class Kind { CFlags, LdFlags, Defines, Other };
+    Kind kind = Kind::Other;
+    if (key == "cflags" || key == "compiler_flags" || key == "additional_options") kind = Kind::CFlags;
+    else if (key == "ldflags" || key == "linker_flags" || key == "link_additional_options") kind = Kind::LdFlags;
+    else if (key == "defines" || key == "preprocessor" || key == "preprocessor_definitions") kind = Kind::Defines;
+
+    const bool file_context = state.current_file != nullptr || state.in_set_file_properties ||
+                              (state.in_file_properties && !state.file_properties_files.empty());
+    if (kind == Kind::Other || file_context || state.current_project == nullptr) {
+        std::cerr << "Warning: '" << key << "' inside an architecture block (" << arch
+                  << ") is not supported for this target; only project or configuration cflags, ldflags and defines are."
+                  << " Ignored at line " << state.line_number << "\n";
+        return;
+    }
+
+    auto add = [&](Configuration& cfg) {
+        auto& entry = cfg.arch_settings[arch];
+        auto append = [](std::string& target, const std::string& text) {
+            if (text.empty()) return;
+            if (!target.empty()) target += " ";
+            target += text;
+        };
+        if (kind == Kind::CFlags) append(entry.cflags, value);
+        else if (kind == Kind::LdFlags) append(entry.ldflags, value);
+        else {
+            for (const auto& def : split(value, ',')) {
+                const std::string d = trim(def);
+                if (!d.empty()) entry.defines.push_back(d);
+            }
+        }
+    };
+
+    Project& proj = *state.current_project;
+    if (!state.current_config.empty()) {
+        if (state.current_config_targets.empty()) {
+            add(proj.configurations[state.current_config]);
+        } else {
+            for (const auto& target : state.current_config_targets) add(proj.configurations[target]);
+        }
+        return;
+    }
+    for (const auto& config_key : state.solution->get_config_keys()) {
+        if (is_windows_platform(parse_config_key(config_key).second)) continue;
+        add(proj.configurations[config_key]);
+    }
+    add(proj.project_level_defaults);
+}
+
 BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const std::string& condition) {
     // Convert to lowercase for case-insensitive matching
     std::string cond = to_lower(trim(condition));
@@ -4528,6 +4614,17 @@ BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const s
     if (cond == "android") return {true, "Android"};
     if (cond == "ios") return {is_ios, ""};
 
+    // Target-architecture conditions: x86_64 (amd64), x86 (i386..i686), arm64 (aarch64), arm (armv7).
+    // A Windows target routes the block to the matching Visual Studio platform cells (x64, Win32,
+    // ARM64, ARM), like if(x64). Other targets execute the block and scope its cflags, ldflags and
+    // defines to that architecture: the Makefile generator writes them under a make conditional on
+    // the compiler's target (desktop) or ANDROID_ABI (Android), so one generation serves every
+    // architecture. Negated architecture conditions are not supported.
+    if (const std::string arch = canonical_target_arch(cond); !arch.empty()) {
+        if (is_windows) return {true, visual_studio_platform_for_arch(arch), "", true};
+        return {true, "", arch, true};
+    }
+
     // Check for negation
     if (cond.size() > 1 && cond[0] == '!') {
          std::string sub = cond.substr(1);
@@ -4543,6 +4640,11 @@ BuildscriptParser::ConditionResult BuildscriptParser::evaluate_condition(const s
          if (sub == "android") return {!is_android, ""};
          if (sub == "win32") return {is_windows, "x64"};
          if (sub == "x64") return {is_windows, "Win32"};
+         if (!canonical_target_arch(sub).empty()) {
+             std::cerr << "Warning: negated architecture condition '" << condition
+                       << "' is not supported; use the positive architecture blocks instead\n";
+             return {false, ""};
+         }
     }
 
     std::cerr << "Warning: Unknown condition '" << condition << "'\n";
