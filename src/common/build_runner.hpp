@@ -66,6 +66,14 @@ std::optional<std::filesystem::path> resolve_msbuild_project(
 // when the cache is in `cwd` instead, hints at `--build .`.
 std::string missing_cache_message(const std::string& directory, const std::filesystem::path& cwd);
 
+// Major version from `make --version` output ("GNU Make 4.3" -> 4). Empty when the output is not GNU make's.
+std::optional<int> gnu_make_major_version(const std::string& version_output);
+
+// Choose the make program. SIGHMAKE_MAKE wins. Otherwise `make` from PATH, except that Android builds
+// skip a PATH make that is not GNU Make 4+ (macOS ships 3.81, which lacks $(file)) when the NDK has one.
+// `note` receives a line explaining a fallback to the NDK's make.
+std::string resolve_make_program(bool android, std::string* note);
+
 class BuildRunner {
 public:
     // Execute a build based on cache in the given directory

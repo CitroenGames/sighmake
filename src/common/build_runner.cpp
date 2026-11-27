@@ -352,20 +352,65 @@ static std::string find_on_path(const std::string& name) {
     return "";
 }
 
-// Choose the make program. SIGHMAKE_MAKE wins. Otherwise `make` from PATH; Android builds on a host
-// without one (typically Windows) fall back to the GNU make that ships with the NDK.
+std::optional<int> gnu_make_major_version(const std::string& version_output) {
+    static const std::regex re(R"(GNU Make (\d+)\.)");
+    std::smatch match;
+    if (!std::regex_search(version_output, match, re)) return std::nullopt;
+    try {
+        return std::stoi(match[1].str());
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+// Output of `"<make>" --version` (stdout and stderr). Empty when it cannot be run.
+static std::string make_version_output(const std::string& make) {
+    const std::string cmd = "\"" + make + "\" --version 2>&1";
+#ifdef _WIN32
+    FILE* pipe = _popen(("\"" + cmd + "\"").c_str(), "r");
+#else
+    FILE* pipe = popen(cmd.c_str(), "r");
+#endif
+    if (!pipe) return "";
+    std::string output;
+    char buffer[256];
+    while (fgets(buffer, sizeof(buffer), pipe)) output += buffer;
+#ifdef _WIN32
+    _pclose(pipe);
+#else
+    pclose(pipe);
+#endif
+    return output;
+}
+
 std::string resolve_make_program(bool android, std::string* note) {
     if (const char* override_make = std::getenv("SIGHMAKE_MAKE")) {
         if (*override_make) return override_make;
     }
-    if (!find_on_path("make").empty()) return "make";
-    if (android) {
-        if (auto ndk = android_sdk::find_ndk()) {
-            if (auto ndk_make = android_sdk::find_ndk_make(*ndk)) {
-                if (note) *note = "make not found on PATH; using the NDK's make: " + ndk_make->string();
-                return ndk_make->string();
-            }
+    const std::string path_make = find_on_path("make");
+    if (!android) return "make";
+
+    // The Android makefiles write archive response files with $(file ...), a GNU Make 4.0 function. An older
+    // make (macOS's /usr/bin/make is 3.81) expands it to nothing and every static library fails, so prefer the
+    // GNU make that ships with the NDK over such a make, and over no make at all (typically Windows).
+    std::string reason;
+    if (path_make.empty()) {
+        reason = "make not found on PATH";
+    } else {
+        const auto major = gnu_make_major_version(make_version_output(path_make));
+        if (major && *major >= 4) return "make";
+        reason = major ? "make on PATH (" + path_make + ") is GNU Make " + std::to_string(*major) +
+                             ".x; Android builds need GNU Make 4+"
+                       : "make on PATH (" + path_make + ") is not GNU Make 4+";
+    }
+    if (auto ndk = android_sdk::find_ndk()) {
+        if (auto ndk_make = android_sdk::find_ndk_make(*ndk)) {
+            if (note) *note = reason + "; using the NDK's make: " + ndk_make->string();
+            return ndk_make->string();
         }
+    }
+    if (!path_make.empty() && note) {
+        *note = "Warning: " + reason + " and no NDK make was found; the build may fail (set SIGHMAKE_MAKE).";
     }
     return "make";
 }
